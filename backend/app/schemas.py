@@ -71,6 +71,13 @@ class Connector(ConnectorBase):
     updated_at: datetime
 
 
+class ConnectorValidationResult(BaseModel):
+    connector: Connector
+    status: str
+    message: str
+    commands: list[str] = []
+
+
 class WaveBase(BaseModel):
     project_id: int
     wave_name: str

@@ -75,6 +75,26 @@ def discover_kvm(endpoint: str | None, username: str | None) -> EngineResult:
     return EngineResult(True, f"Discovered {len(records)} KVM VMs", records, commands, listed.stdout)
 
 
+def validate_kvm(endpoint: str | None, username: str | None) -> EngineResult:
+    if not shutil.which("ssh"):
+        return EngineResult(False, "openssh-client is not installed in the backend container", [], ["ssh <kvm-host> true"])
+    try:
+        target = _ssh_target(endpoint, username)
+    except ValueError as exc:
+        return EngineResult(False, str(exc), [], [])
+    commands = [
+        f"ssh -o BatchMode=yes -o ConnectTimeout=5 {target} true",
+        f"ssh -o BatchMode=yes -o ConnectTimeout=5 {target} virsh list --all --name",
+    ]
+    ssh_check = _run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", target, "true"], timeout=10)
+    if ssh_check.returncode != 0:
+        return EngineResult(False, "KVM validation failed. SSH access is not available from the backend container.", [], commands, ssh_check.stderr + ssh_check.stdout)
+    virsh_check = _run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", target, "virsh", "list", "--all", "--name"], timeout=15)
+    if virsh_check.returncode != 0:
+        return EngineResult(False, "KVM validation failed. SSH works, but virsh access failed.", [], commands, virsh_check.stderr + virsh_check.stdout)
+    return EngineResult(True, "KVM connector validated. SSH and virsh are reachable.", [], commands, virsh_check.stdout)
+
+
 def discover_vcenter(endpoint: str | None, username: str | None, credential_reference: str | None) -> EngineResult:
     if not shutil.which("govc"):
         return EngineResult(False, "govc is not installed in the backend container. Install govc or provide an engine image with govc.", [], ["govc find / -type m"])
@@ -118,6 +138,20 @@ def discover_vcenter(endpoint: str | None, username: str | None, credential_refe
         except (KeyError, json.JSONDecodeError):
             continue
     return EngineResult(True, f"Discovered {len(records)} vCenter VMs", records, commands, found.stdout)
+
+
+def validate_vcenter(endpoint: str | None, username: str | None, credential_reference: str | None) -> EngineResult:
+    if not shutil.which("govc"):
+        return EngineResult(False, "govc is not installed in the backend container", [], ["govc about"])
+    password = _credential_from_env(credential_reference)
+    if not endpoint or not username or not password:
+        return EngineResult(False, "vCenter validation requires endpoint, username, and an env: credential reference available in the backend container", [], ["govc about"])
+    env = {**os.environ, "GOVC_URL": endpoint, "GOVC_USERNAME": username, "GOVC_PASSWORD": password, "GOVC_INSECURE": "1"}
+    result = _run(["govc", "about"], timeout=20, env=env)
+    commands = ["GOVC_URL=<redacted> GOVC_USERNAME=<redacted> govc about"]
+    if result.returncode != 0:
+        return EngineResult(False, "vCenter validation failed. govc could not connect to the endpoint.", [], commands, result.stderr + result.stdout)
+    return EngineResult(True, "vCenter connector validated. govc connected successfully.", [], commands, result.stdout)
 
 
 def build_kvm_to_esxi_preflight(source_endpoint: str | None, target_endpoint: str | None, vm_name: str, target_datastore: str | None) -> EngineResult:

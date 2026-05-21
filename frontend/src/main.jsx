@@ -4,7 +4,9 @@ import {
   ArrowRightLeft,
   Building2,
   CalendarClock,
+  CheckCircle2,
   Cloud,
+  Edit3,
   FileText,
   Gauge,
   HardDrive,
@@ -21,6 +23,7 @@ import {
   Settings,
   UserPlus,
   Users,
+  X,
 } from 'lucide-react';
 import './styles.css';
 
@@ -123,6 +126,8 @@ function App() {
   const [editingProjectId, setEditingProjectId] = useState(null);
   const [vmForm, setVmForm] = useState(blankVm);
   const [connectorForm, setConnectorForm] = useState(blankConnector);
+  const [editingConnectorId, setEditingConnectorId] = useState(null);
+  const [connectorResult, setConnectorResult] = useState(null);
   const [userForm, setUserForm] = useState(blankUser);
   const [migrationJobForm, setMigrationJobForm] = useState(blankMigrationJob);
   const [loginForm, setLoginForm] = useState({ username: 'admin', password: '' });
@@ -247,8 +252,32 @@ function App() {
 
   const saveConnector = async (event) => {
     event.preventDefault();
-    await api('/connectors', { method: 'POST', body: JSON.stringify({ ...connectorForm, port: Number(connectorForm.port) || null }) });
+    const payload = { ...connectorForm, port: Number(connectorForm.port) || null };
+    if (editingConnectorId) {
+      await api(`/connectors/${editingConnectorId}`, { method: 'PUT', body: JSON.stringify(payload) });
+    } else {
+      await api('/connectors', { method: 'POST', body: JSON.stringify(payload) });
+    }
     setConnectorForm(blankConnector);
+    setEditingConnectorId(null);
+    await load();
+  };
+
+  const editConnector = (connector) => {
+    setConnectorForm({ ...connector, port: connector.port || '' });
+    setEditingConnectorId(connector.id);
+    setConnectorResult(null);
+  };
+
+  const cancelConnectorEdit = () => {
+    setConnectorForm(blankConnector);
+    setEditingConnectorId(null);
+    setConnectorResult(null);
+  };
+
+  const validateConnector = async (connector) => {
+    const result = await api(`/connectors/${connector.id}/validate`, { method: 'POST' });
+    setConnectorResult(result);
     await load();
   };
 
@@ -345,8 +374,8 @@ function App() {
         {active === 'dashboard' && <Dashboard summary={summary} vms={vms} connectors={connectors} />}
         {active === 'projects' && <Projects projects={projects} form={projectForm} setForm={setProjectForm} save={saveProject} editProject={editProject} editingProjectId={editingProjectId} cancel={() => { setProjectForm(blankProject); setEditingProjectId(null); }} />}
         {active === 'inventory' && <Inventory vms={vms} projects={projects} form={vmForm} setForm={setVmForm} create={createVm} changeStatus={changeStatus} />}
-        {active === 'hosts' && <Connectors title="Host Connector" category="host" rows={connectors.filter((c) => c.connector_category === 'host')} form={connectorForm} setForm={setConnectorForm} save={saveConnector} types={hostConnectorTypes} discover={discoverConnector} projects={projects} />}
-        {active === 'clouds' && <Connectors title="Cloud Connector" category="cloud" rows={connectors.filter((c) => c.connector_category === 'cloud')} form={connectorForm} setForm={setConnectorForm} save={saveConnector} types={cloudConnectorTypes} discover={discoverConnector} projects={projects} />}
+        {active === 'hosts' && <Connectors title="Host Connector" category="host" rows={connectors.filter((c) => c.connector_category === 'host')} form={connectorForm} setForm={setConnectorForm} save={saveConnector} types={hostConnectorTypes} discover={discoverConnector} validate={validateConnector} edit={editConnector} cancel={cancelConnectorEdit} editingConnectorId={editingConnectorId} result={connectorResult} />}
+        {active === 'clouds' && <Connectors title="Cloud Connector" category="cloud" rows={connectors.filter((c) => c.connector_category === 'cloud')} form={connectorForm} setForm={setConnectorForm} save={saveConnector} types={cloudConnectorTypes} discover={discoverConnector} validate={validateConnector} edit={editConnector} cancel={cancelConnectorEdit} editingConnectorId={editingConnectorId} result={connectorResult} />}
         {active === 'engine' && <MigrationEngine connectors={connectors} form={migrationJobForm} setForm={setMigrationJobForm} save={createMigrationJob} jobs={migrationJobs} discoveryRuns={discoveryRuns} />}
         {active === 'waves' && <Waves waves={waves} />}
         {active === 'reports' && <Reports csv={csv} vms={vms} />}
@@ -385,10 +414,11 @@ function Inventory({ vms, projects, form, setForm, create, changeStatus }) {
   return <section className="split"><FormPanel title="Add VM manually" onSubmit={create}><Select label="Project" value={form.project_id} options={projects.map((p) => [p.id, p.project_name])} onChange={(v) => setForm({ ...form, project_id: v })} /><Input label="VM name" value={form.vm_name} onChange={(v) => setForm({ ...form, vm_name: v })} required /><Select label="Source" value={form.source_platform} options={platforms} onChange={(v) => setForm({ ...form, source_platform: v })} /><Select label="Target" value={form.target_platform} options={platforms} onChange={(v) => setForm({ ...form, target_platform: v })} /><Input label="CPU" type="number" value={form.cpu} onChange={(v) => setForm({ ...form, cpu: v })} /><Input label="Memory GB" type="number" value={form.memory_gb} onChange={(v) => setForm({ ...form, memory_gb: v })} /><Input label="Disk GB" type="number" value={form.disk_gb} onChange={(v) => setForm({ ...form, disk_gb: v })} /><Input label="Owner" value={form.application_owner} onChange={(v) => setForm({ ...form, application_owner: v })} /><button className="primary"><Plus size={16} /> Add VM</button></FormPanel><div className="table-wrap"><table><thead><tr><th>VM</th><th>Source</th><th>Target</th><th>Size</th><th>Status</th><th>Change status</th></tr></thead><tbody>{vms.map((vm) => <tr key={vm.id}><td>{vm.vm_name}</td><td>{vm.source_platform}</td><td>{vm.target_platform}</td><td>{vm.cpu} CPU / {vm.memory_gb} GB</td><td><Badge value={vm.current_status} /></td><td><select value={vm.current_status} onChange={(e) => changeStatus(vm, e.target.value)}>{statuses.map((s) => <option key={s}>{s}</option>)}</select></td></tr>)}</tbody></table></div></section>;
 }
 
-function Connectors({ title, category, rows, form, setForm, save, types, discover, projects }) {
+function Connectors({ title, category, rows, form, setForm, save, types, discover, validate, edit, cancel, editingConnectorId, result }) {
   const scopedForm = form.connector_category === category ? form : { ...blankConnector, connector_category: category, connector_type: types[0] };
   const update = (patch) => setForm({ ...scopedForm, ...patch, connector_category: category });
-  return <section className="split"><FormPanel title={`Add ${title}`} onSubmit={save}><Select label="Type" value={scopedForm.connector_type} options={types} onChange={(v) => update({ connector_type: v })} /><Input label="Connector name" value={scopedForm.name} onChange={(v) => update({ name: v })} required /><Input label="Endpoint / API URL" value={scopedForm.endpoint} onChange={(v) => update({ endpoint: v })} /><Input label="Port" type="number" value={scopedForm.port || ''} onChange={(v) => update({ port: v })} /><Input label="Username" value={scopedForm.username || ''} onChange={(v) => update({ username: v })} /><Input label="Credential reference" value={scopedForm.credential_reference || ''} onChange={(v) => update({ credential_reference: v })} /><Input label="Environment" value={scopedForm.environment || ''} onChange={(v) => update({ environment: v })} /><TextArea label="Notes" value={scopedForm.notes || ''} onChange={(v) => update({ notes: v })} /><div className="tip">Discovery engines run real connector checks. KVM uses SSH and virsh. vCenter uses govc when installed and configured.</div><button className="primary"><Plus size={16} /> Add connector</button></FormPanel><div className="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Endpoint</th><th>Credential</th><th>Status</th><th>Discovery</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td>{row.name}</td><td>{row.connector_type}</td><td>{row.endpoint || '-'}</td><td>{row.credential_reference || '-'}</td><td>{row.status}</td><td><button className="mini" onClick={() => discover(row)}><Search size={14} /> Discover</button></td></tr>)}</tbody></table></div></section>;
+  const isEditing = editingConnectorId && scopedForm.connector_category === category;
+  return <section className="split"><FormPanel title={isEditing ? `Edit ${title}` : `Add ${title}`} onSubmit={save}><Select label="Type" value={scopedForm.connector_type} options={types} onChange={(v) => update({ connector_type: v })} /><Input label="Connector name" value={scopedForm.name} onChange={(v) => update({ name: v })} required /><Input label="Endpoint / API URL" value={scopedForm.endpoint} onChange={(v) => update({ endpoint: v })} /><Input label="Port" type="number" value={scopedForm.port || ''} onChange={(v) => update({ port: v })} /><Input label="Username" value={scopedForm.username || ''} onChange={(v) => update({ username: v })} /><Input label="Credential reference" value={scopedForm.credential_reference || ''} onChange={(v) => update({ credential_reference: v })} /><Input label="Environment" value={scopedForm.environment || ''} onChange={(v) => update({ environment: v })} /><Select label="Status" value={scopedForm.status || 'Not validated'} options={['Not validated', 'Validated', 'Validation failed', 'Unsupported']} onChange={(v) => update({ status: v })} /><TextArea label="Notes" value={scopedForm.notes || ''} onChange={(v) => update({ notes: v })} /><div className="tip">Validate performs a real connector check and shows the result. Discovery collects VM inventory when the required runtime tools and credentials are available.</div><div className="button-row"><button className="primary"><Save size={16} /> {isEditing ? 'Save changes' : 'Add connector'}</button>{isEditing && <button className="secondary" type="button" onClick={cancel}><X size={16} /> Cancel</button>}</div></FormPanel><div className="stack">{result && result.connector?.connector_category === category && <div className={`result ${result.status === 'Validated' ? 'success' : 'danger'}`}><strong>{result.status}</strong><span>{result.message}</span>{Boolean(result.commands?.length) && <code>{result.commands.join(' | ')}</code>}</div>}<div className="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Endpoint</th><th>Credential</th><th>Status</th><th>Actions</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td>{row.name}</td><td>{row.connector_type}</td><td>{row.endpoint || '-'}</td><td>{row.credential_reference || '-'}</td><td><Badge value={row.status} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini" onClick={() => validate(row)}><CheckCircle2 size={14} /> Validate</button><button className="mini" onClick={() => discover(row)}><Search size={14} /> Discover</button></div></td></tr>)}</tbody></table></div></div></section>;
 }
 
 function MigrationEngine({ connectors, form, setForm, save, jobs, discoveryRuns }) {
@@ -428,7 +458,8 @@ function StatusBoard({ vms }) {
 }
 
 function Badge({ value }) {
-  const kind = value?.includes('Failed') || value?.includes('Blocked') || value?.includes('Rolled') ? 'danger' : value?.includes('completed') || value?.includes('Validation') ? 'success' : 'neutral';
+  const normalized = (value || '').toLowerCase();
+  const kind = normalized.includes('failed') || normalized.includes('blocked') || normalized.includes('rolled') ? 'danger' : normalized.includes('completed') || normalized.includes('validated') ? 'success' : 'neutral';
   return <span className={`badge ${kind}`}>{value}</span>;
 }
 

@@ -96,6 +96,7 @@ main { padding: 28px; overflow: auto; }
 h1 { margin: 0; font-size: 28px; font-weight: 750; letter-spacing: 0; }
 h2 { margin: 0 0 16px; font-size: 18px; }
 .toolbar, .button-row { display: flex; align-items: center; gap: 10px; }
+.button-row.compact { gap: 6px; flex-wrap: wrap; }
 .icon-button, .primary, .secondary, .mini {
   display: inline-flex;
   align-items: center;
@@ -116,6 +117,17 @@ h2 { margin: 0 0 16px; font-size: 18px; }
 .alert { background: #fff1f0; color: #9b1c1c; }
 .notice { display: flex; gap: 10px; align-items: center; background: #eaf7fb; color: #0d5260; }
 .tip { margin: 0; background: #f4f8fc; color: #506274; border: 1px solid #dbe6f0; font-size: 13px; line-height: 1.45; }
+.result {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid #d9e4ee;
+  border-radius: 8px;
+  background: #fff;
+}
+.result.success { border-color: #9dd8b4; background: #f2fbf6; color: #17623a; }
+.result.danger { border-color: #efb4ae; background: #fff6f5; color: #9b1c1c; }
+.result code { white-space: normal; color: #34495e; font-size: 12px; }
 .metric-grid { display: grid; grid-template-columns: repeat(6, minmax(130px, 1fr)); gap: 14px; margin-bottom: 22px; }
 .metric, .form-panel, .table-wrap, .about { background: #fff; border: 1px solid #d9e4ee; border-radius: 8px; }
 .metric { padding: 18px; }

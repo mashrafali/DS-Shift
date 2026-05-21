@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from . import models, schemas
 from .config import settings
 from .database import Base, engine, get_db
-from .engines import build_kvm_to_esxi_preflight, discover_kvm, discover_vcenter
+from .engines import build_kvm_to_esxi_preflight, discover_kvm, discover_vcenter, validate_kvm, validate_vcenter
 
 MIGRATION_STATUSES = {
     "Discovered",
@@ -285,6 +285,32 @@ def update_connector(connector_id: int, payload: schemas.ConnectorCreate, db: Se
     db.commit()
     db.refresh(connector)
     return connector
+
+
+@app.post("/api/connectors/{connector_id}/validate", response_model=schemas.ConnectorValidationResult)
+def validate_connector(connector_id: int, db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
+    connector = db.get(models.ConnectorProfile, connector_id)
+    if not connector:
+        raise HTTPException(404, "Connector not found")
+    if connector.connector_type == "KVM":
+        result = validate_kvm(connector.endpoint, connector.username)
+    elif connector.connector_type in {"VMware ESXi / vCenter", "VMware ESXi", "vCenter"}:
+        result = validate_vcenter(connector.endpoint, connector.username, connector.credential_reference)
+    else:
+        result = None
+    if result is None:
+        connector.status = "Unsupported"
+        message = f"No validation engine for {connector.connector_type}"
+        commands: list[str] = []
+        status = "Unsupported"
+    else:
+        connector.status = "Validated" if result.ok else "Validation failed"
+        message = result.message
+        commands = result.commands
+        status = connector.status
+    db.commit()
+    db.refresh(connector)
+    return schemas.ConnectorValidationResult(connector=schemas.Connector.model_validate(connector), status=status, message=message, commands=commands)
 
 
 @app.post("/api/connectors/{connector_id}/discover", response_model=schemas.DiscoveryRun)
