@@ -19,6 +19,7 @@ services:
   backend:
     build:
       context: ./backend
+      network: host
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-dsreplace}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB:-dsreplace}
