@@ -11,8 +11,8 @@
 
 ## Discovery Connectors
 
-- VMware vCenter APIs.
-- KVM/libvirt APIs.
+- Expand VMware vCenter discovery beyond `govc` into direct API collection.
+- Expand KVM/libvirt discovery beyond SSH command collection into API-backed inventory.
 - Google Cloud APIs.
 - AWS APIs.
 - Azure APIs.
@@ -20,7 +20,7 @@
 
 ## Migration Execution Integrations
 
-- `virt-v2v` for KVM/libvirt/VMware conversions.
+- Controlled live execution for the implemented `virt-v2v` KVM-to-ESXi/vCenter preflight engine.
 - VMware vCenter APIs.
 - Google Cloud Migrate to Virtual Machines.
 - AWS Application Migration Service.

@@ -155,8 +155,24 @@ class LoginResponse(BaseModel):
 
 
 class UserPublic(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: Optional[int] = None
     username: str
     role: str
+    is_active: bool = True
+
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    role: str = "operator"
+    is_active: bool = True
+
+
+class UserUpdate(BaseModel):
+    password: Optional[str] = None
+    role: str = "operator"
+    is_active: bool = True
 
 
 class SettingsBase(BaseModel):
@@ -171,5 +187,47 @@ class SettingsBase(BaseModel):
 class AppSettings(SettingsBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class DiscoveryRequest(BaseModel):
+    import_to_project_id: Optional[int] = None
+    target_platform: Optional[str] = None
+
+
+class DiscoveryRun(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    connector_id: int
+    status: str
+    message: Optional[str] = None
+    records_json: Optional[str] = None
+    commands_json: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MigrationJobCreate(BaseModel):
+    source_connector_id: int
+    target_connector_id: int
+    vm_name: str
+    target_name: Optional[str] = None
+    target_datastore: Optional[str] = None
+    migration_type: str = "KVM to ESXi"
+
+
+class MigrationJob(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    source_connector_id: int
+    target_connector_id: int
+    vm_name: str
+    target_name: Optional[str] = None
+    migration_type: str
+    status: str
+    message: Optional[str] = None
+    runbook_json: Optional[str] = None
+    commands_json: Optional[str] = None
     created_at: datetime
     updated_at: datetime

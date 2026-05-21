@@ -2,6 +2,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 import hashlib
 import hmac
+import json
 import os
 import secrets
 
@@ -13,6 +14,7 @@ from sqlalchemy.orm import Session
 from . import models, schemas
 from .config import settings
 from .database import Base, engine, get_db
+from .engines import build_kvm_to_esxi_preflight, discover_kvm, discover_vcenter
 
 MIGRATION_STATUSES = {
     "Discovered",
@@ -82,6 +84,12 @@ def current_user(authorization: str | None = Header(default=None), db: Session =
     return user
 
 
+def admin_user(user: models.LocalUser = Depends(current_user)) -> models.LocalUser:
+    if user.role != "admin":
+        raise HTTPException(403, "Admin role required")
+    return user
+
+
 @app.on_event("startup")
 def startup() -> None:
     Base.metadata.create_all(bind=engine)
@@ -131,7 +139,45 @@ def logout(authorization: str | None = Header(default=None), db: Session = Depen
 
 @app.get("/api/auth/me", response_model=schemas.UserPublic)
 def me(user: models.LocalUser = Depends(current_user)):
-    return schemas.UserPublic(username=user.username, role=user.role)
+    return schemas.UserPublic(id=user.id, username=user.username, role=user.role, is_active=user.is_active == "true")
+
+
+@app.get("/api/users", response_model=list[schemas.UserPublic])
+def list_users(db: Session = Depends(get_db), _admin: models.LocalUser = Depends(admin_user)):
+    return [
+        schemas.UserPublic(id=user.id, username=user.username, role=user.role, is_active=user.is_active == "true")
+        for user in db.query(models.LocalUser).order_by(models.LocalUser.username).all()
+    ]
+
+
+@app.post("/api/users", response_model=schemas.UserPublic, status_code=201)
+def create_user(payload: schemas.UserCreate, db: Session = Depends(get_db), _admin: models.LocalUser = Depends(admin_user)):
+    if db.query(models.LocalUser).filter(models.LocalUser.username == payload.username).first():
+        raise HTTPException(409, "Username already exists")
+    user = models.LocalUser(
+        username=payload.username,
+        password_hash=hash_password(payload.password),
+        role=payload.role,
+        is_active="true" if payload.is_active else "false",
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@app.put("/api/users/{user_id}", response_model=schemas.UserPublic)
+def update_user(user_id: int, payload: schemas.UserUpdate, db: Session = Depends(get_db), _admin: models.LocalUser = Depends(admin_user)):
+    user = db.get(models.LocalUser, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+    if payload.password:
+        user.password_hash = hash_password(payload.password)
+    user.role = payload.role
+    user.is_active = "true" if payload.is_active else "false"
+    db.commit()
+    db.refresh(user)
+    return user
 
 
 @app.get("/api/dashboard", response_model=schemas.DashboardSummary)
@@ -241,6 +287,71 @@ def update_connector(connector_id: int, payload: schemas.ConnectorCreate, db: Se
     return connector
 
 
+@app.post("/api/connectors/{connector_id}/discover", response_model=schemas.DiscoveryRun)
+def discover_connector(connector_id: int, payload: schemas.DiscoveryRequest, db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
+    connector = db.get(models.ConnectorProfile, connector_id)
+    if not connector:
+        raise HTTPException(404, "Connector not found")
+    if connector.connector_type == "KVM":
+        result = discover_kvm(connector.endpoint, connector.username)
+    elif connector.connector_type in {"VMware ESXi / vCenter", "VMware ESXi", "vCenter"}:
+        result = discover_vcenter(connector.endpoint, connector.username, connector.credential_reference)
+    else:
+        result = None
+    if result is None:
+        run = models.DiscoveryRun(connector_id=connector.id, status="Unsupported", message=f"No discovery engine for {connector.connector_type}", records_json="[]", commands_json="[]")
+    else:
+        imported = 0
+        if result.ok and payload.import_to_project_id:
+            imported = import_discovered_vms(db, payload.import_to_project_id, payload.target_platform or "Unassigned", result.records)
+        message = result.message + (f"; imported {imported} VMs" if imported else "")
+        run = models.DiscoveryRun(
+            connector_id=connector.id,
+            status="Completed" if result.ok else "Failed",
+            message=message,
+            records_json=json.dumps(result.records),
+            commands_json=json.dumps(result.commands),
+        )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def import_discovered_vms(db: Session, project_id: int, target_platform: str, records: list[dict]) -> int:
+    if not db.get(models.MigrationProject, project_id):
+        raise HTTPException(404, "Import project not found")
+    count = 0
+    for record in records:
+        name = record.get("vm_name")
+        if not name:
+            continue
+        existing = db.query(models.VmInventory).filter(models.VmInventory.project_id == project_id, models.VmInventory.vm_name == name).first()
+        if existing:
+            existing.cpu = record.get("cpu") or existing.cpu
+            existing.memory_gb = record.get("memory_gb") or existing.memory_gb
+            existing.os_type = record.get("os_type") or existing.os_type
+            existing.current_status = "Discovered"
+        else:
+            db.add(
+                models.VmInventory(
+                    project_id=project_id,
+                    vm_name=name,
+                    source_platform=record.get("source_platform") or "Unknown",
+                    target_platform=target_platform,
+                    cpu=record.get("cpu") or 0,
+                    memory_gb=record.get("memory_gb") or 0,
+                    disk_gb=record.get("disk_gb") or 0,
+                    os_type=record.get("os_type"),
+                    ip_address=record.get("ip_address"),
+                    current_status="Discovered",
+                )
+            )
+        count += 1
+    db.commit()
+    return count
+
+
 @app.get("/api/waves", response_model=list[schemas.Wave])
 def list_waves(db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
     return db.query(models.MigrationWave).order_by(models.MigrationWave.created_at.desc()).all()
@@ -336,3 +447,39 @@ def update_settings(payload: schemas.SettingsBase, db: Session = Depends(get_db)
     db.commit()
     db.refresh(settings_row)
     return settings_row
+
+
+@app.get("/api/discovery-runs", response_model=list[schemas.DiscoveryRun])
+def list_discovery_runs(db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
+    return db.query(models.DiscoveryRun).order_by(models.DiscoveryRun.created_at.desc()).all()
+
+
+@app.get("/api/migration-jobs", response_model=list[schemas.MigrationJob])
+def list_migration_jobs(db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
+    return db.query(models.MigrationJob).order_by(models.MigrationJob.created_at.desc()).all()
+
+
+@app.post("/api/migration-jobs", response_model=schemas.MigrationJob, status_code=201)
+def create_migration_job(payload: schemas.MigrationJobCreate, db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
+    source = db.get(models.ConnectorProfile, payload.source_connector_id)
+    target = db.get(models.ConnectorProfile, payload.target_connector_id)
+    if not source or not target:
+        raise HTTPException(404, "Source or target connector not found")
+    if source.connector_type != "KVM" or target.connector_type not in {"VMware ESXi / vCenter", "VMware ESXi", "vCenter"}:
+        raise HTTPException(400, "Only KVM to ESXi/vCenter migration preflight is implemented in this engine")
+    result = build_kvm_to_esxi_preflight(source.endpoint, target.endpoint, payload.vm_name, payload.target_datastore)
+    job = models.MigrationJob(
+        source_connector_id=source.id,
+        target_connector_id=target.id,
+        vm_name=payload.vm_name,
+        target_name=payload.target_name,
+        migration_type=payload.migration_type,
+        status="Preflight ready" if result.ok else "Blocked",
+        message=result.message,
+        runbook_json=json.dumps(result.records),
+        commands_json=json.dumps(result.commands),
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job

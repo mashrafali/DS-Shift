@@ -52,6 +52,16 @@ button { cursor: pointer; }
   color: #042135;
   border-radius: 8px;
 }
+.dc-mark {
+  width: 34px;
+  height: 34px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.login-logo .dc-mark { width: 40px; height: 40px; }
 .brand strong, .brand span { display: block; }
 .brand span { color: #9db1c8; font-size: 13px; margin-top: 2px; }
 nav { display: grid; gap: 8px; }
@@ -113,6 +123,7 @@ h2 { margin: 0 0 16px; font-size: 18px; }
 .metric span { display: block; color: #607386; font-size: 13px; }
 .metric strong { display: block; margin-top: 8px; font-size: 30px; color: #071c33; }
 .split { display: grid; grid-template-columns: minmax(300px, 420px) 1fr; gap: 18px; align-items: start; }
+.stack { display: grid; gap: 18px; }
 .form-panel { display: grid; gap: 12px; padding: 18px; }
 label { display: grid; gap: 6px; color: #485c70; font-size: 13px; font-weight: 700; }
 input, select, textarea {

@@ -137,3 +137,29 @@ class AppSetting(TimestampMixin, Base):
     retention_days: Mapped[int] = mapped_column(Integer, default=365)
     maintenance_window: Mapped[str | None] = mapped_column(String(160), nullable=True)
     banner_message: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class DiscoveryRun(TimestampMixin, Base):
+    __tablename__ = "discovery_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    connector_id: Mapped[int] = mapped_column(ForeignKey("connector_profiles.id", ondelete="CASCADE"))
+    status: Mapped[str] = mapped_column(String(60), default="Pending")
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    records_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    commands_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class MigrationJob(TimestampMixin, Base):
+    __tablename__ = "migration_jobs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_connector_id: Mapped[int] = mapped_column(ForeignKey("connector_profiles.id"))
+    target_connector_id: Mapped[int] = mapped_column(ForeignKey("connector_profiles.id"))
+    vm_name: Mapped[str] = mapped_column(String(160), index=True)
+    target_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    migration_type: Mapped[str] = mapped_column(String(80), default="KVM to ESXi")
+    status: Mapped[str] = mapped_column(String(60), default="Preflight")
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    runbook_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    commands_json: Mapped[str | None] = mapped_column(Text, nullable=True)

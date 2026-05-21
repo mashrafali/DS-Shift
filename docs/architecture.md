@@ -15,8 +15,9 @@ DS Replace uses a three-tier application architecture deployed with Docker Compo
 `frontend`
 
 - React application.
-- Provides dashboard, project management, VM inventory, platform profiles, waves, reports, and about views.
+- Provides dashboard, saved project management, VM inventory, host connectors, cloud connectors, migration engine, waves, reports, and settings control.
 - Talks to the backend through relative `/api` URLs.
+- Uses a custom Defined Solutions data-center migration mark instead of a generic security icon.
 
 `backend`
 
@@ -25,6 +26,9 @@ DS Replace uses a three-tier application architecture deployed with Docker Compo
 - Creates database tables at startup for the MVP.
 - Exposes OpenAPI documentation.
 - Provides local username/password authentication with bearer sessions.
+- Provides KVM discovery through SSH and `virsh`.
+- Provides vCenter discovery through `govc`.
+- Provides KVM-to-ESXi/vCenter migration preflight job creation using a `virt-v2v` runbook model.
 
 `database`
 
@@ -43,11 +47,22 @@ DS Replace uses a three-tier application architecture deployed with Docker Compo
 - `AuthSession`: bearer token session hash and expiry.
 - `ConnectorProfile`: host and cloud connector metadata with credential references.
 - `AppSetting`: editable product and UI settings.
+- `DiscoveryRun`: connector discovery result, command evidence, and discovered VM records.
+- `MigrationJob`: migration preflight job, runbook, dependency status, and operator-facing messages.
+
+## Engine Boundary
+
+The migration engine is intentionally split into safe preflight and live execution phases:
+
+- Discovery runs call real tools and record success or failure.
+- Migration jobs create a real runbook for KVM-to-ESXi/vCenter conversion and validate required local tools.
+- Live migration execution is not triggered automatically from the MVP UI.
+- Runtime credentials should be injected through environment variables, mounted SSH keys, Docker secrets, or a future vault integration.
 
 ## Future Integration Points
 
-- Authentication and RBAC middleware.
+- RBAC middleware.
 - Vault-backed credential references.
-- Platform discovery connectors for vCenter, libvirt/KVM, GCP, AWS, Azure, and Nutanix.
-- Migration execution adapters for virt-v2v, cloud migration APIs, and replication tools.
+- Platform discovery connectors for GCP, AWS, Azure, and Nutanix.
+- Controlled migration execution adapters for virt-v2v, cloud migration APIs, and replication tools.
 - Audit logging and report export services.

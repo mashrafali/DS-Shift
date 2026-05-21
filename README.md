@@ -2,7 +2,7 @@
 
 Defined Solutions cloud-native platform for any-to-any VM migration planning, tracking, and workflow management.
 
-DS Replace 1.0 RC1 is an MVP focused on assessment, source/target inventory, migration planning, migration waves, VM workflow state tracking, dashboard metrics, and basic readiness reporting. It does not execute live VM migrations in this release.
+DS Replace 1.0 RC1 is an MVP focused on assessment, source/target inventory, migration planning, migration waves, VM workflow state tracking, dashboard metrics, discovery runs, and migration preflight jobs. Live migration execution is approval-gated and should only be enabled after credential, network, and rollback controls are validated.
 
 ## Architecture
 
@@ -50,9 +50,26 @@ PostgreSQL is internal to the Docker network and is not exposed publicly.
 - Local passwords are stored as PBKDF2 hashes, not clear text.
 - Platform credentials are placeholders; real secret storage should use a vault integration.
 
+## Users
+
+Administrators manage local users from `Settings Control` in the web UI. The Settings page includes the current user list and an `Add local user` form. The same functions are exposed by the backend API:
+
+- `GET /api/users`
+- `POST /api/users`
+- `PUT /api/users/{user_id}`
+
+The seeded lab admin is `admin` with the configured `ADMIN_INITIAL_PASSWORD`.
+
+## Discovery and Migration Engine
+
+- KVM discovery uses SSH plus `virsh` against connector endpoints such as `qemu+ssh://root@kvm/system`.
+- vCenter discovery uses `govc` with password references such as `env:VCENTER_PASSWORD`.
+- KVM to ESXi/vCenter migration jobs currently build a `virt-v2v` preflight runbook and validate local engine dependencies.
+- The engine container must have access to SSH credentials, `govc`, and `virt-v2v` before discovery or migration preflight can pass end to end.
+
 ## MVP Limitations
 
-- No real platform discovery connectors yet.
-- No migration execution engine yet.
-- No production authentication or RBAC yet.
+- Discovery engines are implemented for KVM and vCenter, but they require reachable endpoints and runtime credentials.
+- KVM to ESXi/vCenter migration is implemented as a preflight/runbook engine. Live execution still requires explicit operational approval.
+- No production RBAC yet.
 - No external certificate automation yet.
