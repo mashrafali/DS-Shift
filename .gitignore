@@ -1,0 +1,12 @@
+.env
+*.pem
+*.key
+*.crt
+node_modules/
+dist/
+__pycache__/
+.pytest_cache/
+.venv/
+.DS_Store
+coverage/
+*.log
