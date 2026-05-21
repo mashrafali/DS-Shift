@@ -23,6 +23,8 @@ vi .env
 ./scripts/deploy.sh
 ```
 
+Set `ADMIN_INITIAL_USERNAME` and `ADMIN_INITIAL_PASSWORD` before the first startup. If omitted, the backend seeds `admin` with the lab default requested for the MVP.
+
 The deploy script creates a self-signed certificate in `ops/certs/` if one is not already present.
 
 ## Validate

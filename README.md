@@ -27,6 +27,12 @@ Access:
 - API health: `https://<host>/api/health`
 - API docs: `https://<host>/docs`
 
+Default MVP login:
+
+- Username: `admin`
+- Initial password: set with `ADMIN_INITIAL_PASSWORD`; lab bootstrap may use `P@ssw0rd`.
+- Change the environment value before production use.
+
 ## Services
 
 - `frontend`
@@ -41,6 +47,7 @@ PostgreSQL is internal to the Docker network and is not exposed publicly.
 - Do not commit `.env`.
 - Use a strong random `POSTGRES_PASSWORD`.
 - Self-signed TLS is suitable for MVP validation only.
+- Local passwords are stored as PBKDF2 hashes, not clear text.
 - Platform credentials are placeholders; real secret storage should use a vault integration.
 
 ## MVP Limitations

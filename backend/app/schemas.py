@@ -47,6 +47,30 @@ class Platform(PlatformBase):
     updated_at: datetime
 
 
+class ConnectorBase(BaseModel):
+    name: str
+    connector_category: str
+    connector_type: str
+    endpoint: Optional[str] = None
+    port: Optional[int] = None
+    username: Optional[str] = None
+    credential_reference: Optional[str] = None
+    environment: Optional[str] = None
+    status: str = "Not validated"
+    notes: Optional[str] = None
+
+
+class ConnectorCreate(ConnectorBase):
+    pass
+
+
+class Connector(ConnectorBase):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+
 class WaveBase(BaseModel):
     project_id: int
     wave_name: str
@@ -116,3 +140,36 @@ class DashboardSummary(BaseModel):
     vms_failed_or_blocked: int
     progress_percent: int
     by_status: dict[str, int]
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    username: str
+    role: str
+
+
+class UserPublic(BaseModel):
+    username: str
+    role: str
+
+
+class SettingsBase(BaseModel):
+    product_name: str = "DS Replace"
+    company_name: str = "Defined Solutions"
+    default_timezone: str = "Asia/Riyadh"
+    retention_days: int = 365
+    maintenance_window: Optional[str] = None
+    banner_message: Optional[str] = None
+
+
+class AppSettings(SettingsBase):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    created_at: datetime
+    updated_at: datetime

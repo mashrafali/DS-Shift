@@ -1,26 +1,47 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Activity, BarChart3, CloudCog, Database, FileText, Layers3, Plus, RefreshCw, Server, Settings } from 'lucide-react';
+import {
+  CalendarClock,
+  Cloud,
+  Database,
+  FileText,
+  Gauge,
+  HardDrive,
+  KeyRound,
+  Layers,
+  LogOut,
+  Network,
+  Plus,
+  RefreshCw,
+  Save,
+  ServerCog,
+  Settings,
+  ShieldCheck,
+} from 'lucide-react';
 import './styles.css';
 
-const api = async (path, options = {}) => {
-  const response = await fetch(`/api${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options,
-  });
-  if (!response.ok) {
-    throw new Error(`${response.status} ${await response.text()}`);
-  }
-  if (response.status === 204) return null;
-  return response.json();
+const tokenKey = 'ds_replace_token';
+
+const migrationTypes = {
+  'Lift and shift': 'Move the VM with minimal redesign. Best for fast relocation and low application change.',
+  'Cold migration': 'Power off, copy or convert, then start on the target. Simpler but requires downtime.',
+  'Replication assisted': 'Use replication or backup tooling before cutover. Better for larger systems and shorter outage windows.',
+  'Conversion based': 'Use tools such as virt-v2v or vendor conversion APIs where disk or driver changes are required.',
+  'Cloud rehost': 'Move into a cloud IaaS target such as GCP, AWS, or Azure while preserving the VM operating model.',
+  'Any-to-any workflow': 'Generic planning workflow when source and target are not yet finalized.',
 };
+
+const platforms = ['KVM', 'VMware ESXi / vCenter', 'Nutanix AHV', 'Google Cloud Platform', 'AWS', 'Azure', 'Other'];
+const hostConnectorTypes = ['KVM', 'VMware ESXi / vCenter', 'Nutanix AHV'];
+const cloudConnectorTypes = ['Google Cloud Platform', 'AWS', 'Azure', 'Other Cloud'];
+const statuses = ['Discovered', 'Assessed', 'Ready for migration', 'Replication prepared', 'Migration in progress', 'Cutover scheduled', 'Cutover completed', 'Validation completed', 'Failed', 'Rolled back', 'Blocked'];
 
 const blankProject = {
   project_name: '',
   customer_name: '',
   source_platform: 'KVM',
   target_platform: 'VMware ESXi / vCenter',
-  migration_type: 'Any-to-any VM migration',
+  migration_type: 'Lift and shift',
   planned_start_date: '',
   planned_cutover_date: '',
   status: 'Planning',
@@ -43,54 +64,166 @@ const blankVm = {
   current_status: 'Discovered',
 };
 
-const statuses = ['Discovered', 'Assessed', 'Ready for migration', 'Replication prepared', 'Migration in progress', 'Cutover scheduled', 'Cutover completed', 'Validation completed', 'Failed', 'Rolled back', 'Blocked'];
-const platforms = ['KVM', 'VMware ESXi / vCenter', 'Nutanix AHV', 'Google Cloud Platform', 'AWS', 'Azure', 'Other'];
+const blankConnector = {
+  name: '',
+  connector_category: 'host',
+  connector_type: 'KVM',
+  endpoint: '',
+  port: 443,
+  username: '',
+  credential_reference: '',
+  environment: 'Lab',
+  status: 'Not validated',
+  notes: '',
+};
+
+const blankSettings = {
+  product_name: 'DS Replace',
+  company_name: 'Defined Solutions',
+  default_timezone: 'Asia/Riyadh',
+  retention_days: 365,
+  maintenance_window: '',
+  banner_message: '',
+};
 
 function App() {
+  const [token, setToken] = useState(localStorage.getItem(tokenKey) || '');
+  const [user, setUser] = useState(null);
   const [active, setActive] = useState('dashboard');
   const [summary, setSummary] = useState(null);
   const [projects, setProjects] = useState([]);
   const [vms, setVms] = useState([]);
   const [waves, setWaves] = useState([]);
-  const [profiles, setProfiles] = useState([]);
+  const [connectors, setConnectors] = useState([]);
+  const [settings, setSettings] = useState(blankSettings);
   const [projectForm, setProjectForm] = useState(blankProject);
+  const [editingProjectId, setEditingProjectId] = useState(null);
   const [vmForm, setVmForm] = useState(blankVm);
+  const [connectorForm, setConnectorForm] = useState(blankConnector);
+  const [loginForm, setLoginForm] = useState({ username: 'admin', password: '' });
   const [error, setError] = useState('');
 
+  const api = async (path, options = {}) => {
+    const response = await fetch(`/api${path}`, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(options.headers || {}),
+      },
+      ...options,
+    });
+    if (response.status === 401) {
+      localStorage.removeItem(tokenKey);
+      setToken('');
+      setUser(null);
+      throw new Error('Authentication required');
+    }
+    if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+    if (response.status === 204) return null;
+    return response.json();
+  };
+
   const load = async () => {
+    if (!token) return;
     setError('');
     try {
-      const [dashboard, projectRows, vmRows, waveRows, platformRows] = await Promise.all([
+      const [me, dashboard, projectRows, vmRows, waveRows, connectorRows, appSettings] = await Promise.all([
+        api('/auth/me'),
         api('/dashboard'),
         api('/projects'),
         api('/vms'),
         api('/waves'),
-        api('/platforms'),
+        api('/connectors'),
+        api('/settings'),
       ]);
+      setUser(me);
       setSummary(dashboard);
       setProjects(projectRows);
       setVms(vmRows);
       setWaves(waveRows);
-      setProfiles(platformRows);
+      setConnectors(connectorRows);
+      setSettings(appSettings);
       if (projectRows[0]) setVmForm((f) => ({ ...f, project_id: projectRows[0].id }));
     } catch (err) {
       setError(err.message);
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [token]);
 
-  const createProject = async (event) => {
+  const login = async (event) => {
     event.preventDefault();
-    await api('/projects', { method: 'POST', body: JSON.stringify(projectForm) });
+    setError('');
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(loginForm),
+      });
+      if (!response.ok) throw new Error('Invalid username or password');
+      const data = await response.json();
+      localStorage.setItem(tokenKey, data.access_token);
+      setToken(data.access_token);
+      setUser({ username: data.username, role: data.role });
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const logout = async () => {
+    try {
+      if (token) await api('/auth/logout', { method: 'POST' });
+    } catch (_) {
+      // Session may already be expired.
+    }
+    localStorage.removeItem(tokenKey);
+    setToken('');
+    setUser(null);
+  };
+
+  const saveProject = async (event) => {
+    event.preventDefault();
+    const payload = { ...projectForm };
+    const method = editingProjectId ? 'PUT' : 'POST';
+    const path = editingProjectId ? `/projects/${editingProjectId}` : '/projects';
+    await api(path, { method, body: JSON.stringify(payload) });
     setProjectForm(blankProject);
+    setEditingProjectId(null);
     await load();
+  };
+
+  const editProject = (project) => {
+    setProjectForm({
+      project_name: project.project_name,
+      customer_name: project.customer_name,
+      source_platform: project.source_platform,
+      target_platform: project.target_platform,
+      migration_type: project.migration_type,
+      planned_start_date: project.planned_start_date || '',
+      planned_cutover_date: project.planned_cutover_date || '',
+      status: project.status,
+      notes: project.notes || '',
+    });
+    setEditingProjectId(project.id);
   };
 
   const createVm = async (event) => {
     event.preventDefault();
     await api('/vms', { method: 'POST', body: JSON.stringify({ ...vmForm, project_id: Number(vmForm.project_id), cpu: Number(vmForm.cpu), memory_gb: Number(vmForm.memory_gb), disk_gb: Number(vmForm.disk_gb) }) });
     setVmForm((f) => ({ ...blankVm, project_id: f.project_id }));
+    await load();
+  };
+
+  const saveConnector = async (event) => {
+    event.preventDefault();
+    await api('/connectors', { method: 'POST', body: JSON.stringify({ ...connectorForm, port: Number(connectorForm.port) || null }) });
+    setConnectorForm(blankConnector);
+    await load();
+  };
+
+  const saveSettings = async (event) => {
+    event.preventDefault();
+    await api('/settings', { method: 'PUT', body: JSON.stringify({ ...settings, retention_days: Number(settings.retention_days) }) });
     await load();
   };
 
@@ -105,27 +238,30 @@ function App() {
     return rows.map((r) => r.map((c) => `"${String(c ?? '').replaceAll('"', '""')}"`).join(',')).join('\n');
   }, [vms]);
 
+  if (!token) return <Login form={loginForm} setForm={setLoginForm} submit={login} error={error} />;
+
   const nav = [
-    ['dashboard', BarChart3, 'Dashboard'],
-    ['projects', Layers3, 'Projects'],
-    ['inventory', Server, 'VM Inventory'],
-    ['platforms', CloudCog, 'Platforms'],
-    ['waves', Activity, 'Waves'],
+    ['dashboard', Gauge, 'Dashboard'],
+    ['projects', Layers, 'Projects'],
+    ['inventory', HardDrive, 'VM Inventory'],
+    ['hosts', ServerCog, 'Host Connectors'],
+    ['clouds', Cloud, 'Cloud Connectors'],
+    ['waves', CalendarClock, 'Waves'],
     ['reports', FileText, 'Reports'],
-    ['about', Settings, 'About'],
+    ['settings', Settings, 'Settings'],
   ];
 
   return (
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">DS</div>
-          <div><strong>DS Replace</strong><span>Defined Solutions</span></div>
+          <div className="brand-mark"><ShieldCheck size={28} /></div>
+          <div><strong>{settings.product_name || 'DS Replace'}</strong><span>{settings.company_name || 'Defined Solutions'}</span></div>
         </div>
         <nav>
           {nav.map(([key, Icon, label]) => (
             <button key={key} className={active === key ? 'active' : ''} onClick={() => setActive(key)} title={label}>
-              <Icon size={18} /> {label}
+              <span className="nav-icon"><Icon size={18} /></span>{label}
             </button>
           ))}
         </nav>
@@ -134,51 +270,63 @@ function App() {
       <main>
         <header className="topbar">
           <div>
-            <p>Defined Solutions</p>
+            <p>{settings.company_name || 'Defined Solutions'} / {user?.username}</p>
             <h1>{titleFor(active)}</h1>
           </div>
-          <button className="icon-button" onClick={load} title="Refresh data"><RefreshCw size={18} /></button>
+          <div className="toolbar">
+            <button className="icon-button" onClick={load} title="Refresh data"><RefreshCw size={18} /></button>
+            <button className="icon-button" onClick={logout} title="Log out"><LogOut size={18} /></button>
+          </div>
         </header>
+        {settings.banner_message && <div className="notice"><ShieldCheck size={20} /> {settings.banner_message}</div>}
         {error && <div className="alert">API error: {error}</div>}
 
-        {active === 'dashboard' && <Dashboard summary={summary} vms={vms} />}
-        {active === 'projects' && <Projects projects={projects} form={projectForm} setForm={setProjectForm} create={createProject} />}
+        {active === 'dashboard' && <Dashboard summary={summary} vms={vms} connectors={connectors} />}
+        {active === 'projects' && <Projects projects={projects} form={projectForm} setForm={setProjectForm} save={saveProject} editProject={editProject} editingProjectId={editingProjectId} cancel={() => { setProjectForm(blankProject); setEditingProjectId(null); }} />}
         {active === 'inventory' && <Inventory vms={vms} projects={projects} form={vmForm} setForm={setVmForm} create={createVm} changeStatus={changeStatus} />}
-        {active === 'platforms' && <Platforms profiles={profiles} />}
+        {active === 'hosts' && <Connectors title="Host Connector" category="host" rows={connectors.filter((c) => c.connector_category === 'host')} form={connectorForm} setForm={setConnectorForm} save={saveConnector} types={hostConnectorTypes} />}
+        {active === 'clouds' && <Connectors title="Cloud Connector" category="cloud" rows={connectors.filter((c) => c.connector_category === 'cloud')} form={connectorForm} setForm={setConnectorForm} save={saveConnector} types={cloudConnectorTypes} />}
         {active === 'waves' && <Waves waves={waves} />}
         {active === 'reports' && <Reports csv={csv} vms={vms} />}
-        {active === 'about' && <About />}
+        {active === 'settings' && <SettingsView settings={settings} setSettings={setSettings} save={saveSettings} user={user} />}
       </main>
     </div>
   );
 }
 
+function Login({ form, setForm, submit, error }) {
+  return <div className="login-screen"><form className="login-panel" onSubmit={submit}><div className="login-logo"><ShieldCheck size={34} /></div><h1>DS Replace</h1><p>Defined Solutions migration command center</p>{error && <div className="alert">{error}</div>}<Input label="Username" value={form.username} onChange={(v) => setForm({ ...form, username: v })} required /><Input label="Password" type="password" value={form.password} onChange={(v) => setForm({ ...form, password: v })} required /><button className="primary"><KeyRound size={16} /> Sign in</button></form></div>;
+}
+
 function titleFor(active) {
-  return ({ dashboard: 'Migration Command Center', projects: 'Migration Projects', inventory: 'VM Inventory', platforms: 'Source and Target Platforms', waves: 'Migration Waves', reports: 'Reports', about: 'Settings and About' })[active];
+  return ({ dashboard: 'Migration Command Center', projects: 'Saved Migration Projects', inventory: 'VM Inventory', hosts: 'Host Connectors', clouds: 'Cloud Connectors', waves: 'Migration Waves', reports: 'Reports', settings: 'Settings Control' })[active];
 }
 
-function Dashboard({ summary, vms }) {
+function Dashboard({ summary, vms, connectors }) {
   const cards = [
-    ['Total projects', summary?.total_projects ?? 0],
-    ['VMs discovered', summary?.vms_discovered ?? 0],
-    ['VMs planned', summary?.vms_planned ?? 0],
-    ['VMs migrated', summary?.vms_migrated ?? 0],
-    ['Failed or blocked', summary?.vms_failed_or_blocked ?? 0],
-    ['Progress', `${summary?.progress_percent ?? 0}%`],
+    ['Total projects', summary?.total_projects ?? 0, Layers],
+    ['VMs discovered', summary?.vms_discovered ?? 0, HardDrive],
+    ['VMs planned', summary?.vms_planned ?? 0, CalendarClock],
+    ['VMs migrated', summary?.vms_migrated ?? 0, ShieldCheck],
+    ['Failed or blocked', summary?.vms_failed_or_blocked ?? 0, Network],
+    ['Connectors', connectors.length, ServerCog],
   ];
-  return <section><div className="metric-grid">{cards.map(([label, value]) => <div className="metric" key={label}><span>{label}</span><strong>{value}</strong></div>)}</div><StatusBoard vms={vms} /></section>;
+  return <section><div className="metric-grid">{cards.map(([label, value, Icon]) => <div className="metric" key={label}><Icon size={22} /><span>{label}</span><strong>{value}</strong></div>)}</div><StatusBoard vms={vms} /></section>;
 }
 
-function Projects({ projects, form, setForm, create }) {
-  return <section className="split"><FormPanel title="Create migration project" onSubmit={create}><Input label="Project name" value={form.project_name} onChange={(v) => setForm({ ...form, project_name: v })} required /><Input label="Customer name" value={form.customer_name} onChange={(v) => setForm({ ...form, customer_name: v })} required /><Select label="Source platform" value={form.source_platform} options={platforms} onChange={(v) => setForm({ ...form, source_platform: v })} /><Select label="Target platform" value={form.target_platform} options={platforms} onChange={(v) => setForm({ ...form, target_platform: v })} /><Input label="Migration type" value={form.migration_type} onChange={(v) => setForm({ ...form, migration_type: v })} /><Input label="Planned start" value={form.planned_start_date} onChange={(v) => setForm({ ...form, planned_start_date: v })} /><Input label="Cutover date" value={form.planned_cutover_date} onChange={(v) => setForm({ ...form, planned_cutover_date: v })} /><button className="primary"><Plus size={16} /> Create project</button></FormPanel><Table rows={projects} columns={['project_name', 'customer_name', 'source_platform', 'target_platform', 'status']} /></section>;
+function Projects({ projects, form, setForm, save, editProject, editingProjectId, cancel }) {
+  const selectedTip = migrationTypes[form.migration_type] || migrationTypes['Any-to-any workflow'];
+  return <section className="split"><FormPanel title={editingProjectId ? 'Edit saved project' : 'Save migration project'} onSubmit={save}><Input label="Project name" value={form.project_name} onChange={(v) => setForm({ ...form, project_name: v })} required /><Input label="Customer name" value={form.customer_name} onChange={(v) => setForm({ ...form, customer_name: v })} required /><Select label="Source platform" value={form.source_platform} options={platforms} onChange={(v) => setForm({ ...form, source_platform: v })} /><Select label="Target platform" value={form.target_platform} options={platforms} onChange={(v) => setForm({ ...form, target_platform: v })} /><Select label="Migration type" value={form.migration_type} options={Object.keys(migrationTypes)} onChange={(v) => setForm({ ...form, migration_type: v })} /><div className="tip">{selectedTip}</div><Input label="Planned start" type="datetime-local" value={form.planned_start_date} onChange={(v) => setForm({ ...form, planned_start_date: v })} /><Input label="Cutover schedule" type="datetime-local" value={form.planned_cutover_date} onChange={(v) => setForm({ ...form, planned_cutover_date: v })} /><Input label="Status" value={form.status} onChange={(v) => setForm({ ...form, status: v })} /><TextArea label="Notes" value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} /><div className="button-row"><button className="primary"><Save size={16} /> {editingProjectId ? 'Save changes' : 'Save project'}</button>{editingProjectId && <button className="secondary" type="button" onClick={cancel}>Cancel</button>}</div></FormPanel><div className="table-wrap"><table><thead><tr><th>Project</th><th>Customer</th><th>Source</th><th>Target</th><th>Start</th><th>Cutover</th><th></th></tr></thead><tbody>{projects.map((p) => <tr key={p.id}><td>{p.project_name}</td><td>{p.customer_name}</td><td>{p.source_platform}</td><td>{p.target_platform}</td><td>{formatDateTime(p.planned_start_date)}</td><td>{formatDateTime(p.planned_cutover_date)}</td><td><button className="mini" onClick={() => editProject(p)}>Edit</button></td></tr>)}</tbody></table></div></section>;
 }
 
 function Inventory({ vms, projects, form, setForm, create, changeStatus }) {
   return <section className="split"><FormPanel title="Add VM manually" onSubmit={create}><Select label="Project" value={form.project_id} options={projects.map((p) => [p.id, p.project_name])} onChange={(v) => setForm({ ...form, project_id: v })} /><Input label="VM name" value={form.vm_name} onChange={(v) => setForm({ ...form, vm_name: v })} required /><Select label="Source" value={form.source_platform} options={platforms} onChange={(v) => setForm({ ...form, source_platform: v })} /><Select label="Target" value={form.target_platform} options={platforms} onChange={(v) => setForm({ ...form, target_platform: v })} /><Input label="CPU" type="number" value={form.cpu} onChange={(v) => setForm({ ...form, cpu: v })} /><Input label="Memory GB" type="number" value={form.memory_gb} onChange={(v) => setForm({ ...form, memory_gb: v })} /><Input label="Disk GB" type="number" value={form.disk_gb} onChange={(v) => setForm({ ...form, disk_gb: v })} /><Input label="Owner" value={form.application_owner} onChange={(v) => setForm({ ...form, application_owner: v })} /><button className="primary"><Plus size={16} /> Add VM</button></FormPanel><div className="table-wrap"><table><thead><tr><th>VM</th><th>Source</th><th>Target</th><th>Size</th><th>Status</th><th>Change status</th></tr></thead><tbody>{vms.map((vm) => <tr key={vm.id}><td>{vm.vm_name}</td><td>{vm.source_platform}</td><td>{vm.target_platform}</td><td>{vm.cpu} CPU / {vm.memory_gb} GB</td><td><Badge value={vm.current_status} /></td><td><select value={vm.current_status} onChange={(e) => changeStatus(vm, e.target.value)}>{statuses.map((s) => <option key={s}>{s}</option>)}</select></td></tr>)}</tbody></table></div></section>;
 }
 
-function Platforms({ profiles }) {
-  return <section><div className="notice"><Database size={20} /> Platform profiles are credential-reference placeholders for MVP. Real secrets are a roadmap item for vault-backed integrations.</div><Table rows={profiles} columns={['name', 'platform_type', 'endpoint', 'environment', 'credential_reference']} /></section>;
+function Connectors({ title, category, rows, form, setForm, save, types }) {
+  const scopedForm = form.connector_category === category ? form : { ...blankConnector, connector_category: category, connector_type: types[0] };
+  const update = (patch) => setForm({ ...scopedForm, ...patch, connector_category: category });
+  return <section className="split"><FormPanel title={`Add ${title}`} onSubmit={save}><Select label="Type" value={scopedForm.connector_type} options={types} onChange={(v) => update({ connector_type: v })} /><Input label="Connector name" value={scopedForm.name} onChange={(v) => update({ name: v })} required /><Input label="Endpoint / API URL" value={scopedForm.endpoint} onChange={(v) => update({ endpoint: v })} /><Input label="Port" type="number" value={scopedForm.port || ''} onChange={(v) => update({ port: v })} /><Input label="Username" value={scopedForm.username || ''} onChange={(v) => update({ username: v })} /><Input label="Credential reference" value={scopedForm.credential_reference || ''} onChange={(v) => update({ credential_reference: v })} /><Input label="Environment" value={scopedForm.environment || ''} onChange={(v) => update({ environment: v })} /><TextArea label="Notes" value={scopedForm.notes || ''} onChange={(v) => update({ notes: v })} /><div className="tip">Passwords are not stored here. Use a future vault reference such as vault://path/name or secret manager key ID.</div><button className="primary"><Plus size={16} /> Add connector</button></FormPanel><Table rows={rows} columns={['name', 'connector_type', 'endpoint', 'port', 'username', 'credential_reference', 'environment', 'status']} /></section>;
 }
 
 function Waves({ waves }) {
@@ -198,8 +346,8 @@ function Reports({ csv, vms }) {
   return <section><button className="primary" onClick={download}><FileText size={16} /> Export VM readiness CSV</button><StatusBoard vms={vms} /></section>;
 }
 
-function About() {
-  return <section className="about"><h2>DS Replace</h2><p>Defined Solutions any-to-any VM migration planning and tracking platform.</p><dl><dt>Version</dt><dd>1.0 RC1</dd><dt>MVP scope</dt><dd>Assessment, inventory, workflow tracking, waves, reports, and future-ready connector architecture.</dd><dt>Security roadmap</dt><dd>Authentication, RBAC, vault integration, audit logging, API tokens, and enterprise identity provider integration.</dd></dl></section>;
+function SettingsView({ settings, setSettings, save, user }) {
+  return <section className="split"><FormPanel title="Application settings" onSubmit={save}><Input label="Product name" value={settings.product_name || ''} onChange={(v) => setSettings({ ...settings, product_name: v })} /><Input label="Company name" value={settings.company_name || ''} onChange={(v) => setSettings({ ...settings, company_name: v })} /><Input label="Default timezone" value={settings.default_timezone || ''} onChange={(v) => setSettings({ ...settings, default_timezone: v })} /><Input label="Retention days" type="number" value={settings.retention_days || 365} onChange={(v) => setSettings({ ...settings, retention_days: v })} /><Input label="Maintenance window" value={settings.maintenance_window || ''} onChange={(v) => setSettings({ ...settings, maintenance_window: v })} /><TextArea label="Banner message" value={settings.banner_message || ''} onChange={(v) => setSettings({ ...settings, banner_message: v })} /><button className="primary"><Save size={16} /> Save settings</button></FormPanel><div className="about"><h2>Local authentication</h2><dl><dt>Signed in user</dt><dd>{user?.username}</dd><dt>Role</dt><dd>{user?.role}</dd><dt>Default admin</dt><dd>Seeded as username admin. Change the password source through environment variables before production use.</dd><dt>Version</dt><dd>1.0 RC1</dd></dl></div></section>;
 }
 
 function StatusBoard({ vms }) {
@@ -216,15 +364,24 @@ function FormPanel({ title, onSubmit, children }) {
 }
 
 function Input({ label, value, onChange, type = 'text', required = false }) {
-  return <label>{label}<input type={type} value={value} required={required} onChange={(e) => onChange(e.target.value)} /></label>;
+  return <label>{label}<input type={type} value={value ?? ''} required={required} onChange={(e) => onChange(e.target.value)} /></label>;
+}
+
+function TextArea({ label, value, onChange }) {
+  return <label>{label}<textarea value={value ?? ''} onChange={(e) => onChange(e.target.value)} /></label>;
 }
 
 function Select({ label, value, options, onChange }) {
-  return <label>{label}<select value={value} onChange={(e) => onChange(e.target.value)}>{options.map((o) => Array.isArray(o) ? <option key={o[0]} value={o[0]}>{o[1]}</option> : <option key={o}>{o}</option>)}</select></label>;
+  return <label>{label}<select value={value ?? ''} onChange={(e) => onChange(e.target.value)}>{options.map((o) => Array.isArray(o) ? <option key={o[0]} value={o[0]}>{o[1]}</option> : <option key={o}>{o}</option>)}</select></label>;
 }
 
 function Table({ rows, columns }) {
   return <div className="table-wrap"><table><thead><tr>{columns.map((c) => <th key={c}>{c.replaceAll('_', ' ')}</th>)}</tr></thead><tbody>{rows.map((row) => <tr key={row.id}>{columns.map((c) => <td key={c}>{String(row[c] ?? '-')}</td>)}</tr>)}</tbody></table></div>;
+}
+
+function formatDateTime(value) {
+  if (!value) return '-';
+  return value.replace('T', ' ');
 }
 
 createRoot(document.getElementById('root')).render(<App />);

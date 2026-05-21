@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -38,6 +38,22 @@ class PlatformProfile(TimestampMixin, Base):
     endpoint: Mapped[str | None] = mapped_column(String(255), nullable=True)
     environment: Mapped[str | None] = mapped_column(String(80), nullable=True)
     credential_reference: Mapped[str | None] = mapped_column(String(180), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ConnectorProfile(TimestampMixin, Base):
+    __tablename__ = "connector_profiles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    connector_category: Mapped[str] = mapped_column(String(40), index=True)
+    connector_type: Mapped[str] = mapped_column(String(80))
+    endpoint: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    username: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    credential_reference: Mapped[str | None] = mapped_column(String(180), nullable=True)
+    environment: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    status: Mapped[str] = mapped_column(String(60), default="Not validated")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
@@ -89,3 +105,35 @@ class VmStatusHistory(Base):
     changed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     vm: Mapped[VmInventory] = relationship(back_populates="history")
+
+
+class LocalUser(TimestampMixin, Base):
+    __tablename__ = "local_users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(40), default="admin")
+    is_active: Mapped[str] = mapped_column(String(8), default="true")
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("local_users.id", ondelete="CASCADE"))
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.utcnow() + timedelta(hours=12))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AppSetting(TimestampMixin, Base):
+    __tablename__ = "app_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    product_name: Mapped[str] = mapped_column(String(120), default="DS Replace")
+    company_name: Mapped[str] = mapped_column(String(160), default="Defined Solutions")
+    default_timezone: Mapped[str] = mapped_column(String(80), default="Asia/Riyadh")
+    retention_days: Mapped[int] = mapped_column(Integer, default=365)
+    maintenance_window: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    banner_message: Mapped[str | None] = mapped_column(String(255), nullable=True)

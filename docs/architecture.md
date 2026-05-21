@@ -24,6 +24,7 @@ DS Replace uses a three-tier application architecture deployed with Docker Compo
 - Owns validation and workflow state changes.
 - Creates database tables at startup for the MVP.
 - Exposes OpenAPI documentation.
+- Provides local username/password authentication with bearer sessions.
 
 `database`
 
@@ -38,6 +39,10 @@ DS Replace uses a three-tier application architecture deployed with Docker Compo
 - `VmInventory`: VM assessment and migration state.
 - `MigrationWave`: planned migration grouping and window.
 - `VmStatusHistory`: audit trail for VM migration status changes.
+- `LocalUser`: local login user with hashed password.
+- `AuthSession`: bearer token session hash and expiry.
+- `ConnectorProfile`: host and cloud connector metadata with credential references.
+- `AppSetting`: editable product and UI settings.
 
 ## Future Integration Points
 
