@@ -293,7 +293,7 @@ def validate_connector(connector_id: int, db: Session = Depends(get_db), _user: 
     if not connector:
         raise HTTPException(404, "Connector not found")
     if connector.connector_type == "KVM":
-        result = validate_kvm(connector.endpoint, connector.username)
+        result = validate_kvm(connector.endpoint, connector.username, connector.credential_reference)
     elif connector.connector_type in {"VMware ESXi / vCenter", "VMware ESXi", "vCenter"}:
         result = validate_vcenter(connector.endpoint, connector.username, connector.credential_reference)
     else:
@@ -319,7 +319,7 @@ def discover_connector(connector_id: int, payload: schemas.DiscoveryRequest, db:
     if not connector:
         raise HTTPException(404, "Connector not found")
     if connector.connector_type == "KVM":
-        result = discover_kvm(connector.endpoint, connector.username)
+        result = discover_kvm(connector.endpoint, connector.username, connector.credential_reference)
     elif connector.connector_type in {"VMware ESXi / vCenter", "VMware ESXi", "vCenter"}:
         result = discover_vcenter(connector.endpoint, connector.username, connector.credential_reference)
     else:
@@ -493,7 +493,16 @@ def create_migration_job(payload: schemas.MigrationJobCreate, db: Session = Depe
         raise HTTPException(404, "Source or target connector not found")
     if source.connector_type != "KVM" or target.connector_type not in {"VMware ESXi / vCenter", "VMware ESXi", "vCenter"}:
         raise HTTPException(400, "Only KVM to ESXi/vCenter migration preflight is implemented in this engine")
-    result = build_kvm_to_esxi_preflight(source.endpoint, target.endpoint, payload.vm_name, payload.target_datastore)
+    result = build_kvm_to_esxi_preflight(
+        source.endpoint,
+        source.username,
+        source.credential_reference,
+        target.endpoint,
+        target.username,
+        target.credential_reference,
+        payload.vm_name,
+        payload.target_datastore,
+    )
     job = models.MigrationJob(
         source_connector_id=source.id,
         target_connector_id=target.id,

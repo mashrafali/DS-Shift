@@ -24,6 +24,8 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-dsreplace}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB:-dsreplace}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      KVM_PASSWORD: ${KVM_PASSWORD:-}
+      VCENTER_PASSWORD: ${VCENTER_PASSWORD:-}
     depends_on:
       database:
         condition: service_healthy

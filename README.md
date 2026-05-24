@@ -62,14 +62,14 @@ The seeded lab admin is `admin` with the configured `ADMIN_INITIAL_PASSWORD`.
 
 ## Discovery and Migration Engine
 
-- KVM discovery uses SSH plus `virsh` against connector endpoints such as `qemu+ssh://root@kvm/system`.
-- vCenter discovery uses `govc` with password references such as `env:VCENTER_PASSWORD`.
-- KVM to ESXi/vCenter migration jobs currently build a `virt-v2v` preflight runbook and validate local engine dependencies.
-- The engine container must have access to SSH credentials, `govc`, and `virt-v2v` before discovery or migration preflight can pass end to end.
+- KVM discovery uses Python SSH plus `virsh` against connector endpoints such as `qemu+ssh://root@kvm/system`.
+- vCenter discovery uses the VMware SDK for Python with password references such as `env:VCENTER_PASSWORD`.
+- KVM to ESXi/vCenter migration jobs run a non-destructive migration test preflight: source connector validation, source VM inspection, target vCenter validation, and live conversion tool checks.
+- The engine container must receive `KVM_PASSWORD` and `VCENTER_PASSWORD` through `.env` for lab testing. Live conversion still requires `qemu-img` and `virt-v2v`.
 
 ## MVP Limitations
 
-- Discovery engines are implemented for KVM and vCenter, but they require reachable endpoints and runtime credentials.
-- KVM to ESXi/vCenter migration is implemented as a preflight/runbook engine. Live execution still requires explicit operational approval.
+- Discovery engines are implemented for KVM and vCenter and require reachable endpoints and runtime credentials.
+- KVM to ESXi/vCenter migration testing is implemented as a non-destructive preflight/runbook engine. Live execution still requires explicit operational approval.
 - No production RBAC yet.
 - No external certificate automation yet.

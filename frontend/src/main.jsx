@@ -425,7 +425,9 @@ function MigrationEngine({ connectors, form, setForm, save, jobs, discoveryRuns 
   const hostConnectors = connectors.filter((c) => c.connector_category === 'host');
   const kvmConnectors = hostConnectors.filter((c) => c.connector_type === 'KVM');
   const vmwareConnectors = hostConnectors.filter((c) => c.connector_type.includes('VMware') || c.connector_type.includes('vCenter'));
-  return <section className="split"><FormPanel title="KVM to ESXi migration preflight" onSubmit={save}><Select label="Source KVM connector" value={form.source_connector_id} options={kvmConnectors.map((c) => [c.id, c.name])} onChange={(v) => setForm({ ...form, source_connector_id: v })} /><Select label="Target ESXi / vCenter connector" value={form.target_connector_id} options={vmwareConnectors.map((c) => [c.id, c.name])} onChange={(v) => setForm({ ...form, target_connector_id: v })} /><Input label="Source VM name" value={form.vm_name} onChange={(v) => setForm({ ...form, vm_name: v })} required /><Input label="Target VM name" value={form.target_name} onChange={(v) => setForm({ ...form, target_name: v })} /><Input label="Target datastore" value={form.target_datastore} onChange={(v) => setForm({ ...form, target_datastore: v })} /><div className="tip">This creates a real migration runbook and checks local engine dependencies. Live migration execution remains approval-gated.</div><button className="primary"><Play size={16} /> Create preflight job</button></FormPanel><div className="stack"><Table rows={jobs} columns={['vm_name', 'migration_type', 'status', 'message']} /><Table rows={discoveryRuns} columns={['connector_id', 'status', 'message']} /></div></section>;
+  const latestJob = jobs[0];
+  const runbook = parseJsonArray(latestJob?.runbook_json);
+  return <section className="split"><FormPanel title="KVM to ESXi migration test preflight" onSubmit={save}><Select label="Source KVM connector" value={form.source_connector_id} options={kvmConnectors.map((c) => [c.id, c.name])} onChange={(v) => setForm({ ...form, source_connector_id: v })} /><Select label="Target ESXi / vCenter connector" value={form.target_connector_id} options={vmwareConnectors.map((c) => [c.id, c.name])} onChange={(v) => setForm({ ...form, target_connector_id: v })} /><Input label="Source VM name" value={form.vm_name} onChange={(v) => setForm({ ...form, vm_name: v })} required /><Input label="Target VM name" value={form.target_name} onChange={(v) => setForm({ ...form, target_name: v })} /><Input label="Target datastore" value={form.target_datastore} onChange={(v) => setForm({ ...form, target_datastore: v })} /><div className="tip">This performs a non-destructive migration test preflight: source KVM validation, source VM inspection, target vCenter validation, and live conversion tool checks. It does not run virt-v2v.</div><button className="primary"><Play size={16} /> Create test preflight</button></FormPanel><div className="stack"><Table rows={jobs} columns={['vm_name', 'migration_type', 'status', 'message']} />{runbook.length > 0 && <div className="table-wrap"><table><thead><tr><th>Latest preflight item</th><th>Result / Command</th></tr></thead><tbody>{runbook.map((item, index) => <tr key={`${item.check || item.step}-${index}`}><td>{item.check || item.step}</td><td>{item.message || item.command}</td></tr>)}</tbody></table></div>}<Table rows={discoveryRuns} columns={['connector_id', 'status', 'message']} /></div></section>;
 }
 
 function Waves({ waves }) {
@@ -486,6 +488,16 @@ function Table({ rows, columns }) {
 function formatDateTime(value) {
   if (!value) return '-';
   return value.replace('T', ' ');
+}
+
+function parseJsonArray(value) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 createRoot(document.getElementById('root')).render(<App />);

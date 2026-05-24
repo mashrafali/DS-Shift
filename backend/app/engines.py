@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 from dataclasses import dataclass
 from urllib.parse import urlparse
+
+import paramiko
+from pyVim.connect import Disconnect, SmartConnect
+from pyVmomi import vim
 
 
 @dataclass
@@ -22,171 +26,233 @@ def _run(command: list[str], timeout: int = 45, env: dict[str, str] | None = Non
     return subprocess.run(command, text=True, capture_output=True, timeout=timeout, env=env, check=False)
 
 
-def _ssh_target(endpoint: str | None, username: str | None) -> str:
+def _credential_from_env(reference: str | None) -> str | None:
+    if reference and reference.startswith("env:"):
+        return os.getenv(reference.split(":", 1)[1])
+    return None
+
+
+def _ssh_parts(endpoint: str | None, username: str | None) -> tuple[str, int, str]:
     if not endpoint:
         raise ValueError("Connector endpoint is required")
     parsed = urlparse(endpoint)
     if parsed.scheme.startswith("qemu+ssh"):
         host = parsed.hostname or ""
         user = parsed.username or username or "root"
-        return f"{user}@{host}" if host else endpoint.replace("qemu+ssh://", "").split("/")[0]
-    if "@" in endpoint:
-        return endpoint.split("/")[0]
-    host = endpoint.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
-    user = username or "root"
-    return f"{user}@{host}"
+        port = parsed.port or 22
+    else:
+        host_port = endpoint.replace("https://", "").replace("http://", "").split("/")[0]
+        host = host_port.split(":", 1)[0]
+        user = username or (endpoint.split("@", 1)[0] if "@" in endpoint else "root")
+        port = int(host_port.split(":", 1)[1]) if ":" in host_port and host_port.rsplit(":", 1)[1].isdigit() else 22
+    if not host:
+        raise ValueError("Connector host could not be parsed from endpoint")
+    return host, port, user
 
 
-def discover_kvm(endpoint: str | None, username: str | None) -> EngineResult:
-    if not shutil.which("ssh"):
-        return EngineResult(False, "openssh-client is not installed in the backend container", [], ["ssh"])
-    target = _ssh_target(endpoint, username)
-    list_cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", target, "virsh list --all --name"]
-    listed = _run(list_cmd)
-    commands = [" ".join(list_cmd)]
-    if listed.returncode != 0:
-        return EngineResult(False, "KVM discovery failed. SSH key or virsh access is not available.", [], commands, listed.stderr + listed.stdout)
-    records = []
-    for name in [line.strip() for line in listed.stdout.splitlines() if line.strip()]:
-        info_cmd = ["ssh", "-o", "BatchMode=yes", target, f"virsh dominfo {name!r}; echo __BLK__; virsh domblklist {name!r}; echo __IF__; virsh domiflist {name!r}"]
-        result = _run(info_cmd)
-        commands.append(" ".join(info_cmd))
-        text = result.stdout
-        cpu = _match_int(text, r"CPU\(s\):\s+(\d+)") or 0
-        mem_kib = _match_int(text, r"Max memory:\s+(\d+) KiB") or _match_int(text, r"Used memory:\s+(\d+) KiB") or 0
-        state = _match_text(text, r"State:\s+(.+)") or "unknown"
-        disks = [line.split()[-1] for line in _section(text, "__BLK__", "__IF__").splitlines() if line.strip().startswith(("vd", "sd", "hd"))]
-        nics = [line.split()[0:5] for line in _section(text, "__IF__", None).splitlines() if line.strip().startswith("vnet")]
-        records.append(
-            {
-                "vm_name": name,
-                "source_platform": "KVM",
-                "cpu": cpu,
-                "memory_gb": round(mem_kib / 1024 / 1024),
-                "disk_gb": 0,
-                "os_type": "Unknown",
-                "ip_address": None,
-                "current_status": "Discovered",
-                "power_state": state,
-                "disks": disks,
-                "nics": nics,
-            }
-        )
-    return EngineResult(True, f"Discovered {len(records)} KVM VMs", records, commands, listed.stdout)
-
-
-def validate_kvm(endpoint: str | None, username: str | None) -> EngineResult:
-    if not shutil.which("ssh"):
-        return EngineResult(False, "openssh-client is not installed in the backend container", [], ["ssh <kvm-host> true"])
-    try:
-        target = _ssh_target(endpoint, username)
-    except ValueError as exc:
-        return EngineResult(False, str(exc), [], [])
-    commands = [
-        f"ssh -o BatchMode=yes -o ConnectTimeout=5 {target} true",
-        f"ssh -o BatchMode=yes -o ConnectTimeout=5 {target} virsh list --all --name",
-    ]
-    ssh_check = _run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", target, "true"], timeout=10)
-    if ssh_check.returncode != 0:
-        return EngineResult(False, "KVM validation failed. SSH access is not available from the backend container.", [], commands, ssh_check.stderr + ssh_check.stdout)
-    virsh_check = _run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", target, "virsh", "list", "--all", "--name"], timeout=15)
-    if virsh_check.returncode != 0:
-        return EngineResult(False, "KVM validation failed. SSH works, but virsh access failed.", [], commands, virsh_check.stderr + virsh_check.stdout)
-    return EngineResult(True, "KVM connector validated. SSH and virsh are reachable.", [], commands, virsh_check.stdout)
-
-
-def discover_vcenter(endpoint: str | None, username: str | None, credential_reference: str | None) -> EngineResult:
-    if not shutil.which("govc"):
-        return EngineResult(False, "govc is not installed in the backend container. Install govc or provide an engine image with govc.", [], ["govc find / -type m"])
-    if not endpoint or not username:
-        return EngineResult(False, "vCenter endpoint and username are required", [], [])
+def _ssh_client(endpoint: str | None, username: str | None, credential_reference: str | None) -> paramiko.SSHClient:
+    host, port, user = _ssh_parts(endpoint, username)
     password = _credential_from_env(credential_reference)
-    if not password:
-        return EngineResult(False, "vCenter password is not available. Use credential_reference env:VARIABLE_NAME for MVP execution.", [], [])
-    env = {**os.environ, "GOVC_URL": endpoint, "GOVC_USERNAME": username, "GOVC_PASSWORD": password, "GOVC_INSECURE": "1"}
-    find_cmd = ["govc", "find", "/", "-type", "m"]
-    found = _run(find_cmd, timeout=60, env=env)
-    commands = ["GOVC_URL=<redacted> GOVC_USERNAME=<redacted> govc find / -type m"]
-    if found.returncode != 0:
-        return EngineResult(False, "vCenter discovery failed through govc", [], commands, found.stderr + found.stdout)
-    records = []
-    for path in [line.strip() for line in found.stdout.splitlines() if line.strip()][:100]:
-        info_cmd = ["govc", "vm.info", "-json", path]
-        info = _run(info_cmd, timeout=30, env=env)
-        commands.append(f"govc vm.info -json {path!r}")
-        if info.returncode != 0:
-            continue
-        try:
-            payload = json.loads(info.stdout)
-            vm = payload["VirtualMachines"][0]
-            config = vm.get("Config", {})
-            runtime = vm.get("Runtime", {})
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(
+        hostname=host,
+        port=port,
+        username=user,
+        password=password,
+        look_for_keys=not bool(password),
+        allow_agent=not bool(password),
+        timeout=10,
+        banner_timeout=10,
+        auth_timeout=10,
+    )
+    return client
+
+
+def _ssh_exec(client: paramiko.SSHClient, command: str, timeout: int = 30) -> tuple[int, str, str]:
+    stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
+    code = stdout.channel.recv_exit_status()
+    return code, stdout.read().decode(errors="replace"), stderr.read().decode(errors="replace")
+
+
+def validate_kvm(endpoint: str | None, username: str | None, credential_reference: str | None = None) -> EngineResult:
+    commands = ["SSH connect", "virsh list --all --name"]
+    try:
+        with _ssh_client(endpoint, username, credential_reference) as client:
+            code, out, err = _ssh_exec(client, "virsh list --all --name", timeout=15)
+            if code != 0:
+                return EngineResult(False, "KVM validation failed. SSH works, but virsh access failed.", [], commands, err + out)
+            return EngineResult(True, "KVM connector validated. SSH and virsh are reachable.", [], commands, out)
+    except Exception as exc:
+        return EngineResult(False, f"KVM validation failed: {exc}", [], commands)
+
+
+def discover_kvm(endpoint: str | None, username: str | None, credential_reference: str | None = None) -> EngineResult:
+    commands = ["virsh list --all --name"]
+    try:
+        client = _ssh_client(endpoint, username, credential_reference)
+    except Exception as exc:
+        return EngineResult(False, f"KVM discovery failed. SSH access is not available: {exc}", [], commands)
+    records: list[dict] = []
+    try:
+        code, listed, err = _ssh_exec(client, "virsh list --all --name", timeout=20)
+        if code != 0:
+            return EngineResult(False, "KVM discovery failed. virsh access is not available.", [], commands, err + listed)
+        for name in [line.strip() for line in listed.splitlines() if line.strip()]:
+            command = f"virsh dominfo {name!r}; echo __BLK__; virsh domblklist {name!r}; echo __IF__; virsh domiflist {name!r}; echo __ADDR__; virsh domifaddr {name!r} || true"
+            code, text, detail_err = _ssh_exec(client, command, timeout=30)
+            commands.append(command)
+            if code != 0:
+                continue
+            cpu = _match_int(text, r"CPU\(s\):\s+(\d+)") or 0
+            mem_kib = _match_int(text, r"Max memory:\s+(\d+) KiB") or _match_int(text, r"Used memory:\s+(\d+) KiB") or 0
+            state = _match_text(text, r"State:\s+(.+)") or "unknown"
+            disks = _parse_kvm_disks(_section(text, "__BLK__", "__IF__"))
+            ip_address = _match_text(_section(text, "__ADDR__", None), r"ipv4\s+([0-9.]+)/")
             records.append(
                 {
-                    "vm_name": config.get("Name") or path.rsplit("/", 1)[-1],
-                    "source_platform": "VMware ESXi / vCenter",
-                    "cpu": config.get("Hardware", {}).get("NumCPU") or 0,
-                    "memory_gb": round((config.get("Hardware", {}).get("MemoryMB") or 0) / 1024),
-                    "disk_gb": 0,
-                    "os_type": config.get("GuestFullName") or "Unknown",
-                    "ip_address": vm.get("Guest", {}).get("IpAddress"),
+                    "vm_name": name,
+                    "source_platform": "KVM",
+                    "cpu": cpu,
+                    "memory_gb": round(mem_kib / 1024 / 1024),
+                    "disk_gb": sum(disk.get("size_gb", 0) for disk in disks),
+                    "os_type": "Unknown",
+                    "ip_address": ip_address,
                     "current_status": "Discovered",
-                    "power_state": runtime.get("PowerState"),
-                    "path": path,
+                    "power_state": state,
+                    "disks": disks,
+                    "nics": _parse_kvm_nics(_section(text, "__IF__", "__ADDR__")),
+                    "raw_error": detail_err,
                 }
             )
-        except (KeyError, json.JSONDecodeError):
-            continue
-    return EngineResult(True, f"Discovered {len(records)} vCenter VMs", records, commands, found.stdout)
+        return EngineResult(True, f"Discovered {len(records)} KVM VMs", records, commands, listed)
+    finally:
+        client.close()
+
+
+def _vc_host(endpoint: str | None) -> str | None:
+    if not endpoint:
+        return None
+    parsed = urlparse(endpoint if "://" in endpoint else f"https://{endpoint}")
+    return parsed.hostname
+
+
+def _vc_connect(endpoint: str | None, username: str | None, credential_reference: str | None):
+    host = _vc_host(endpoint)
+    password = _credential_from_env(credential_reference)
+    if not host or not username or not password:
+        raise ValueError("vCenter validation requires endpoint, username, and an env: credential reference available in the backend container")
+    context = ssl._create_unverified_context()
+    return SmartConnect(host=host, user=username, pwd=password, sslContext=context, connectionPoolTimeout=20)
 
 
 def validate_vcenter(endpoint: str | None, username: str | None, credential_reference: str | None) -> EngineResult:
-    if not shutil.which("govc"):
-        return EngineResult(False, "govc is not installed in the backend container", [], ["govc about"])
-    password = _credential_from_env(credential_reference)
-    if not endpoint or not username or not password:
-        return EngineResult(False, "vCenter validation requires endpoint, username, and an env: credential reference available in the backend container", [], ["govc about"])
-    env = {**os.environ, "GOVC_URL": endpoint, "GOVC_USERNAME": username, "GOVC_PASSWORD": password, "GOVC_INSECURE": "1"}
-    result = _run(["govc", "about"], timeout=20, env=env)
-    commands = ["GOVC_URL=<redacted> GOVC_USERNAME=<redacted> govc about"]
-    if result.returncode != 0:
-        return EngineResult(False, "vCenter validation failed. govc could not connect to the endpoint.", [], commands, result.stderr + result.stdout)
-    return EngineResult(True, "vCenter connector validated. govc connected successfully.", [], commands, result.stdout)
+    commands = ["pyvmomi SmartConnect", "Retrieve ServiceContent.About"]
+    try:
+        service_instance = _vc_connect(endpoint, username, credential_reference)
+        try:
+            about = service_instance.RetrieveContent().about
+            return EngineResult(True, f"vCenter connector validated. Connected to {about.fullName}.", [], commands)
+        finally:
+            Disconnect(service_instance)
+    except Exception as exc:
+        return EngineResult(False, f"vCenter validation failed: {exc}", [], commands)
 
 
-def build_kvm_to_esxi_preflight(source_endpoint: str | None, target_endpoint: str | None, vm_name: str, target_datastore: str | None) -> EngineResult:
-    required = ["ssh", "virt-v2v", "qemu-img", "govc"]
-    missing = [tool for tool in required if not shutil.which(tool)]
+def discover_vcenter(endpoint: str | None, username: str | None, credential_reference: str | None) -> EngineResult:
+    commands = ["pyvmomi SmartConnect", "ContainerView VirtualMachine"]
+    try:
+        service_instance = _vc_connect(endpoint, username, credential_reference)
+    except Exception as exc:
+        return EngineResult(False, f"vCenter discovery failed: {exc}", [], commands)
+    records: list[dict] = []
+    try:
+        content = service_instance.RetrieveContent()
+        view = content.viewManager.CreateContainerView(content.rootFolder, [vim.VirtualMachine], True)
+        try:
+            for vm_obj in view.view[:250]:
+                summary = vm_obj.summary
+                config = summary.config
+                runtime = summary.runtime
+                guest = summary.guest
+                disks = []
+                for device in vm_obj.config.hardware.device if vm_obj.config and vm_obj.config.hardware else []:
+                    if isinstance(device, vim.vm.device.VirtualDisk):
+                        disks.append({"label": device.deviceInfo.label, "size_gb": round((device.capacityInKB or 0) / 1024 / 1024)})
+                records.append(
+                    {
+                        "vm_name": config.name,
+                        "source_platform": "VMware ESXi / vCenter",
+                        "cpu": config.numCpu or 0,
+                        "memory_gb": round((config.memorySizeMB or 0) / 1024),
+                        "disk_gb": sum(disk["size_gb"] for disk in disks),
+                        "os_type": config.guestFullName or "Unknown",
+                        "ip_address": guest.ipAddress,
+                        "current_status": "Discovered",
+                        "power_state": str(runtime.powerState),
+                        "disks": disks,
+                        "path": _inventory_path(vm_obj),
+                    }
+                )
+        finally:
+            view.Destroy()
+        return EngineResult(True, f"Discovered {len(records)} vCenter VMs", records, commands)
+    finally:
+        Disconnect(service_instance)
+
+
+def build_kvm_to_esxi_preflight(
+    source_endpoint: str | None,
+    source_username: str | None,
+    source_credential_reference: str | None,
+    target_endpoint: str | None,
+    target_username: str | None,
+    target_credential_reference: str | None,
+    vm_name: str,
+    target_datastore: str | None,
+) -> EngineResult:
     source_uri = source_endpoint or "qemu+ssh://root@kvm/system"
     datastore = target_datastore or "<target-vmware-datastore>"
     commands = [
-        "ssh <kvm-host> virsh domstate <vm-name>",
-        "ssh <kvm-host> virsh domblklist <vm-name>",
-        "virt-v2v -ic qemu+ssh://<kvm-host>/system <vm-name> -o vpx -os <datastore> -op <password-file>",
+        "KVM SSH/virsh source validation",
+        "vCenter pyvmomi target validation",
+        "Check qemu-img and virt-v2v for live conversion execution",
     ]
     runbook = [
-        {
-            "step": "Validate source VM state and disks",
-            "command": f"virsh -c {source_uri} domblklist {vm_name}",
-        },
-        {
-            "step": "Run conversion to VMware vCenter/ESXi",
-            "command": f"virt-v2v -ic {source_uri} {vm_name} -o vpx -os {datastore} -op /run/secrets/vcenter-password",
-        },
-        {
-            "step": "Validate target inventory",
-            "command": f"govc vm.info {vm_name}",
-        },
+        {"step": "Validate source KVM connector", "command": "SSH connect and run virsh list --all --name"},
+        {"step": "Validate target vCenter connector", "command": "pyvmomi SmartConnect and retrieve ServiceContent.About"},
+        {"step": "Inspect source VM state", "command": f"virsh -c {source_uri} domstate {vm_name}"},
+        {"step": "Inspect source VM disks", "command": f"virsh -c {source_uri} domblklist {vm_name}"},
+        {"step": "Live conversion command", "command": f"virt-v2v -ic {source_uri} {vm_name} -o vpx -os {datastore} -op /run/secrets/vcenter-password"},
+        {"step": "Validate target VM inventory", "command": f"pyvmomi/govc vm lookup for {vm_name}"},
     ]
-    if missing:
-        return EngineResult(False, f"Migration preflight blocked. Missing tools: {', '.join(missing)}", runbook, commands)
-    return EngineResult(True, "Migration preflight passed locally. Live execution still requires explicit approval and target credentials.", runbook, commands)
 
+    source_check = validate_kvm(source_endpoint, source_username, source_credential_reference)
+    target_check = validate_vcenter(target_endpoint, target_username, target_credential_reference)
+    records = [
+        {"check": "source_kvm", "ok": source_check.ok, "message": source_check.message},
+        {"check": "target_vcenter", "ok": target_check.ok, "message": target_check.message},
+    ]
 
-def _credential_from_env(reference: str | None) -> str | None:
-    if reference and reference.startswith("env:"):
-        return os.getenv(reference.split(":", 1)[1])
-    return None
+    if source_check.ok:
+        try:
+            with _ssh_client(source_endpoint, source_username, source_credential_reference) as client:
+                code, state, err = _ssh_exec(client, f"virsh domstate {vm_name!r}", timeout=15)
+                records.append({"check": "source_vm_state", "ok": code == 0, "message": state.strip() if code == 0 else err.strip()})
+                code, disks, err = _ssh_exec(client, f"virsh domblklist {vm_name!r}", timeout=15)
+                records.append({"check": "source_vm_disks", "ok": code == 0, "message": disks.strip() if code == 0 else err.strip()})
+        except Exception as exc:
+            records.append({"check": "source_vm_inspection", "ok": False, "message": str(exc)})
+
+    live_missing = [tool for tool in ["qemu-img", "virt-v2v"] if not shutil.which(tool)]
+    records.append({"check": "live_conversion_tools", "ok": not live_missing, "message": ", ".join(live_missing) if live_missing else "qemu-img and virt-v2v available"})
+
+    failed = [record for record in records if not record["ok"] and record["check"] != "live_conversion_tools"]
+    if failed:
+        return EngineResult(False, "Migration test preflight blocked. Source or target validation failed.", records + runbook, commands)
+    if live_missing:
+        return EngineResult(False, f"Migration test preflight passed for connectors, but live conversion is blocked until tools are installed: {', '.join(live_missing)}", records + runbook, commands)
+    return EngineResult(True, "Migration test preflight passed. Live execution still requires explicit approval.", records + runbook, commands)
 
 
 def _match_int(text: str, pattern: str) -> int | None:
@@ -206,3 +272,32 @@ def _section(text: str, start: str, end: str | None) -> str:
     if end and end in section:
         section = section.split(end, 1)[0]
     return section
+
+
+def _parse_kvm_disks(text: str) -> list[dict]:
+    disks = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] not in {"Target", "-"} and parts[0].startswith(("vd", "sd", "hd")):
+            disks.append({"target": parts[0], "source": parts[-1], "size_gb": 0})
+    return disks
+
+
+def _parse_kvm_nics(text: str) -> list[dict]:
+    nics = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 5 and parts[0].startswith("vnet"):
+            nics.append({"interface": parts[0], "type": parts[1], "source": parts[2], "model": parts[3], "mac": parts[4]})
+    return nics
+
+
+def _inventory_path(obj) -> str:
+    names = []
+    current = obj
+    while current:
+        name = getattr(current, "name", None)
+        if name:
+            names.append(name)
+        current = getattr(current, "parent", None)
+    return "/" + "/".join(reversed(names))

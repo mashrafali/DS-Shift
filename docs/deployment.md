@@ -36,6 +36,22 @@ curl -k -I https://localhost
 ./scripts/validate.sh
 ```
 
+## Migration Testing Credentials
+
+For lab migration testing, set connector credential references to environment-backed values and keep the real passwords only in `.env`:
+
+```bash
+KVM_PASSWORD=<kvm-password>
+VCENTER_PASSWORD=<vcenter-password>
+```
+
+Use these connector credential references in the UI:
+
+- KVM connector: `env:KVM_PASSWORD`
+- vCenter connector: `env:VCENTER_PASSWORD`
+
+The release-candidate engine validates and discovers real KVM and vCenter inventory without storing these passwords in PostgreSQL. Live KVM-to-ESXi conversion remains gated and additionally requires `qemu-img` and `virt-v2v` in the runtime.
+
 ## Backup
 
 ```bash

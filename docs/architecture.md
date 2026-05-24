@@ -26,9 +26,9 @@ DS Replace uses a three-tier application architecture deployed with Docker Compo
 - Creates database tables at startup for the MVP.
 - Exposes OpenAPI documentation.
 - Provides local username/password authentication with bearer sessions.
-- Provides KVM discovery through SSH and `virsh`.
-- Provides vCenter discovery through `govc`.
-- Provides KVM-to-ESXi/vCenter migration preflight job creation using a `virt-v2v` runbook model.
+- Provides KVM discovery through Python SSH and `virsh`.
+- Provides vCenter discovery through the VMware SDK for Python.
+- Provides KVM-to-ESXi/vCenter migration test preflight job creation using connector validation, source VM inspection, target validation, and a `virt-v2v` runbook model.
 
 `database`
 
@@ -54,8 +54,8 @@ DS Replace uses a three-tier application architecture deployed with Docker Compo
 
 The migration engine is intentionally split into safe preflight and live execution phases:
 
-- Discovery runs call real tools and record success or failure.
-- Migration jobs create a real runbook for KVM-to-ESXi/vCenter conversion and validate required local tools.
+- Discovery runs call real KVM/vCenter APIs or command interfaces and record success or failure.
+- Migration jobs create a non-destructive KVM-to-ESXi/vCenter test preflight and validate the live execution tool requirements.
 - Live migration execution is not triggered automatically from the MVP UI.
 - Runtime credentials should be injected through environment variables, mounted SSH keys, Docker secrets, or a future vault integration.
 

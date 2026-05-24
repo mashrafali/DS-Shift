@@ -43,11 +43,11 @@ Host Connectors store KVM, VMware ESXi / vCenter, and Nutanix AHV endpoint metad
 Cloud Connectors store GCP, AWS, Azure, and other cloud endpoint metadata.
 Passwords are not stored directly; use a credential reference placeholder until vault integration is implemented.
 
-Use `Discover` on a KVM connector to run SSH and `virsh` discovery. Use `Discover` on a VMware ESXi / vCenter connector to run `govc` discovery. Discovery results are listed on the Migration Engine page.
+Use `Discover` on a KVM connector to run SSH and `virsh` discovery. Use `Discover` on a VMware ESXi / vCenter connector to run VMware SDK discovery. Discovery results are listed on the Migration Engine page.
 
 ## Migration Engine
 
-The Migration Engine page creates KVM-to-ESXi/vCenter preflight jobs. Select a source KVM connector, a target ESXi/vCenter connector, the source VM name, and the target datastore. DS Replace records the generated runbook and reports whether required local tools are available.
+The Migration Engine page creates KVM-to-ESXi/vCenter test preflight jobs. Select a source KVM connector, a target ESXi/vCenter connector, the source VM name, and the target datastore. DS Replace validates the source connector, inspects the source VM, validates the target vCenter connector, records the generated runbook, and reports whether live conversion tools are available.
 
 Live migration execution is intentionally not automatic in the MVP. Review the preflight result, verify credentials and rollback planning, and obtain explicit operational approval before enabling execution.
 
