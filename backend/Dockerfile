@@ -6,6 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 RUN dnf -y --setopt=install_weak_deps=False --nodocs install python3.12 python3.12-pip openssh-clients qemu-img virt-v2v \
     && dnf clean all
+RUN ln -sf /usr/bin/python3.12 /usr/local/bin/python \
+    && ln -sf /usr/bin/pip3.12 /usr/local/bin/pip
 COPY requirements.txt .
 RUN python3.12 -m pip install --no-cache-dir -r requirements.txt
 
