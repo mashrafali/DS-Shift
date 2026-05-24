@@ -52,6 +52,8 @@ Use these connector credential references in the UI:
 
 The release-candidate engine validates and discovers real KVM and vCenter inventory without storing these passwords in PostgreSQL. Live KVM-to-ESXi conversion remains gated and additionally requires `qemu-img` and `virt-v2v` in the runtime.
 
+For key-based KVM access, create an engine SSH key under `/opt/ds-replace/engine-ssh` on the application VM, install the public key on the KVM host, and set the KVM connector credential reference to `ssh-key:container`. The Compose deployment mounts `./engine-ssh` read-only into the backend container as `/root/.ssh`.
+
 ## Backup
 
 ```bash
