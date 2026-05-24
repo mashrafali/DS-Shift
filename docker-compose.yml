@@ -26,6 +26,9 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       KVM_PASSWORD: ${KVM_PASSWORD:-}
       VCENTER_PASSWORD: ${VCENTER_PASSWORD:-}
+    extra_hosts:
+      - "kvm:192.168.0.9"
+      - "vcsa.test.local:192.168.0.11"
     depends_on:
       database:
         condition: service_healthy
