@@ -299,11 +299,10 @@ function App() {
         is_active: userForm.is_active === 'true',
         profile_photo: userForm.profile_photo || null,
       };
-      if (editingUserId) {
-        await api(`/users/${editingUserId}`, { method: 'PUT', body: JSON.stringify(payload) });
-      } else {
-        await api('/users', { method: 'POST', body: JSON.stringify(payload) });
-      }
+      const savedUser = editingUserId
+        ? await api(`/users/${editingUserId}`, { method: 'PUT', body: JSON.stringify(payload) })
+        : await api('/users', { method: 'POST', body: JSON.stringify(payload) });
+      if (savedUser.id === user?.id) setUser(savedUser);
       setUserForm(blankUser);
       setEditingUserId(null);
       await load();
@@ -415,15 +414,17 @@ function App() {
           </div>
           <div className="toolbar">
             <button className="icon-button" onClick={load} title="Refresh data"><RefreshCw size={18} /></button>
-            <div className="signed-in-user" title={`Signed in as ${user?.username || 'Loading user'}`}>
+            <div className="signed-in-user">
               <UserAvatar user={user} />
-              <div>
-                <span>Signed in as</span>
+              <div className="user-card-details" title={`Signed in as ${user?.username || 'Loading user'}`}>
                 <strong>{user?.username || 'Loading...'}</strong>
                 <small>{user?.role || ''}</small>
               </div>
+              <button className="user-card-logout" onClick={logout} title="Sign out" aria-label="Sign out">
+                <LogOut size={16} />
+                <span>Sign out</span>
+              </button>
             </div>
-            <button className="icon-button" onClick={logout} title="Log out"><LogOut size={18} /></button>
           </div>
         </header>
         {settings.banner_message && <div className="notice"><Building2 size={20} /> {settings.banner_message}</div>}

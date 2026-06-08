@@ -67,17 +67,18 @@ button { cursor: pointer; }
 .signed-in-user {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 58px;
-  padding: 10px 12px;
+  gap: 8px;
+  min-height: 44px;
+  padding: 5px 6px 5px 8px;
   color: #172235;
   background: #fff;
   border: 1px solid #d9e4ee;
-  border-radius: 8px;
+  border-radius: 7px;
+  box-shadow: 0 2px 8px rgba(7, 28, 51, 0.05);
 }
 .user-avatar {
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   flex: 0 0 auto;
   display: grid;
   place-items: center;
@@ -88,11 +89,24 @@ button { cursor: pointer; }
 }
 .user-avatar.large { width: 72px; height: 72px; }
 .user-avatar img { width: 100%; height: 100%; display: block; object-fit: cover; }
-.signed-in-user div { min-width: 0; }
-.signed-in-user span, .signed-in-user strong, .signed-in-user small { display: block; }
-.signed-in-user span { color: #607386; font-size: 11px; }
-.signed-in-user strong { margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
-.signed-in-user small { margin-top: 2px; color: #0b7f8d; font-size: 11px; text-transform: capitalize; }
+.user-card-details { min-width: 80px; max-width: 150px; }
+.user-card-details strong, .user-card-details small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-card-details strong { font-size: 12px; line-height: 1.15; }
+.user-card-details small { margin-top: 2px; color: #0b7f8d; font-size: 10px; line-height: 1; text-transform: capitalize; }
+.user-card-logout {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  color: #8a2430;
+  background: #fff1f2;
+  border: 0;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 750;
+}
+.user-card-logout:hover { color: #fff; background: #a72f3c; }
 nav { display: grid; gap: 8px; }
 nav button {
   width: 100%;
@@ -212,4 +226,5 @@ dd { margin: 6px 0 0; color: #44596f; }
   .topbar { align-items: flex-start; }
   .toolbar { flex-wrap: wrap; justify-content: flex-end; }
   .signed-in-user { order: -1; }
+  .user-card-logout span { display: none; }
 }
