@@ -167,6 +167,7 @@ class UserPublic(BaseModel):
     username: str
     role: str
     is_active: bool = True
+    profile_photo: Optional[str] = None
 
 
 class UserCreate(BaseModel):
@@ -174,12 +175,15 @@ class UserCreate(BaseModel):
     password: str
     role: str = "operator"
     is_active: bool = True
+    profile_photo: Optional[str] = None
 
 
 class UserUpdate(BaseModel):
+    username: Optional[str] = None
     password: Optional[str] = None
-    role: str = "operator"
-    is_active: bool = True
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+    profile_photo: Optional[str] = None
 
 
 class SettingsBase(BaseModel):

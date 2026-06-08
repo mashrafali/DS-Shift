@@ -1,9 +1,12 @@
 from collections import Counter
 from datetime import datetime, timedelta
+import base64
+import binascii
 import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
@@ -29,6 +32,9 @@ MIGRATION_STATUSES = {
     "Rolled back",
     "Blocked",
 }
+USER_ROLES = {"admin", "operator", "viewer"}
+PROFILE_PHOTO_PATTERN = re.compile(r"^data:image/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$")
+MAX_PROFILE_PHOTO_BYTES = 256 * 1024
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
 app.add_middleware(
@@ -59,6 +65,52 @@ def verify_password(password: str, stored_hash: str) -> bool:
 
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def validate_profile_photo(profile_photo: str | None) -> str | None:
+    if not profile_photo:
+        return None
+    match = PROFILE_PHOTO_PATTERN.fullmatch(profile_photo)
+    if not match:
+        raise HTTPException(400, "Profile photo must be a PNG, JPEG, or WebP image")
+    try:
+        photo_bytes = base64.b64decode(match.group(2), validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(400, "Profile photo contains invalid base64 data")
+    if len(photo_bytes) > MAX_PROFILE_PHOTO_BYTES:
+        raise HTTPException(400, "Profile photo must be 256 KB or smaller")
+    image_type = match.group(1)
+    signatures_valid = (
+        image_type == "png" and photo_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+        or image_type == "jpeg" and photo_bytes.startswith(b"\xff\xd8\xff")
+        or image_type == "webp" and photo_bytes.startswith(b"RIFF") and photo_bytes[8:12] == b"WEBP"
+    )
+    if not signatures_valid:
+        raise HTTPException(400, "Profile photo content does not match its image type")
+    return profile_photo
+
+
+def validate_user_role(role: str) -> str:
+    if role not in USER_ROLES:
+        raise HTTPException(400, "Role must be admin, operator, or viewer")
+    return role
+
+
+def user_public(user: models.LocalUser) -> schemas.UserPublic:
+    return schemas.UserPublic(
+        id=user.id,
+        username=user.username,
+        role=user.role,
+        is_active=user.is_active == "true",
+        profile_photo=user.profile_photo,
+    )
+
+
+def active_admin_count(db: Session) -> int:
+    return db.query(models.LocalUser).filter(
+        models.LocalUser.role == "admin",
+        models.LocalUser.is_active == "true",
+    ).count()
 
 
 def seed_defaults(db: Session) -> None:
@@ -93,6 +145,8 @@ def admin_user(user: models.LocalUser = Depends(current_user)) -> models.LocalUs
 @app.on_event("startup")
 def startup() -> None:
     Base.metadata.create_all(bind=engine)
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE local_users ADD COLUMN IF NOT EXISTS profile_photo TEXT"))
     db = next(get_db())
     try:
         seed_defaults(db)
@@ -139,45 +193,81 @@ def logout(authorization: str | None = Header(default=None), db: Session = Depen
 
 @app.get("/api/auth/me", response_model=schemas.UserPublic)
 def me(user: models.LocalUser = Depends(current_user)):
-    return schemas.UserPublic(id=user.id, username=user.username, role=user.role, is_active=user.is_active == "true")
+    return user_public(user)
 
 
 @app.get("/api/users", response_model=list[schemas.UserPublic])
 def list_users(db: Session = Depends(get_db), _admin: models.LocalUser = Depends(admin_user)):
-    return [
-        schemas.UserPublic(id=user.id, username=user.username, role=user.role, is_active=user.is_active == "true")
-        for user in db.query(models.LocalUser).order_by(models.LocalUser.username).all()
-    ]
+    return [user_public(user) for user in db.query(models.LocalUser).order_by(models.LocalUser.username).all()]
 
 
 @app.post("/api/users", response_model=schemas.UserPublic, status_code=201)
 def create_user(payload: schemas.UserCreate, db: Session = Depends(get_db), _admin: models.LocalUser = Depends(admin_user)):
-    if db.query(models.LocalUser).filter(models.LocalUser.username == payload.username).first():
+    username = payload.username.strip()
+    if not username:
+        raise HTTPException(400, "Username is required")
+    if not payload.password:
+        raise HTTPException(400, "Password is required")
+    if db.query(models.LocalUser).filter(models.LocalUser.username == username).first():
         raise HTTPException(409, "Username already exists")
     user = models.LocalUser(
-        username=payload.username,
+        username=username,
         password_hash=hash_password(payload.password),
-        role=payload.role,
+        role=validate_user_role(payload.role),
         is_active="true" if payload.is_active else "false",
+        profile_photo=validate_profile_photo(payload.profile_photo),
     )
     db.add(user)
     db.commit()
     db.refresh(user)
-    return user
+    return user_public(user)
 
 
 @app.put("/api/users/{user_id}", response_model=schemas.UserPublic)
-def update_user(user_id: int, payload: schemas.UserUpdate, db: Session = Depends(get_db), _admin: models.LocalUser = Depends(admin_user)):
+def update_user(user_id: int, payload: schemas.UserUpdate, db: Session = Depends(get_db), admin: models.LocalUser = Depends(admin_user)):
     user = db.get(models.LocalUser, user_id)
     if not user:
         raise HTTPException(404, "User not found")
+    next_role = validate_user_role(payload.role) if payload.role is not None else user.role
+    next_active = payload.is_active if payload.is_active is not None else user.is_active == "true"
+    if user.id == admin.id and (next_role != "admin" or not next_active):
+        raise HTTPException(400, "You cannot demote or deactivate your own account")
+    if user.role == "admin" and user.is_active == "true" and (next_role != "admin" or not next_active) and active_admin_count(db) <= 1:
+        raise HTTPException(400, "At least one active administrator is required")
+    if payload.username is not None:
+        username = payload.username.strip()
+        if not username:
+            raise HTTPException(400, "Username is required")
+        existing = db.query(models.LocalUser).filter(
+            models.LocalUser.username == username,
+            models.LocalUser.id != user.id,
+        ).first()
+        if existing:
+            raise HTTPException(409, "Username already exists")
+        user.username = username
     if payload.password:
         user.password_hash = hash_password(payload.password)
-    user.role = payload.role
-    user.is_active = "true" if payload.is_active else "false"
+    user.role = next_role
+    user.is_active = "true" if next_active else "false"
+    if "profile_photo" in payload.model_fields_set:
+        user.profile_photo = validate_profile_photo(payload.profile_photo)
     db.commit()
     db.refresh(user)
-    return user
+    return user_public(user)
+
+
+@app.delete("/api/users/{user_id}", status_code=204)
+def delete_user(user_id: int, db: Session = Depends(get_db), admin: models.LocalUser = Depends(admin_user)):
+    user = db.get(models.LocalUser, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+    if user.id == admin.id:
+        raise HTTPException(400, "You cannot delete your own account")
+    if user.role == "admin" and user.is_active == "true" and active_admin_count(db) <= 1:
+        raise HTTPException(400, "At least one active administrator is required")
+    db.delete(user)
+    db.commit()
+    return Response(status_code=204)
 
 
 @app.get("/api/dashboard", response_model=schemas.DashboardSummary)

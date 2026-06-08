@@ -21,8 +21,8 @@ import {
   Search,
   ServerCog,
   Settings,
+  Trash2,
   UserRound,
-  UserPlus,
   Users,
   X,
 } from 'lucide-react';
@@ -99,6 +99,7 @@ const blankUser = {
   password: '',
   role: 'operator',
   is_active: 'true',
+  profile_photo: '',
 };
 
 const blankMigrationJob = {
@@ -130,6 +131,7 @@ function App() {
   const [editingConnectorId, setEditingConnectorId] = useState(null);
   const [connectorResult, setConnectorResult] = useState(null);
   const [userForm, setUserForm] = useState(blankUser);
+  const [editingUserId, setEditingUserId] = useState(null);
   const [migrationJobForm, setMigrationJobForm] = useState(blankMigrationJob);
   const [loginForm, setLoginForm] = useState({ username: 'admin', password: '' });
   const [error, setError] = useState('');
@@ -290,9 +292,55 @@ function App() {
 
   const saveUser = async (event) => {
     event.preventDefault();
-    await api('/users', { method: 'POST', body: JSON.stringify(userForm) });
+    setError('');
+    try {
+      const payload = {
+        ...userForm,
+        is_active: userForm.is_active === 'true',
+        profile_photo: userForm.profile_photo || null,
+      };
+      if (editingUserId) {
+        await api(`/users/${editingUserId}`, { method: 'PUT', body: JSON.stringify(payload) });
+      } else {
+        await api('/users', { method: 'POST', body: JSON.stringify(payload) });
+      }
+      setUserForm(blankUser);
+      setEditingUserId(null);
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const editUser = (row) => {
+    setUserForm({
+      username: row.username,
+      password: '',
+      role: row.role,
+      is_active: String(row.is_active),
+      profile_photo: row.profile_photo || '',
+    });
+    setEditingUserId(row.id);
+  };
+
+  const deleteUser = async (row) => {
+    if (!window.confirm(`Delete user "${row.username}"? This action cannot be undone.`)) return;
+    setError('');
+    try {
+      await api(`/users/${row.id}`, { method: 'DELETE' });
+      if (editingUserId === row.id) {
+        setUserForm(blankUser);
+        setEditingUserId(null);
+      }
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const cancelUserEdit = () => {
     setUserForm(blankUser);
-    await load();
+    setEditingUserId(null);
   };
 
   const discoverConnector = async (connector, projectId = '') => {
@@ -339,6 +387,7 @@ function App() {
     ['engine', ArrowRightLeft, 'Migration Engine'],
     ['waves', CalendarClock, 'Waves'],
     ['reports', FileText, 'Reports'],
+    ...(user?.role === 'admin' ? [['users', Users, 'Users']] : []),
     ['settings', Settings, 'Settings'],
   ];
 
@@ -348,14 +397,6 @@ function App() {
         <div className="brand">
           <div className="brand-mark"><DcMigrationMark /></div>
           <div><strong>{settings.product_name || 'DS Replace'}</strong><span>{settings.company_name || 'Defined Solutions'}</span></div>
-        </div>
-        <div className="signed-in-user" title={`Signed in as ${user?.username || 'Loading user'}`}>
-          <span className="user-avatar"><UserRound size={20} /></span>
-          <div>
-            <span>Signed in as</span>
-            <strong>{user?.username || 'Loading...'}</strong>
-            <small>{user?.role || ''}</small>
-          </div>
         </div>
         <nav>
           {nav.map(([key, Icon, label]) => (
@@ -374,6 +415,14 @@ function App() {
           </div>
           <div className="toolbar">
             <button className="icon-button" onClick={load} title="Refresh data"><RefreshCw size={18} /></button>
+            <div className="signed-in-user" title={`Signed in as ${user?.username || 'Loading user'}`}>
+              <UserAvatar user={user} />
+              <div>
+                <span>Signed in as</span>
+                <strong>{user?.username || 'Loading...'}</strong>
+                <small>{user?.role || ''}</small>
+              </div>
+            </div>
             <button className="icon-button" onClick={logout} title="Log out"><LogOut size={18} /></button>
           </div>
         </header>
@@ -388,7 +437,8 @@ function App() {
         {active === 'engine' && <MigrationEngine connectors={connectors} form={migrationJobForm} setForm={setMigrationJobForm} save={createMigrationJob} jobs={migrationJobs} discoveryRuns={discoveryRuns} />}
         {active === 'waves' && <Waves waves={waves} />}
         {active === 'reports' && <Reports csv={csv} vms={vms} />}
-        {active === 'settings' && <SettingsView settings={settings} setSettings={setSettings} save={saveSettings} user={user} users={users} userForm={userForm} setUserForm={setUserForm} saveUser={saveUser} />}
+        {active === 'users' && user?.role === 'admin' && <UsersView currentUser={user} users={users} form={userForm} setForm={setUserForm} save={saveUser} edit={editUser} remove={deleteUser} editingUserId={editingUserId} cancel={cancelUserEdit} setError={setError} />}
+        {active === 'settings' && <SettingsView settings={settings} setSettings={setSettings} save={saveSettings} user={user} />}
       </main>
     </div>
   );
@@ -399,7 +449,7 @@ function Login({ form, setForm, submit, error }) {
 }
 
 function titleFor(active) {
-  return ({ dashboard: 'Migration Command Center', projects: 'Saved Migration Projects', inventory: 'VM Inventory', hosts: 'Host Connectors', clouds: 'Cloud Connectors', engine: 'Discovery and Migration Engine', waves: 'Migration Waves', reports: 'Reports', settings: 'Settings Control' })[active];
+  return ({ dashboard: 'Migration Command Center', projects: 'Saved Migration Projects', inventory: 'VM Inventory', hosts: 'Host Connectors', clouds: 'Cloud Connectors', engine: 'Discovery and Migration Engine', waves: 'Migration Waves', reports: 'Reports', users: 'User Management', settings: 'Settings Control' })[active];
 }
 
 function Dashboard({ summary, vms, connectors }) {
@@ -456,8 +506,36 @@ function Reports({ csv, vms }) {
   return <section><button className="primary" onClick={download}><FileText size={16} /> Export VM readiness CSV</button><StatusBoard vms={vms} /></section>;
 }
 
-function SettingsView({ settings, setSettings, save, user, users, userForm, setUserForm, saveUser }) {
-  return <section className="split"><div className="stack"><FormPanel title="Application settings" onSubmit={save}><Input label="Product name" value={settings.product_name || ''} onChange={(v) => setSettings({ ...settings, product_name: v })} /><Input label="Company name" value={settings.company_name || ''} onChange={(v) => setSettings({ ...settings, company_name: v })} /><Input label="Default timezone" value={settings.default_timezone || ''} onChange={(v) => setSettings({ ...settings, default_timezone: v })} /><Input label="Retention days" type="number" value={settings.retention_days || 365} onChange={(v) => setSettings({ ...settings, retention_days: v })} /><Input label="Maintenance window" value={settings.maintenance_window || ''} onChange={(v) => setSettings({ ...settings, maintenance_window: v })} /><TextArea label="Banner message" value={settings.banner_message || ''} onChange={(v) => setSettings({ ...settings, banner_message: v })} /><button className="primary"><Save size={16} /> Save settings</button></FormPanel><FormPanel title="Add local user" onSubmit={saveUser}><Input label="Username" value={userForm.username} onChange={(v) => setUserForm({ ...userForm, username: v })} required /><Input label="Password" type="password" value={userForm.password} onChange={(v) => setUserForm({ ...userForm, password: v })} required /><Select label="Role" value={userForm.role} options={['admin', 'operator', 'viewer']} onChange={(v) => setUserForm({ ...userForm, role: v })} /><Select label="Active" value={userForm.is_active} options={['true', 'false']} onChange={(v) => setUserForm({ ...userForm, is_active: v })} /><button className="primary"><UserPlus size={16} /> Add user</button></FormPanel></div><div className="stack"><div className="about"><h2>Local authentication</h2><dl><dt>Signed in user</dt><dd>{user?.username}</dd><dt>Role</dt><dd>{user?.role}</dd><dt>User management</dt><dd>Admins can add users here. Passwords are stored as PBKDF2 hashes in the backend database.</dd></dl></div><div className="table-wrap"><table><thead><tr><th><Users size={14} /> User</th><th>Role</th><th>Active</th></tr></thead><tbody>{users.map((row) => <tr key={row.id || row.username}><td>{row.username}</td><td>{row.role}</td><td>{row.is_active}</td></tr>)}</tbody></table></div></div></section>;
+function UsersView({ currentUser, users, form, setForm, save, edit, remove, editingUserId, cancel, setError }) {
+  const readPhoto = (file) => {
+    if (!file) return;
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      setError('Profile photo must be a PNG, JPEG, or WebP image');
+      return;
+    }
+    if (file.size > 256 * 1024) {
+      setError('Profile photo must be 256 KB or smaller');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setError('');
+      setForm({ ...form, profile_photo: String(reader.result) });
+    };
+    reader.onerror = () => setError('Unable to read the selected profile photo');
+    reader.readAsDataURL(file);
+  };
+  return <section className="split"><FormPanel title={editingUserId ? 'Edit user' : 'Create user'} onSubmit={save}><div className="profile-photo-editor"><UserAvatar user={{ username: form.username, profile_photo: form.profile_photo }} large /><label className="photo-picker">Profile photo<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => readPhoto(event.target.files?.[0])} /></label>{form.profile_photo && <button className="secondary" type="button" onClick={() => setForm({ ...form, profile_photo: '' })}>Remove photo</button>}</div><Input label="Username" value={form.username} onChange={(v) => setForm({ ...form, username: v })} required /><Input label={editingUserId ? 'New password (leave blank to keep current)' : 'Password'} type="password" value={form.password} onChange={(v) => setForm({ ...form, password: v })} required={!editingUserId} /><Select label="Role" value={form.role} options={['admin', 'operator', 'viewer']} onChange={(v) => setForm({ ...form, role: v })} /><Select label="Active" value={form.is_active} options={[['true', 'Active'], ['false', 'Inactive']]} onChange={(v) => setForm({ ...form, is_active: v })} /><div className="tip">Profile photos must be PNG, JPEG, or WebP and no larger than 256 KB.</div><div className="button-row"><button className="primary"><Save size={16} /> {editingUserId ? 'Save changes' : 'Create user'}</button>{editingUserId && <button className="secondary" type="button" onClick={cancel}><X size={16} /> Cancel</button>}</div></FormPanel><div className="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>{users.map((row) => <tr key={row.id}><td><div className="user-table-identity"><UserAvatar user={row} /><div><strong>{row.username}</strong>{row.id === currentUser?.id && <span>Current user</span>}</div></div></td><td><Badge value={row.role} /></td><td><Badge value={row.is_active ? 'Active' : 'Inactive'} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini danger-button" disabled={row.id === currentUser?.id} onClick={() => remove(row)}><Trash2 size={14} /> Delete</button></div></td></tr>)}</tbody></table></div></section>;
+}
+
+function SettingsView({ settings, setSettings, save, user }) {
+  return <section className="split"><FormPanel title="Application settings" onSubmit={save}><Input label="Product name" value={settings.product_name || ''} onChange={(v) => setSettings({ ...settings, product_name: v })} /><Input label="Company name" value={settings.company_name || ''} onChange={(v) => setSettings({ ...settings, company_name: v })} /><Input label="Default timezone" value={settings.default_timezone || ''} onChange={(v) => setSettings({ ...settings, default_timezone: v })} /><Input label="Retention days" type="number" value={settings.retention_days || 365} onChange={(v) => setSettings({ ...settings, retention_days: v })} /><Input label="Maintenance window" value={settings.maintenance_window || ''} onChange={(v) => setSettings({ ...settings, maintenance_window: v })} /><TextArea label="Banner message" value={settings.banner_message || ''} onChange={(v) => setSettings({ ...settings, banner_message: v })} /><button className="primary"><Save size={16} /> Save settings</button></FormPanel><div className="about"><h2>Local authentication</h2><dl><dt>Signed in user</dt><dd>{user?.username}</dd><dt>Role</dt><dd>{user?.role}</dd><dt>User management</dt><dd>Administrators manage accounts and profile photos from the dedicated Users page.</dd></dl></div></section>;
+}
+
+function UserAvatar({ user, large = false }) {
+  const className = `user-avatar${large ? ' large' : ''}`;
+  if (user?.profile_photo) return <span className={className}><img src={user.profile_photo} alt={`${user.username || 'User'} profile`} /></span>;
+  return <span className={className}><UserRound size={large ? 34 : 20} /></span>;
 }
 
 function DcMigrationMark() {
@@ -470,7 +548,7 @@ function StatusBoard({ vms }) {
 
 function Badge({ value }) {
   const normalized = (value || '').toLowerCase();
-  const kind = normalized.includes('failed') || normalized.includes('blocked') || normalized.includes('rolled') ? 'danger' : normalized.includes('completed') || normalized.includes('validated') ? 'success' : 'neutral';
+  const kind = normalized.includes('failed') || normalized.includes('blocked') || normalized.includes('rolled') || normalized === 'inactive' ? 'danger' : normalized.includes('completed') || normalized.includes('validated') || normalized === 'active' ? 'success' : 'neutral';
   return <span className={`badge ${kind}`}>{value}</span>;
 }
 

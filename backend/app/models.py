@@ -115,6 +115,7 @@ class LocalUser(TimestampMixin, Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(40), default="admin")
     is_active: Mapped[str] = mapped_column(String(8), default="true")
+    profile_photo: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class AuthSession(Base):
