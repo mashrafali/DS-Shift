@@ -127,12 +127,15 @@ function App() {
   const [settings, setSettings] = useState(blankSettings);
   const [projectForm, setProjectForm] = useState(blankProject);
   const [editingProjectId, setEditingProjectId] = useState(null);
+  const [editProjectForm, setEditProjectForm] = useState(blankProject);
   const [vmForm, setVmForm] = useState(blankVm);
   const [connectorForm, setConnectorForm] = useState(blankConnector);
   const [editingConnectorId, setEditingConnectorId] = useState(null);
+  const [editConnectorForm, setEditConnectorForm] = useState(blankConnector);
   const [connectorResult, setConnectorResult] = useState(null);
   const [userForm, setUserForm] = useState(blankUser);
   const [editingUserId, setEditingUserId] = useState(null);
+  const [editUserForm, setEditUserForm] = useState(blankUser);
   const [migrationJobForm, setMigrationJobForm] = useState(blankMigrationJob);
   const [loginForm, setLoginForm] = useState({ username: 'admin', password: '' });
   const [error, setError] = useState('');
@@ -223,17 +226,21 @@ function App() {
 
   const saveProject = async (event) => {
     event.preventDefault();
-    const payload = { ...projectForm };
-    const method = editingProjectId ? 'PUT' : 'POST';
-    const path = editingProjectId ? `/projects/${editingProjectId}` : '/projects';
-    await api(path, { method, body: JSON.stringify(payload) });
+    await api('/projects', { method: 'POST', body: JSON.stringify(projectForm) });
     setProjectForm(blankProject);
+    await load();
+  };
+
+  const saveProjectEdit = async (event) => {
+    event.preventDefault();
+    await api(`/projects/${editingProjectId}`, { method: 'PUT', body: JSON.stringify(editProjectForm) });
     setEditingProjectId(null);
+    setEditProjectForm(blankProject);
     await load();
   };
 
   const editProject = (project) => {
-    setProjectForm({
+    setEditProjectForm({
       project_name: project.project_name,
       customer_name: project.customer_name,
       source_platform: project.source_platform,
@@ -257,24 +264,28 @@ function App() {
   const saveConnector = async (event) => {
     event.preventDefault();
     const payload = { ...connectorForm, port: Number(connectorForm.port) || null };
-    if (editingConnectorId) {
-      await api(`/connectors/${editingConnectorId}`, { method: 'PUT', body: JSON.stringify(payload) });
-    } else {
-      await api('/connectors', { method: 'POST', body: JSON.stringify(payload) });
-    }
+    await api('/connectors', { method: 'POST', body: JSON.stringify(payload) });
     setConnectorForm(blankConnector);
+    await load();
+  };
+
+  const saveConnectorEdit = async (event) => {
+    event.preventDefault();
+    const payload = { ...editConnectorForm, port: Number(editConnectorForm.port) || null };
+    await api(`/connectors/${editingConnectorId}`, { method: 'PUT', body: JSON.stringify(payload) });
     setEditingConnectorId(null);
+    setEditConnectorForm(blankConnector);
     await load();
   };
 
   const editConnector = (connector) => {
-    setConnectorForm({ ...connector, port: connector.port || '' });
+    setEditConnectorForm({ ...connector, port: connector.port || '' });
     setEditingConnectorId(connector.id);
     setConnectorResult(null);
   };
 
   const cancelConnectorEdit = () => {
-    setConnectorForm(blankConnector);
+    setEditConnectorForm(blankConnector);
     setEditingConnectorId(null);
     setConnectorResult(null);
   };
@@ -300,12 +311,27 @@ function App() {
         is_active: userForm.is_active === 'true',
         profile_photo: userForm.profile_photo || null,
       };
-      const savedUser = editingUserId
-        ? await api(`/users/${editingUserId}`, { method: 'PUT', body: JSON.stringify(payload) })
-        : await api('/users', { method: 'POST', body: JSON.stringify(payload) });
-      if (savedUser.id === user?.id) setUser(savedUser);
+      await api('/users', { method: 'POST', body: JSON.stringify(payload) });
       setUserForm(blankUser);
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const saveUserEdit = async (event) => {
+    event.preventDefault();
+    setError('');
+    try {
+      const payload = {
+        ...editUserForm,
+        is_active: editUserForm.is_active === 'true',
+        profile_photo: editUserForm.profile_photo || null,
+      };
+      const savedUser = await api(`/users/${editingUserId}`, { method: 'PUT', body: JSON.stringify(payload) });
+      if (savedUser.id === user?.id) setUser(savedUser);
       setEditingUserId(null);
+      setEditUserForm(blankUser);
       await load();
     } catch (err) {
       setError(err.message);
@@ -313,7 +339,7 @@ function App() {
   };
 
   const editUser = (row) => {
-    setUserForm({
+    setEditUserForm({
       username: row.username,
       password: '',
       role: row.role,
@@ -329,7 +355,7 @@ function App() {
     try {
       await api(`/users/${row.id}`, { method: 'DELETE' });
       if (editingUserId === row.id) {
-        setUserForm(blankUser);
+        setEditUserForm(blankUser);
         setEditingUserId(null);
       }
       await load();
@@ -339,7 +365,7 @@ function App() {
   };
 
   const cancelUserEdit = () => {
-    setUserForm(blankUser);
+    setEditUserForm(blankUser);
     setEditingUserId(null);
   };
 
@@ -432,14 +458,14 @@ function App() {
         {error && <div className="alert">API error: {error}</div>}
 
         {active === 'dashboard' && <Dashboard summary={summary} vms={vms} connectors={connectors} />}
-        {active === 'projects' && <Projects projects={projects} form={projectForm} setForm={setProjectForm} save={saveProject} editProject={editProject} editingProjectId={editingProjectId} cancel={() => { setProjectForm(blankProject); setEditingProjectId(null); }} />}
+        {active === 'projects' && <Projects projects={projects} form={projectForm} setForm={setProjectForm} save={saveProject} editProject={editProject} editingProjectId={editingProjectId} editForm={editProjectForm} setEditForm={setEditProjectForm} saveEdit={saveProjectEdit} cancelEdit={() => { setEditProjectForm(blankProject); setEditingProjectId(null); }} />}
         {active === 'inventory' && <Inventory vms={vms} projects={projects} form={vmForm} setForm={setVmForm} create={createVm} changeStatus={changeStatus} />}
-        {active === 'hosts' && <Connectors title="Host Connector" category="host" rows={connectors.filter((c) => c.connector_category === 'host')} form={connectorForm} setForm={setConnectorForm} save={saveConnector} types={hostConnectorTypes} discover={discoverConnector} validate={validateConnector} edit={editConnector} cancel={cancelConnectorEdit} editingConnectorId={editingConnectorId} result={connectorResult} />}
-        {active === 'clouds' && <Connectors title="Cloud Connector" category="cloud" rows={connectors.filter((c) => c.connector_category === 'cloud')} form={connectorForm} setForm={setConnectorForm} save={saveConnector} types={cloudConnectorTypes} discover={discoverConnector} validate={validateConnector} edit={editConnector} cancel={cancelConnectorEdit} editingConnectorId={editingConnectorId} result={connectorResult} />}
+        {active === 'hosts' && <Connectors title="Host Connector" category="host" rows={connectors.filter((c) => c.connector_category === 'host')} form={connectorForm} setForm={setConnectorForm} save={saveConnector} editForm={editConnectorForm} setEditForm={setEditConnectorForm} saveEdit={saveConnectorEdit} types={hostConnectorTypes} discover={discoverConnector} validate={validateConnector} edit={editConnector} cancelEdit={cancelConnectorEdit} editingConnectorId={editingConnectorId} result={connectorResult} />}
+        {active === 'clouds' && <Connectors title="Cloud Connector" category="cloud" rows={connectors.filter((c) => c.connector_category === 'cloud')} form={connectorForm} setForm={setConnectorForm} save={saveConnector} editForm={editConnectorForm} setEditForm={setEditConnectorForm} saveEdit={saveConnectorEdit} types={cloudConnectorTypes} discover={discoverConnector} validate={validateConnector} edit={editConnector} cancelEdit={cancelConnectorEdit} editingConnectorId={editingConnectorId} result={connectorResult} />}
         {active === 'engine' && <MigrationEngine connectors={connectors} form={migrationJobForm} setForm={setMigrationJobForm} save={createMigrationJob} jobs={migrationJobs} discoveryRuns={discoveryRuns} />}
         {active === 'waves' && <Waves waves={waves} />}
         {active === 'reports' && <Reports csv={csv} vms={vms} />}
-        {active === 'users' && user?.role === 'admin' && <UsersView currentUser={user} users={users} form={userForm} setForm={setUserForm} save={saveUser} edit={editUser} remove={deleteUser} editingUserId={editingUserId} cancel={cancelUserEdit} setError={setError} />}
+        {active === 'users' && user?.role === 'admin' && <UsersView currentUser={user} users={users} form={userForm} setForm={setUserForm} save={saveUser} editForm={editUserForm} setEditForm={setEditUserForm} saveEdit={saveUserEdit} edit={editUser} remove={deleteUser} editingUserId={editingUserId} cancelEdit={cancelUserEdit} setError={setError} />}
         {active === 'settings' && <SettingsView settings={settings} setSettings={setSettings} save={saveSettings} user={user} />}
       </main>
     </div>
@@ -466,19 +492,27 @@ function Dashboard({ summary, vms, connectors }) {
   return <section><div className="metric-grid">{cards.map(([label, value, Icon]) => <div className="metric" key={label}><Icon size={22} /><span>{label}</span><strong>{value}</strong></div>)}</div><StatusBoard vms={vms} /></section>;
 }
 
-function Projects({ projects, form, setForm, save, editProject, editingProjectId, cancel }) {
-  return <section className="split"><FormPanel title={editingProjectId ? 'Edit saved project' : 'Save migration project'} onSubmit={save}><Input label="Project name" value={form.project_name} onChange={(v) => setForm({ ...form, project_name: v })} required /><Input label="Customer name" value={form.customer_name} onChange={(v) => setForm({ ...form, customer_name: v })} required /><Select label="Source platform" value={form.source_platform} options={platforms} onChange={(v) => setForm({ ...form, source_platform: v })} /><Select label="Target platform" value={form.target_platform} options={platforms} onChange={(v) => setForm({ ...form, target_platform: v })} /><MigrationTypeSelect value={form.migration_type} onChange={(v) => setForm({ ...form, migration_type: v })} /><Input label="Planned start" type="datetime-local" value={form.planned_start_date} onChange={(v) => setForm({ ...form, planned_start_date: v })} /><Input label="Cutover schedule" type="datetime-local" value={form.planned_cutover_date} onChange={(v) => setForm({ ...form, planned_cutover_date: v })} /><Input label="Status" value={form.status} onChange={(v) => setForm({ ...form, status: v })} /><TextArea label="Notes" value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} /><div className="button-row"><button className="primary"><Save size={16} /> {editingProjectId ? 'Save changes' : 'Save project'}</button>{editingProjectId && <button className="secondary" type="button" onClick={cancel}>Cancel</button>}</div></FormPanel><div className="table-wrap"><table><thead><tr><th>Project</th><th>Customer</th><th>Source</th><th>Target</th><th>Start</th><th>Cutover</th><th></th></tr></thead><tbody>{projects.map((p) => <tr key={p.id}><td>{p.project_name}</td><td>{p.customer_name}</td><td>{p.source_platform}</td><td>{p.target_platform}</td><td>{formatDateTime(p.planned_start_date)}</td><td>{formatDateTime(p.planned_cutover_date)}</td><td><button className="mini" onClick={() => editProject(p)}>Edit</button></td></tr>)}</tbody></table></div></section>;
+function ProjectFields({ form, setForm }) {
+  return <><Input label="Project name" value={form.project_name} onChange={(v) => setForm({ ...form, project_name: v })} required /><Input label="Customer name" value={form.customer_name} onChange={(v) => setForm({ ...form, customer_name: v })} required /><Select label="Source platform" value={form.source_platform} options={platforms} onChange={(v) => setForm({ ...form, source_platform: v })} /><Select label="Target platform" value={form.target_platform} options={platforms} onChange={(v) => setForm({ ...form, target_platform: v })} /><MigrationTypeSelect value={form.migration_type} onChange={(v) => setForm({ ...form, migration_type: v })} /><Input label="Planned start" type="datetime-local" value={form.planned_start_date} onChange={(v) => setForm({ ...form, planned_start_date: v })} /><Input label="Cutover schedule" type="datetime-local" value={form.planned_cutover_date} onChange={(v) => setForm({ ...form, planned_cutover_date: v })} /><Input label="Status" value={form.status} onChange={(v) => setForm({ ...form, status: v })} /><TextArea label="Notes" value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} /></>;
+}
+
+function Projects({ projects, form, setForm, save, editProject, editingProjectId, editForm, setEditForm, saveEdit, cancelEdit }) {
+  return <section className="split"><FormPanel title="Save migration project" onSubmit={save}><ProjectFields form={form} setForm={setForm} /><button className="primary"><Save size={16} /> Save project</button></FormPanel><div className="table-wrap"><table><thead><tr><th>Project</th><th>Customer</th><th>Source</th><th>Target</th><th>Start</th><th>Cutover</th><th></th></tr></thead><tbody>{projects.map((p) => <tr key={p.id}><td>{p.project_name}</td><td>{p.customer_name}</td><td>{p.source_platform}</td><td>{p.target_platform}</td><td>{formatDateTime(p.planned_start_date)}</td><td>{formatDateTime(p.planned_cutover_date)}</td><td><button className="mini" onClick={() => editProject(p)}><Edit3 size={14} /> Edit</button></td></tr>)}</tbody></table></div>{editingProjectId && <Modal title="Edit saved project" onClose={cancelEdit}><FormPanel title="" onSubmit={saveEdit}><ProjectFields form={editForm} setForm={setEditForm} /><div className="button-row"><button className="primary"><Save size={16} /> Save changes</button><button className="secondary" type="button" onClick={cancelEdit}><X size={16} /> Cancel</button></div></FormPanel></Modal>}</section>;
 }
 
 function Inventory({ vms, projects, form, setForm, create, changeStatus }) {
   return <section className="split"><FormPanel title="Add VM manually" onSubmit={create}><Select label="Project" value={form.project_id} options={projects.map((p) => [p.id, p.project_name])} onChange={(v) => setForm({ ...form, project_id: v })} /><Input label="VM name" value={form.vm_name} onChange={(v) => setForm({ ...form, vm_name: v })} required /><Select label="Source" value={form.source_platform} options={platforms} onChange={(v) => setForm({ ...form, source_platform: v })} /><Select label="Target" value={form.target_platform} options={platforms} onChange={(v) => setForm({ ...form, target_platform: v })} /><Input label="CPU" type="number" value={form.cpu} onChange={(v) => setForm({ ...form, cpu: v })} /><Input label="Memory GB" type="number" value={form.memory_gb} onChange={(v) => setForm({ ...form, memory_gb: v })} /><Input label="Disk GB" type="number" value={form.disk_gb} onChange={(v) => setForm({ ...form, disk_gb: v })} /><Input label="Owner" value={form.application_owner} onChange={(v) => setForm({ ...form, application_owner: v })} /><button className="primary"><Plus size={16} /> Add VM</button></FormPanel><div className="table-wrap"><table><thead><tr><th>VM</th><th>Source</th><th>Target</th><th>Size</th><th>Status</th><th>Change status</th></tr></thead><tbody>{vms.map((vm) => <tr key={vm.id}><td>{vm.vm_name}</td><td>{vm.source_platform}</td><td>{vm.target_platform}</td><td>{vm.cpu} CPU / {vm.memory_gb} GB</td><td><Badge value={vm.current_status} /></td><td><select value={vm.current_status} onChange={(e) => changeStatus(vm, e.target.value)}>{statuses.map((s) => <option key={s}>{s}</option>)}</select></td></tr>)}</tbody></table></div></section>;
 }
 
-function Connectors({ title, category, rows, form, setForm, save, types, discover, validate, edit, cancel, editingConnectorId, result }) {
+function ConnectorFields({ form, setForm, category, types }) {
   const scopedForm = form.connector_category === category ? form : { ...blankConnector, connector_category: category, connector_type: types[0] };
   const update = (patch) => setForm({ ...scopedForm, ...patch, connector_category: category });
-  const isEditing = editingConnectorId && scopedForm.connector_category === category;
-  return <section className="split"><FormPanel title={isEditing ? `Edit ${title}` : `Add ${title}`} onSubmit={save}><Select label="Type" value={scopedForm.connector_type} options={types} onChange={(v) => update({ connector_type: v })} /><Input label="Connector name" value={scopedForm.name} onChange={(v) => update({ name: v })} required /><Input label="Endpoint / API URL" value={scopedForm.endpoint} onChange={(v) => update({ endpoint: v })} /><Input label="Port" type="number" value={scopedForm.port || ''} onChange={(v) => update({ port: v })} /><Input label="Username" value={scopedForm.username || ''} onChange={(v) => update({ username: v })} /><Input label="Credential reference" value={scopedForm.credential_reference || ''} onChange={(v) => update({ credential_reference: v })} /><Input label="Environment" value={scopedForm.environment || ''} onChange={(v) => update({ environment: v })} /><Select label="Status" value={scopedForm.status || 'Not validated'} options={['Not validated', 'Validated', 'Validation failed', 'Unsupported']} onChange={(v) => update({ status: v })} /><TextArea label="Notes" value={scopedForm.notes || ''} onChange={(v) => update({ notes: v })} /><div className="tip">Validate performs a real connector check and shows the result. Discovery collects VM inventory when the required runtime tools and credentials are available.</div><div className="button-row"><button className="primary"><Save size={16} /> {isEditing ? 'Save changes' : 'Add connector'}</button>{isEditing && <button className="secondary" type="button" onClick={cancel}><X size={16} /> Cancel</button>}</div></FormPanel><div className="stack">{result && result.connector?.connector_category === category && <div className={`result ${result.status === 'Validated' ? 'success' : 'danger'}`}><strong>{result.status}</strong><span>{result.message}</span>{Boolean(result.commands?.length) && <code>{result.commands.join(' | ')}</code>}</div>}<div className="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Endpoint</th><th>Credential</th><th>Status</th><th>Actions</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td>{row.name}</td><td>{row.connector_type}</td><td>{row.endpoint || '-'}</td><td>{row.credential_reference || '-'}</td><td><Badge value={row.status} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini" onClick={() => validate(row)}><CheckCircle2 size={14} /> Validate</button><button className="mini" onClick={() => discover(row)}><Search size={14} /> Discover</button></div></td></tr>)}</tbody></table></div></div></section>;
+  return <><Select label="Type" value={scopedForm.connector_type} options={types} onChange={(v) => update({ connector_type: v })} /><Input label="Connector name" value={scopedForm.name} onChange={(v) => update({ name: v })} required /><Input label="Endpoint / API URL" value={scopedForm.endpoint} onChange={(v) => update({ endpoint: v })} /><Input label="Port" type="number" value={scopedForm.port || ''} onChange={(v) => update({ port: v })} /><Input label="Username" value={scopedForm.username || ''} onChange={(v) => update({ username: v })} /><Input label="Credential reference" value={scopedForm.credential_reference || ''} onChange={(v) => update({ credential_reference: v })} /><Input label="Environment" value={scopedForm.environment || ''} onChange={(v) => update({ environment: v })} /><Select label="Status" value={scopedForm.status || 'Not validated'} options={['Not validated', 'Validated', 'Validation failed', 'Unsupported']} onChange={(v) => update({ status: v })} /><TextArea label="Notes" value={scopedForm.notes || ''} onChange={(v) => update({ notes: v })} /></>;
+}
+
+function Connectors({ title, category, rows, form, setForm, save, editForm, setEditForm, saveEdit, types, discover, validate, edit, cancelEdit, editingConnectorId, result }) {
+  const isEditing = editingConnectorId && editForm.connector_category === category;
+  return <section className="split"><FormPanel title={`Add ${title}`} onSubmit={save}><ConnectorFields form={form} setForm={setForm} category={category} types={types} /><div className="tip">Validate performs a real connector check and shows the result. Discovery collects VM inventory when the required runtime tools and credentials are available.</div><button className="primary"><Save size={16} /> Add connector</button></FormPanel><div className="stack">{result && result.connector?.connector_category === category && <div className={`result ${result.status === 'Validated' ? 'success' : 'danger'}`}><strong>{result.status}</strong><span>{result.message}</span>{Boolean(result.commands?.length) && <code>{result.commands.join(' | ')}</code>}</div>}<div className="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Endpoint</th><th>Credential</th><th>Status</th><th>Actions</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td>{row.name}</td><td>{row.connector_type}</td><td>{row.endpoint || '-'}</td><td>{row.credential_reference || '-'}</td><td><Badge value={row.status} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini" onClick={() => validate(row)}><CheckCircle2 size={14} /> Validate</button><button className="mini" onClick={() => discover(row)}><Search size={14} /> Discover</button></div></td></tr>)}</tbody></table></div></div>{isEditing && <Modal title={`Edit ${title}`} onClose={cancelEdit}><FormPanel title="" onSubmit={saveEdit}><ConnectorFields form={editForm} setForm={setEditForm} category={category} types={types} /><div className="tip">Validate performs a real connector check and shows the result. Discovery collects VM inventory when the required runtime tools and credentials are available.</div><div className="button-row"><button className="primary"><Save size={16} /> Save changes</button><button className="secondary" type="button" onClick={cancelEdit}><X size={16} /> Cancel</button></div></FormPanel></Modal>}</section>;
 }
 
 function MigrationEngine({ connectors, form, setForm, save, jobs, discoveryRuns }) {
@@ -507,7 +541,7 @@ function Reports({ csv, vms }) {
   return <section><button className="primary" onClick={download}><FileText size={16} /> Export VM readiness CSV</button><StatusBoard vms={vms} /></section>;
 }
 
-function UsersView({ currentUser, users, form, setForm, save, edit, remove, editingUserId, cancel, setError }) {
+function UserFields({ form, setForm, editingUserId, setError }) {
   const readPhoto = (file) => {
     if (!file) return;
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
@@ -526,7 +560,11 @@ function UsersView({ currentUser, users, form, setForm, save, edit, remove, edit
     reader.onerror = () => setError('Unable to read the selected profile photo');
     reader.readAsDataURL(file);
   };
-  return <section className="split"><FormPanel title={editingUserId ? 'Edit user' : 'Create user'} onSubmit={save}><div className="profile-photo-editor"><UserAvatar user={{ username: form.username, profile_photo: form.profile_photo }} large /><label className="photo-picker">Profile photo<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => readPhoto(event.target.files?.[0])} /></label>{form.profile_photo && <button className="secondary" type="button" onClick={() => setForm({ ...form, profile_photo: '' })}>Remove photo</button>}</div><Input label="Username" value={form.username} onChange={(v) => setForm({ ...form, username: v })} required /><Input label={editingUserId ? 'New password (leave blank to keep current)' : 'Password'} type="password" value={form.password} onChange={(v) => setForm({ ...form, password: v })} required={!editingUserId} /><Select label="Role" value={form.role} options={['admin', 'operator', 'viewer']} onChange={(v) => setForm({ ...form, role: v })} /><Select label="Active" value={form.is_active} options={[['true', 'Active'], ['false', 'Inactive']]} onChange={(v) => setForm({ ...form, is_active: v })} /><div className="tip">Profile photos must be PNG, JPEG, or WebP and no larger than 256 KB.</div><div className="button-row"><button className="primary"><Save size={16} /> {editingUserId ? 'Save changes' : 'Create user'}</button>{editingUserId && <button className="secondary" type="button" onClick={cancel}><X size={16} /> Cancel</button>}</div></FormPanel><div className="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>{users.map((row) => <tr key={row.id}><td><div className="user-table-identity"><UserAvatar user={row} /><div><strong>{row.username}</strong>{row.id === currentUser?.id && <span>Current user</span>}</div></div></td><td><Badge value={row.role} /></td><td><Badge value={row.is_active ? 'Active' : 'Inactive'} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini danger-button" disabled={row.id === currentUser?.id} onClick={() => remove(row)}><Trash2 size={14} /> Delete</button></div></td></tr>)}</tbody></table></div></section>;
+  return <><div className="profile-photo-editor"><UserAvatar user={{ username: form.username, profile_photo: form.profile_photo }} large /><label className="photo-picker">Profile photo<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => readPhoto(event.target.files?.[0])} /></label>{form.profile_photo && <button className="secondary" type="button" onClick={() => setForm({ ...form, profile_photo: '' })}>Remove photo</button>}</div><Input label="Username" value={form.username} onChange={(v) => setForm({ ...form, username: v })} required /><Input label={editingUserId ? 'New password (leave blank to keep current)' : 'Password'} type="password" value={form.password} onChange={(v) => setForm({ ...form, password: v })} required={!editingUserId} /><Select label="Role" value={form.role} options={['admin', 'operator', 'viewer']} onChange={(v) => setForm({ ...form, role: v })} /><Select label="Active" value={form.is_active} options={[['true', 'Active'], ['false', 'Inactive']]} onChange={(v) => setForm({ ...form, is_active: v })} /><div className="tip">Profile photos must be PNG, JPEG, or WebP and no larger than 256 KB.</div></>;
+}
+
+function UsersView({ currentUser, users, form, setForm, save, editForm, setEditForm, saveEdit, edit, remove, editingUserId, cancelEdit, setError }) {
+  return <section className="split"><FormPanel title="Create user" onSubmit={save}><UserFields form={form} setForm={setForm} setError={setError} /><button className="primary"><Save size={16} /> Create user</button></FormPanel><div className="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>{users.map((row) => <tr key={row.id}><td><div className="user-table-identity"><UserAvatar user={row} /><div><strong>{row.username}</strong>{row.id === currentUser?.id && <span>Current user</span>}</div></div></td><td><Badge value={row.role} /></td><td><Badge value={row.is_active ? 'Active' : 'Inactive'} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini danger-button" disabled={row.id === currentUser?.id} onClick={() => remove(row)}><Trash2 size={14} /> Delete</button></div></td></tr>)}</tbody></table></div>{editingUserId && <Modal title="Edit user" onClose={cancelEdit}><FormPanel title="" onSubmit={saveEdit}><UserFields form={editForm} setForm={setEditForm} editingUserId={editingUserId} setError={setError} /><div className="button-row"><button className="primary"><Save size={16} /> Save changes</button><button className="secondary" type="button" onClick={cancelEdit}><X size={16} /> Cancel</button></div></FormPanel></Modal>}</section>;
 }
 
 function SettingsView({ settings, setSettings, save, user }) {
@@ -554,7 +592,18 @@ function Badge({ value }) {
 }
 
 function FormPanel({ title, onSubmit, children }) {
-  return <form className="form-panel" onSubmit={onSubmit}><h2>{title}</h2>{children}</form>;
+  return <form className="form-panel" onSubmit={onSubmit}>{title && <h2>{title}</h2>}{children}</form>;
+}
+
+function Modal({ title, onClose, children }) {
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+  return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}><div className="modal-panel" role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}><div className="modal-header"><h2>{title}</h2><button className="icon-button" type="button" onClick={onClose} title="Close"><X size={18} /></button></div>{children}</div></div>;
 }
 
 function Input({ label, value, onChange, type = 'text', required = false }) {
