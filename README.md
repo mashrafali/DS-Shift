@@ -1,6 +1,6 @@
 # DS Replace
 
-Defined Solutions cloud-native platform for any-to-any VM migration planning, tracking, and workflow management.
+Defined Solutions cloud-native platform for any-to-any VM migration planning, launch, execution, tracking, and workflow management.
 
 DS Replace 1.0 RC1 is an MVP focused on assessment, source/target inventory, migration planning, migration waves, VM workflow state tracking, dashboard metrics, discovery runs, and migration preflight jobs. Live migration execution is approval-gated and should only be enabled after credential, network, and rollback controls are validated.
 

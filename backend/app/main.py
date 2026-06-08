@@ -166,7 +166,7 @@ def about():
         "product": "DS Replace",
         "brand": "Defined Solutions",
         "version": settings.app_version,
-        "purpose": "Any-to-any VM migration planning and tracking platform.",
+        "purpose": "Any-to-any VM migration planning, launch, execution, and tracking platform.",
     }
 
 
