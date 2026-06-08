@@ -21,6 +21,7 @@ import {
   Search,
   ServerCog,
   Settings,
+  UserRound,
   UserPlus,
   Users,
   X,
@@ -348,6 +349,14 @@ function App() {
           <div className="brand-mark"><DcMigrationMark /></div>
           <div><strong>{settings.product_name || 'DS Replace'}</strong><span>{settings.company_name || 'Defined Solutions'}</span></div>
         </div>
+        <div className="signed-in-user" title={`Signed in as ${user?.username || 'Loading user'}`}>
+          <span className="user-avatar"><UserRound size={20} /></span>
+          <div>
+            <span>Signed in as</span>
+            <strong>{user?.username || 'Loading...'}</strong>
+            <small>{user?.role || ''}</small>
+          </div>
+        </div>
         <nav>
           {nav.map(([key, Icon, label]) => (
             <button key={key} className={active === key ? 'active' : ''} onClick={() => setActive(key)} title={label}>
@@ -360,7 +369,7 @@ function App() {
       <main>
         <header className="topbar">
           <div>
-            <p>{settings.company_name || 'Defined Solutions'} / {user?.username}</p>
+            <p>{settings.company_name || 'Defined Solutions'}</p>
             <h1>{titleFor(active)}</h1>
           </div>
           <div className="toolbar">
