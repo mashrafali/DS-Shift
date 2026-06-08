@@ -10,6 +10,7 @@ import {
   FileText,
   Gauge,
   HardDrive,
+  Info,
   KeyRound,
   Layers,
   LogOut,
@@ -31,12 +32,12 @@ import './styles.css';
 const tokenKey = 'ds_replace_token';
 
 const migrationTypes = {
-  'Lift and shift': 'Move the VM with minimal redesign. Best for fast relocation and low application change.',
-  'Cold migration': 'Power off, copy or convert, then start on the target. Simpler but requires downtime.',
-  'Replication assisted': 'Use replication or backup tooling before cutover. Better for larger systems and shorter outage windows.',
-  'Conversion based': 'Use tools such as virt-v2v or vendor conversion APIs where disk or driver changes are required.',
-  'Cloud rehost': 'Move into a cloud IaaS target such as GCP, AWS, or Azure while preserving the VM operating model.',
-  'Any-to-any workflow': 'Generic planning workflow when source and target are not yet finalized.',
+  'Lift and shift': 'Planned execution: validate source and target, copy or replicate the VM with minimal redesign, schedule cutover, then validate the target VM.',
+  'Cold migration': 'Planned execution: shut down the source VM, copy or convert its disks, create the target VM, start it, and run post-migration validation. Downtime is required.',
+  'Replication assisted': 'Planned execution: establish replication or backup synchronization, monitor readiness, stop the source at cutover, complete the final sync, and activate the target VM.',
+  'Conversion based': 'Planned execution: inspect the source VM, convert its disks and guest configuration with tools such as virt-v2v, create the target VM, and validate drivers and boot.',
+  'Cloud rehost': 'Planned execution: assess cloud compatibility, convert or upload VM disks, create cloud networking and compute resources, launch the instance, and validate connectivity.',
+  'Any-to-any workflow': 'Planned execution: build a generic discovery, assessment, transfer, cutover, and validation runbook after the source and target platforms are finalized.',
 };
 
 const platforms = ['KVM', 'VMware ESXi / vCenter', 'Nutanix AHV', 'Google Cloud Platform', 'AWS', 'Azure', 'Other'];
@@ -466,8 +467,7 @@ function Dashboard({ summary, vms, connectors }) {
 }
 
 function Projects({ projects, form, setForm, save, editProject, editingProjectId, cancel }) {
-  const selectedTip = migrationTypes[form.migration_type] || migrationTypes['Any-to-any workflow'];
-  return <section className="split"><FormPanel title={editingProjectId ? 'Edit saved project' : 'Save migration project'} onSubmit={save}><Input label="Project name" value={form.project_name} onChange={(v) => setForm({ ...form, project_name: v })} required /><Input label="Customer name" value={form.customer_name} onChange={(v) => setForm({ ...form, customer_name: v })} required /><Select label="Source platform" value={form.source_platform} options={platforms} onChange={(v) => setForm({ ...form, source_platform: v })} /><Select label="Target platform" value={form.target_platform} options={platforms} onChange={(v) => setForm({ ...form, target_platform: v })} /><Select label="Migration type" value={form.migration_type} options={Object.keys(migrationTypes)} onChange={(v) => setForm({ ...form, migration_type: v })} /><div className="tip">{selectedTip}</div><Input label="Planned start" type="datetime-local" value={form.planned_start_date} onChange={(v) => setForm({ ...form, planned_start_date: v })} /><Input label="Cutover schedule" type="datetime-local" value={form.planned_cutover_date} onChange={(v) => setForm({ ...form, planned_cutover_date: v })} /><Input label="Status" value={form.status} onChange={(v) => setForm({ ...form, status: v })} /><TextArea label="Notes" value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} /><div className="button-row"><button className="primary"><Save size={16} /> {editingProjectId ? 'Save changes' : 'Save project'}</button>{editingProjectId && <button className="secondary" type="button" onClick={cancel}>Cancel</button>}</div></FormPanel><div className="table-wrap"><table><thead><tr><th>Project</th><th>Customer</th><th>Source</th><th>Target</th><th>Start</th><th>Cutover</th><th></th></tr></thead><tbody>{projects.map((p) => <tr key={p.id}><td>{p.project_name}</td><td>{p.customer_name}</td><td>{p.source_platform}</td><td>{p.target_platform}</td><td>{formatDateTime(p.planned_start_date)}</td><td>{formatDateTime(p.planned_cutover_date)}</td><td><button className="mini" onClick={() => editProject(p)}>Edit</button></td></tr>)}</tbody></table></div></section>;
+  return <section className="split"><FormPanel title={editingProjectId ? 'Edit saved project' : 'Save migration project'} onSubmit={save}><Input label="Project name" value={form.project_name} onChange={(v) => setForm({ ...form, project_name: v })} required /><Input label="Customer name" value={form.customer_name} onChange={(v) => setForm({ ...form, customer_name: v })} required /><Select label="Source platform" value={form.source_platform} options={platforms} onChange={(v) => setForm({ ...form, source_platform: v })} /><Select label="Target platform" value={form.target_platform} options={platforms} onChange={(v) => setForm({ ...form, target_platform: v })} /><MigrationTypeSelect value={form.migration_type} onChange={(v) => setForm({ ...form, migration_type: v })} /><Input label="Planned start" type="datetime-local" value={form.planned_start_date} onChange={(v) => setForm({ ...form, planned_start_date: v })} /><Input label="Cutover schedule" type="datetime-local" value={form.planned_cutover_date} onChange={(v) => setForm({ ...form, planned_cutover_date: v })} /><Input label="Status" value={form.status} onChange={(v) => setForm({ ...form, status: v })} /><TextArea label="Notes" value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} /><div className="button-row"><button className="primary"><Save size={16} /> {editingProjectId ? 'Save changes' : 'Save project'}</button>{editingProjectId && <button className="secondary" type="button" onClick={cancel}>Cancel</button>}</div></FormPanel><div className="table-wrap"><table><thead><tr><th>Project</th><th>Customer</th><th>Source</th><th>Target</th><th>Start</th><th>Cutover</th><th></th></tr></thead><tbody>{projects.map((p) => <tr key={p.id}><td>{p.project_name}</td><td>{p.customer_name}</td><td>{p.source_platform}</td><td>{p.target_platform}</td><td>{formatDateTime(p.planned_start_date)}</td><td>{formatDateTime(p.planned_cutover_date)}</td><td><button className="mini" onClick={() => editProject(p)}>Edit</button></td></tr>)}</tbody></table></div></section>;
 }
 
 function Inventory({ vms, projects, form, setForm, create, changeStatus }) {
@@ -567,6 +567,11 @@ function TextArea({ label, value, onChange }) {
 
 function Select({ label, value, options, onChange }) {
   return <label>{label}<select value={value ?? ''} onChange={(e) => onChange(e.target.value)}>{options.map((o) => Array.isArray(o) ? <option key={o[0]} value={o[0]}>{o[1]}</option> : <option key={o}>{o}</option>)}</select></label>;
+}
+
+function MigrationTypeSelect({ value, onChange }) {
+  const description = migrationTypes[value] || migrationTypes['Any-to-any workflow'];
+  return <label className="migration-type-field"><span className="field-label">Migration type <span className="help-icon" tabIndex="0" aria-describedby="migration-type-help"><Info size={14} /></span></span><select value={value ?? ''} onChange={(event) => onChange(event.target.value)} aria-describedby="migration-type-help">{Object.keys(migrationTypes).map((type) => <option key={type} value={type}>{type}</option>)}</select><span className="migration-tooltip" id="migration-type-help" role="tooltip"><strong>{value}</strong>{description}<small>Saving the project records this plan. It does not start a live migration automatically.</small></span></label>;
 }
 
 function Table({ rows, columns }) {

@@ -189,6 +189,49 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .user-table-identity div { display: grid; gap: 2px; }
 .user-table-identity span { color: #607386; font-size: 11px; }
 label { display: grid; gap: 6px; color: #485c70; font-size: 13px; font-weight: 700; }
+.migration-type-field { position: relative; }
+.field-label { display: inline-flex; align-items: center; gap: 5px; width: fit-content; }
+.help-icon {
+  width: 20px;
+  height: 20px;
+  display: inline-grid;
+  place-items: center;
+  color: #0b6f7b;
+  background: #e6f7f5;
+  border-radius: 50%;
+  outline: none;
+}
+.migration-tooltip {
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  top: calc(100% + 7px);
+  width: min(390px, calc(100vw - 48px));
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  color: #dceaf6;
+  background: #071c33;
+  border: 1px solid #234663;
+  border-radius: 7px;
+  box-shadow: 0 12px 28px rgba(7, 28, 51, 0.22);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+  pointer-events: none;
+}
+.migration-tooltip strong { color: #fff; font-size: 13px; }
+.migration-tooltip small { color: #8fded6; font-size: 11px; }
+.migration-type-field:hover .migration-tooltip,
+.migration-type-field:focus-within .migration-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
 input, select, textarea {
   width: 100%;
   min-height: 38px;
