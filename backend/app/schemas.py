@@ -187,7 +187,7 @@ class UserUpdate(BaseModel):
 
 
 class SettingsBase(BaseModel):
-    product_name: str = "DS Replace"
+    product_name: str = "DS Shift"
     company_name: str = "Defined Solutions"
     default_timezone: str = "Asia/Riyadh"
     retention_days: int = 365

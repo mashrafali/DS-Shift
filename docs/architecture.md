@@ -1,6 +1,6 @@
 # Architecture
 
-DS Replace uses a three-tier application architecture deployed with Docker Compose.
+DS Shift uses a three-tier application architecture deployed with Docker Compose.
 
 ## Components
 
@@ -17,7 +17,7 @@ DS Replace uses a three-tier application architecture deployed with Docker Compo
 - React application.
 - Provides dashboard, saved project management, VM inventory, host connectors, cloud connectors, migration engine, waves, reports, and settings control.
 - Talks to the backend through relative `/api` URLs.
-- Uses a custom Defined Solutions data-center migration mark instead of a generic security icon.
+- Uses the DS Shift brand logo supplied by Defined Solutions.
 
 `backend`
 

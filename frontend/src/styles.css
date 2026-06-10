@@ -19,7 +19,7 @@ button { cursor: pointer; }
   background: radial-gradient(circle at 20% 10%, #d9eef6 0, transparent 26%), linear-gradient(135deg, #06182c, #0e3157 54%, #f3f6fa 54%);
 }
 .login-panel {
-  width: min(420px, 100%);
+  width: min(540px, 100%);
   display: grid;
   gap: 14px;
   padding: 28px;
@@ -29,41 +29,24 @@ button { cursor: pointer; }
   box-shadow: 0 18px 50px rgba(8, 31, 55, 0.18);
 }
 .login-panel h1 { margin: 0; font-size: 30px; }
-.login-panel p { margin: -6px 0 8px; color: #607386; }
-.login-logo {
-  width: 58px;
-  height: 58px;
-  display: grid;
-  place-items: center;
-  color: #042135;
-  background: linear-gradient(135deg, #29d3c2, #46a3ff);
-  border-radius: 8px;
+.login-panel p { margin: 2px 0 0; color: #607386; }
+.login-copy { display: grid; gap: 2px; }
+.login-brand-logo {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 7px;
 }
 
 .shell { display: grid; grid-template-columns: 286px 1fr; min-height: 100vh; }
 .sidebar { background: #071c33; color: #f9fbff; padding: 24px 18px; }
-.brand { display: flex; align-items: center; gap: 12px; margin-bottom: 30px; }
-.brand-mark {
-  width: 50px;
-  height: 50px;
-  display: grid;
-  place-items: center;
-  background: linear-gradient(135deg, #29d3c2, #46a3ff);
-  color: #042135;
-  border-radius: 8px;
+.brand { margin-bottom: 26px; }
+.brand-logo {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 6px;
 }
-.dc-mark {
-  width: 34px;
-  height: 34px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 3;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.login-logo .dc-mark { width: 40px; height: 40px; }
-.brand strong, .brand span { display: block; }
-.brand span { color: #9db1c8; font-size: 13px; margin-top: 2px; }
 .signed-in-user {
   display: flex;
   align-items: center;

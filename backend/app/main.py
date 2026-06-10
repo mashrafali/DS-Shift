@@ -118,8 +118,11 @@ def seed_defaults(db: Session) -> None:
     admin_password = os.getenv("ADMIN_INITIAL_PASSWORD", "P@ssw0rd")
     if not db.query(models.LocalUser).filter(models.LocalUser.username == admin_username).first():
         db.add(models.LocalUser(username=admin_username, password_hash=hash_password(admin_password), role="admin"))
-    if not db.query(models.AppSetting).first():
+    app_settings = db.query(models.AppSetting).first()
+    if not app_settings:
         db.add(models.AppSetting())
+    elif app_settings.product_name.strip().lower() == "ds replace":
+        app_settings.product_name = "DS Shift"
     db.commit()
 
 
@@ -163,7 +166,7 @@ def health(db: Session = Depends(get_db)):
 @app.get("/api/about")
 def about():
     return {
-        "product": "DS Replace",
+        "product": "DS Shift",
         "brand": "Defined Solutions",
         "version": settings.app_version,
         "purpose": "Any-to-any VM migration planning, launch, execution, and tracking platform.",

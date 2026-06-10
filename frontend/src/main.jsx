@@ -29,7 +29,15 @@ import {
 } from 'lucide-react';
 import './styles.css';
 
-const tokenKey = 'ds_replace_token';
+const tokenKey = 'ds_shift_token';
+const legacyTokenKey = 'ds_replace_token';
+
+function loadStoredToken() {
+  const token = localStorage.getItem(tokenKey) || localStorage.getItem(legacyTokenKey) || '';
+  if (token) localStorage.setItem(tokenKey, token);
+  localStorage.removeItem(legacyTokenKey);
+  return token;
+}
 
 const migrationTypes = {
   'Lift and shift': 'Planned execution: validate source and target, copy or replicate the VM with minimal redesign, schedule cutover, then validate the target VM.',
@@ -87,7 +95,7 @@ const blankConnector = {
 };
 
 const blankSettings = {
-  product_name: 'DS Replace',
+  product_name: 'DS Shift',
   company_name: 'Defined Solutions',
   default_timezone: 'Asia/Riyadh',
   retention_days: 365,
@@ -113,7 +121,7 @@ const blankMigrationJob = {
 };
 
 function App() {
-  const [token, setToken] = useState(localStorage.getItem(tokenKey) || '');
+  const [token, setToken] = useState(loadStoredToken);
   const [user, setUser] = useState(null);
   const [active, setActive] = useState('dashboard');
   const [summary, setSummary] = useState(null);
@@ -151,6 +159,7 @@ function App() {
     });
     if (response.status === 401) {
       localStorage.removeItem(tokenKey);
+      localStorage.removeItem(legacyTokenKey);
       setToken('');
       setUser(null);
       throw new Error('Authentication required');
@@ -220,6 +229,7 @@ function App() {
       // Session may already be expired.
     }
     localStorage.removeItem(tokenKey);
+    localStorage.removeItem(legacyTokenKey);
     setToken('');
     setUser(null);
   };
@@ -392,7 +402,7 @@ function App() {
   };
 
   const changeStatus = async (vm, status) => {
-    await api(`/vms/${vm.id}/status`, { method: 'PATCH', body: JSON.stringify({ status, note: 'Updated from DS Replace dashboard' }) });
+    await api(`/vms/${vm.id}/status`, { method: 'PATCH', body: JSON.stringify({ status, note: 'Updated from DS Shift dashboard' }) });
     await load();
   };
 
@@ -421,8 +431,7 @@ function App() {
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark"><DcMigrationMark /></div>
-          <div><strong>{settings.product_name || 'DS Replace'}</strong><span>{settings.company_name || 'Defined Solutions'}</span></div>
+          <BrandLogo className="brand-logo" />
         </div>
         <nav>
           {nav.map(([key, Icon, label]) => (
@@ -473,7 +482,7 @@ function App() {
 }
 
 function Login({ form, setForm, submit, error }) {
-  return <div className="login-screen"><form className="login-panel" onSubmit={submit}><div className="login-logo"><DcMigrationMark /></div><h1>DS Replace</h1><p>Defined Solutions migration command center</p>{error && <div className="alert">{error}</div>}<Input label="Username" value={form.username} onChange={(v) => setForm({ ...form, username: v })} required /><Input label="Password" type="password" value={form.password} onChange={(v) => setForm({ ...form, password: v })} required /><button className="primary"><KeyRound size={16} /> Sign in</button></form></div>;
+  return <div className="login-screen"><form className="login-panel" onSubmit={submit}><BrandLogo className="login-brand-logo" /><div className="login-copy"><h1>DS Shift</h1><p>Defined Solutions migration command center</p></div>{error && <div className="alert">{error}</div>}<Input label="Username" value={form.username} onChange={(v) => setForm({ ...form, username: v })} required /><Input label="Password" type="password" value={form.password} onChange={(v) => setForm({ ...form, password: v })} required /><button className="primary"><KeyRound size={16} /> Sign in</button></form></div>;
 }
 
 function titleFor(active) {
@@ -534,7 +543,7 @@ function Reports({ csv, vms }) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'ds-replace-vm-readiness.csv';
+    a.download = 'ds-shift-vm-readiness.csv';
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -577,8 +586,8 @@ function UserAvatar({ user, large = false }) {
   return <span className={className}><UserRound size={large ? 34 : 20} /></span>;
 }
 
-function DcMigrationMark() {
-  return <svg viewBox="0 0 64 64" aria-hidden="true" className="dc-mark"><rect x="8" y="12" width="18" height="40" rx="3" /><rect x="38" y="12" width="18" height="40" rx="3" /><path d="M26 24h12M26 40h12" /><path d="M33 19l5 5-5 5M31 35l-5 5 5 5" /><circle cx="17" cy="22" r="2" /><circle cx="17" cy="32" r="2" /><circle cx="17" cy="42" r="2" /><circle cx="47" cy="22" r="2" /><circle cx="47" cy="32" r="2" /><circle cx="47" cy="42" r="2" /></svg>;
+function BrandLogo({ className }) {
+  return <img className={className} src="/ds-shift-logo.png" alt="DS Shift by Defined Solutions - Any-to-any workload migration" />;
 }
 
 function StatusBoard({ vms }) {

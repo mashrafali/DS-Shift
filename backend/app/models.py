@@ -132,7 +132,7 @@ class AppSetting(TimestampMixin, Base):
     __tablename__ = "app_settings"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    product_name: Mapped[str] = mapped_column(String(120), default="DS Replace")
+    product_name: Mapped[str] = mapped_column(String(120), default="DS Shift")
     company_name: Mapped[str] = mapped_column(String(160), default="Defined Solutions")
     default_timezone: Mapped[str] = mapped_column(String(80), default="Asia/Riyadh")
     retention_days: Mapped[int] = mapped_column(Integer, default=365)

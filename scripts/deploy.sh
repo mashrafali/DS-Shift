@@ -10,11 +10,11 @@ if [[ ! -f .env ]]; then
 fi
 
 mkdir -p ops/certs
-if [[ ! -f ops/certs/ds-replace.crt || ! -f ops/certs/ds-replace.key ]]; then
+if [[ ! -f ops/certs/ds-shift.crt || ! -f ops/certs/ds-shift.key ]]; then
   openssl req -x509 -nodes -newkey rsa:4096 -days 825 \
-    -keyout ops/certs/ds-replace.key \
-    -out ops/certs/ds-replace.crt \
-    -subj "/CN=ds-replace-app/O=Defined Solutions"
+    -keyout ops/certs/ds-shift.key \
+    -out ops/certs/ds-shift.crt \
+    -subj "/CN=ds-shift-app/O=Defined Solutions"
 fi
 
 docker compose up -d --build

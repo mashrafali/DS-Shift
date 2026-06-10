@@ -3,18 +3,18 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-dsreplace}
-      POSTGRES_USER: ${POSTGRES_USER:-dsreplace}
+      POSTGRES_DB: ${POSTGRES_DB:-dsshift}
+      POSTGRES_USER: ${POSTGRES_USER:-dsshift}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dsreplace} -d ${POSTGRES_DB:-dsreplace}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dsshift} -d ${POSTGRES_DB:-dsshift}"]
       interval: 10s
       timeout: 5s
       retries: 10
     networks:
-      - ds_replace
+      - ds_shift
 
   backend:
     build:
@@ -22,7 +22,7 @@ services:
       network: host
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-dsreplace}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB:-dsreplace}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-dsshift}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB:-dsshift}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       KVM_PASSWORD: ${KVM_PASSWORD:-}
       VCENTER_PASSWORD: ${VCENTER_PASSWORD:-}
@@ -40,7 +40,7 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - ds_replace
+      - ds_shift
 
   frontend:
     build:
@@ -50,7 +50,7 @@ services:
       backend:
         condition: service_healthy
     networks:
-      - ds_replace
+      - ds_shift
 
   reverse-proxy:
     image: nginx:1.29-alpine
@@ -72,10 +72,10 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - ds_replace
+      - ds_shift
 
 networks:
-  ds_replace:
+  ds_shift:
     driver: bridge
 
 volumes:
