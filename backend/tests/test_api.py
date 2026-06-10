@@ -7,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app import models, schemas
+from app.connector_client import normalize_connector_type, validate_connector_platform
 from app.database import Base
 from app.main import app, delete_user, hash_password, seed_defaults, update_user, validate_profile_photo
 
@@ -40,6 +41,15 @@ def test_seed_defaults_rebrands_existing_settings():
         seed_defaults(db)
 
         assert db.query(models.AppSetting).one().product_name == "DS Shift"
+
+
+def test_connector_platform_validation_and_aliases():
+    assert normalize_connector_type("AWS") == "Amazon Web Services"
+    assert validate_connector_platform("cloud", "Azure") == "Microsoft Azure"
+    assert validate_connector_platform("host", "Nutanix AHV") == "Nutanix AHV"
+
+    with pytest.raises(ValueError, match="Unsupported cloud connector type"):
+        validate_connector_platform("cloud", "Other Cloud")
 
 
 def test_admin_cannot_delete_or_deactivate_self():

@@ -11,12 +11,10 @@
 
 ## Discovery Connectors
 
-- Expand VMware vCenter discovery beyond `govc` into direct API collection.
-- Expand KVM/libvirt discovery beyond SSH command collection into API-backed inventory.
-- Google Cloud APIs.
-- AWS APIs.
-- Azure APIs.
-- Nutanix Prism APIs.
+- Extend VMware vCenter discovery beyond the pyVmomi connector inventory into migration-specific collection.
+- Extend KVM/libvirt discovery beyond Paramiko and `virsh` inventory into migration-specific collection.
+- Add richer inventory attributes and pagination controls for AWS, Google Cloud, Azure, and Nutanix.
+- Add credential-vault integration and connector-level secret rotation.
 
 ## Migration Execution Integrations
 

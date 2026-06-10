@@ -16,8 +16,14 @@ from sqlalchemy.orm import Session
 
 from . import models, schemas
 from .config import settings
+from .connector_client import (
+    CONNECTOR_PLATFORMS,
+    call_connector_engine,
+    connector_engine_status,
+    validate_connector_platform,
+)
 from .database import Base, engine, get_db
-from .engines import build_kvm_to_esxi_preflight, discover_kvm, discover_vcenter, validate_kvm, validate_vcenter
+from .engines import build_kvm_to_esxi_preflight
 
 MIGRATION_STATUSES = {
     "Discovered",
@@ -359,9 +365,18 @@ def list_connectors(category: str | None = None, db: Session = Depends(get_db), 
     return query.order_by(models.ConnectorProfile.created_at.desc()).all()
 
 
+@app.get("/api/connector-platforms")
+def list_connector_platforms(_user: models.LocalUser = Depends(current_user)):
+    return {"categories": CONNECTOR_PLATFORMS, "engines": connector_engine_status()}
+
+
 @app.post("/api/connectors", response_model=schemas.Connector, status_code=201)
 def create_connector(payload: schemas.ConnectorCreate, db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
-    connector = models.ConnectorProfile(**payload.model_dump())
+    try:
+        connector_type = validate_connector_platform(payload.connector_category, payload.connector_type)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    connector = models.ConnectorProfile(**{**payload.model_dump(), "connector_type": connector_type, "status": "Not validated"})
     db.add(connector)
     db.commit()
     db.refresh(connector)
@@ -373,7 +388,11 @@ def update_connector(connector_id: int, payload: schemas.ConnectorCreate, db: Se
     connector = db.get(models.ConnectorProfile, connector_id)
     if not connector:
         raise HTTPException(404, "Connector not found")
-    for key, value in payload.model_dump().items():
+    try:
+        connector_type = validate_connector_platform(payload.connector_category, payload.connector_type)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    for key, value in {**payload.model_dump(), "connector_type": connector_type, "status": "Not validated"}.items():
         setattr(connector, key, value)
     db.commit()
     db.refresh(connector)
@@ -385,21 +404,16 @@ def validate_connector(connector_id: int, db: Session = Depends(get_db), _user: 
     connector = db.get(models.ConnectorProfile, connector_id)
     if not connector:
         raise HTTPException(404, "Connector not found")
-    if connector.connector_type == "KVM":
-        result = validate_kvm(connector.endpoint, connector.username, connector.credential_reference)
-    elif connector.connector_type in {"VMware ESXi / vCenter", "VMware ESXi", "vCenter"}:
-        result = validate_vcenter(connector.endpoint, connector.username, connector.credential_reference)
-    else:
-        result = None
-    if result is None:
-        connector.status = "Unsupported"
-        message = f"No validation engine for {connector.connector_type}"
-        commands: list[str] = []
-        status = "Unsupported"
-    else:
-        connector.status = "Validated" if result.ok else "Validation failed"
-        message = result.message
-        commands = result.commands
+    try:
+        payload = call_connector_engine(connector, "validate")
+        connector.status = "Validated" if payload.get("ok") else "Validation failed"
+        message = payload.get("message", "Connector engine returned no message")
+        commands = payload.get("commands", [])
+        status = connector.status
+    except Exception as exc:
+        connector.status = "Validation failed"
+        message = f"{connector.connector_category.title()} Connector Engine unavailable or failed: {exc}"
+        commands = []
         status = connector.status
     db.commit()
     db.refresh(connector)
@@ -411,25 +425,27 @@ def discover_connector(connector_id: int, payload: schemas.DiscoveryRequest, db:
     connector = db.get(models.ConnectorProfile, connector_id)
     if not connector:
         raise HTTPException(404, "Connector not found")
-    if connector.connector_type == "KVM":
-        result = discover_kvm(connector.endpoint, connector.username, connector.credential_reference)
-    elif connector.connector_type in {"VMware ESXi / vCenter", "VMware ESXi", "vCenter"}:
-        result = discover_vcenter(connector.endpoint, connector.username, connector.credential_reference)
-    else:
-        result = None
-    if result is None:
-        run = models.DiscoveryRun(connector_id=connector.id, status="Unsupported", message=f"No discovery engine for {connector.connector_type}", records_json="[]", commands_json="[]")
-    else:
+    try:
+        result = call_connector_engine(connector, "discover")
         imported = 0
-        if result.ok and payload.import_to_project_id:
-            imported = import_discovered_vms(db, payload.import_to_project_id, payload.target_platform or "Unassigned", result.records)
-        message = result.message + (f"; imported {imported} VMs" if imported else "")
+        records = result.get("records", [])
+        if result.get("ok") and payload.import_to_project_id:
+            imported = import_discovered_vms(db, payload.import_to_project_id, payload.target_platform or "Unassigned", records)
+        message = result.get("message", "Connector engine returned no message") + (f"; imported {imported} VMs" if imported else "")
         run = models.DiscoveryRun(
             connector_id=connector.id,
-            status="Completed" if result.ok else "Failed",
+            status="Completed" if result.get("ok") else "Failed",
             message=message,
-            records_json=json.dumps(result.records),
-            commands_json=json.dumps(result.commands),
+            records_json=json.dumps(records),
+            commands_json=json.dumps(result.get("commands", [])),
+        )
+    except Exception as exc:
+        run = models.DiscoveryRun(
+            connector_id=connector.id,
+            status="Failed",
+            message=f"{connector.connector_category.title()} Connector Engine unavailable or failed: {exc}",
+            records_json="[]",
+            commands_json="[]",
         )
     db.add(run)
     db.commit()

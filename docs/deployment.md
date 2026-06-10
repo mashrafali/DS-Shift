@@ -43,12 +43,20 @@ For lab migration testing, set connector credential references to environment-ba
 ```bash
 KVM_PASSWORD=<kvm-password>
 VCENTER_PASSWORD=<vcenter-password>
+NUTANIX_PASSWORD=<prism-central-password>
 ```
 
 Use these connector credential references in the UI:
 
 - KVM connector: `env:KVM_PASSWORD`
 - vCenter connector: `env:VCENTER_PASSWORD`
+- Nutanix connector: `env:NUTANIX_PASSWORD`
+
+Cloud connector credential values are JSON strings stored only in `.env`:
+
+- AWS: `AWS_CONNECTOR_CREDENTIALS` with `access_key_id`, `secret_access_key`, optional `session_token`, and `region`.
+- Google Cloud: `GCP_CONNECTOR_CREDENTIALS` containing a service-account JSON document.
+- Azure: `AZURE_CONNECTOR_CREDENTIALS` with `tenant_id`, `client_id`, `client_secret`, and `subscription_id`.
 
 The release-candidate engine validates and discovers real KVM and vCenter inventory without storing these passwords in PostgreSQL. Live KVM-to-ESXi conversion remains gated and additionally requires `qemu-img` and `virt-v2v` in the runtime.
 

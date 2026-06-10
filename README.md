@@ -62,8 +62,9 @@ The seeded lab admin is `admin` with the configured `ADMIN_INITIAL_PASSWORD`.
 
 ## Discovery and Migration Engine
 
-- KVM discovery uses Python SSH plus `virsh` against connector endpoints such as `qemu+ssh://root@kvm/system`.
-- vCenter discovery uses the VMware SDK for Python with password references such as `env:VCENTER_PASSWORD`.
+- The Host Connector Engine supports KVM through Paramiko/`virsh`, VMware through pyVmomi, and Nutanix AHV through the Prism Central v3 API.
+- The Cloud Connector Engine supports AWS EC2 through Boto3, Google Compute Engine through the Google Cloud SDK, and Azure VMs through Azure Identity and Compute Management SDKs.
+- Connector metadata and discovery history remain in the main backend; validation and discovery execute in the isolated engine containers.
 - KVM to ESXi/vCenter migration jobs run a non-destructive migration test preflight: source connector validation, source VM inspection, target vCenter validation, and live conversion tool checks.
 - The engine container must receive `KVM_PASSWORD` and `VCENTER_PASSWORD` through `.env` for lab testing. Live conversion still requires `qemu-img` and `virt-v2v`.
 

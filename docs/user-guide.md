@@ -39,11 +39,13 @@ Use the Reports page to export a basic VM readiness CSV from the current invento
 
 ## Connectors
 
-Host Connectors store KVM, VMware ESXi / vCenter, and Nutanix AHV endpoint metadata.
-Cloud Connectors store GCP, AWS, Azure, and other cloud endpoint metadata.
-Passwords are not stored directly; use a credential reference placeholder until vault integration is implemented.
+`Connectors` is the first navigation entry. Select `Host Connectors` or `Cloud Connectors` to list existing connectors or create a new one.
 
-Use `Discover` on a KVM connector to run SSH and `virsh` discovery. Use `Discover` on a VMware ESXi / vCenter connector to run VMware SDK discovery. Discovery results are listed on the Migration Engine page.
+Host Connectors support KVM, VMware ESXi / vCenter, and Nutanix AHV.
+Cloud Connectors support Amazon Web Services, Google Cloud Platform, and Microsoft Azure.
+Passwords and cloud credential JSON are not stored in PostgreSQL; connector records use `env:` references to secrets supplied to the relevant engine container.
+
+Use `Validate` to test the platform API with its public SDK or API client. Use `Discover` to collect VM or instance inventory. Discovery results are listed on the Migration Engine page.
 
 ## Migration Engine
 

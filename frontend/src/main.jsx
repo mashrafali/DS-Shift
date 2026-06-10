@@ -49,8 +49,18 @@ const migrationTypes = {
 };
 
 const platforms = ['KVM', 'VMware ESXi / vCenter', 'Nutanix AHV', 'Google Cloud Platform', 'AWS', 'Azure', 'Other'];
-const hostConnectorTypes = ['KVM', 'VMware ESXi / vCenter', 'Nutanix AHV'];
-const cloudConnectorTypes = ['Google Cloud Platform', 'AWS', 'Azure', 'Other Cloud'];
+const fallbackConnectorPlatforms = {
+  host: [
+    { type: 'KVM', tool: 'Paramiko SSH and virsh', endpoint_hint: 'qemu+ssh://root@hostname/system', credential_hint: 'ssh-key:container or env:KVM_PASSWORD' },
+    { type: 'VMware ESXi / vCenter', tool: 'VMware pyVmomi', endpoint_hint: 'https://vcenter.example.com/sdk', credential_hint: 'env:VCENTER_PASSWORD' },
+    { type: 'Nutanix AHV', tool: 'Nutanix Prism Central v3 REST API', endpoint_hint: 'https://prism-central.example.com:9440', credential_hint: 'env:NUTANIX_PASSWORD' },
+  ],
+  cloud: [
+    { type: 'Amazon Web Services', tool: 'AWS SDK for Python (Boto3)', endpoint_hint: 'AWS region, for example us-east-1', credential_hint: 'env:AWS_CONNECTOR_CREDENTIALS' },
+    { type: 'Google Cloud Platform', tool: 'Google Cloud Compute Python SDK', endpoint_hint: 'Google Cloud project ID', credential_hint: 'env:GCP_CONNECTOR_CREDENTIALS' },
+    { type: 'Microsoft Azure', tool: 'Azure Identity and Compute Management SDKs', endpoint_hint: 'Azure subscription ID', credential_hint: 'env:AZURE_CONNECTOR_CREDENTIALS' },
+  ],
+};
 const statuses = ['Discovered', 'Assessed', 'Ready for migration', 'Replication prepared', 'Migration in progress', 'Cutover scheduled', 'Cutover completed', 'Validation completed', 'Failed', 'Rolled back', 'Blocked'];
 
 const blankProject = {
@@ -129,6 +139,8 @@ function App() {
   const [vms, setVms] = useState([]);
   const [waves, setWaves] = useState([]);
   const [connectors, setConnectors] = useState([]);
+  const [connectorCatalog, setConnectorCatalog] = useState({ categories: fallbackConnectorPlatforms, engines: [] });
+  const [connectorCategory, setConnectorCategory] = useState('');
   const [users, setUsers] = useState([]);
   const [discoveryRuns, setDiscoveryRuns] = useState([]);
   const [migrationJobs, setMigrationJobs] = useState([]);
@@ -173,13 +185,14 @@ function App() {
     if (!token) return;
     setError('');
     try {
-      const [me, dashboard, projectRows, vmRows, waveRows, connectorRows, discoveryRows, migrationRows, appSettings] = await Promise.all([
+      const [me, dashboard, projectRows, vmRows, waveRows, connectorRows, connectorPlatformRows, discoveryRows, migrationRows, appSettings] = await Promise.all([
         api('/auth/me'),
         api('/dashboard'),
         api('/projects'),
         api('/vms'),
         api('/waves'),
         api('/connectors'),
+        api('/connector-platforms'),
         api('/discovery-runs'),
         api('/migration-jobs'),
         api('/settings'),
@@ -192,6 +205,7 @@ function App() {
       setVms(vmRows);
       setWaves(waveRows);
       setConnectors(connectorRows);
+      setConnectorCatalog(connectorPlatformRows);
       setDiscoveryRuns(discoveryRows);
       setMigrationJobs(migrationRows);
       setSettings(appSettings);
@@ -289,7 +303,8 @@ function App() {
   };
 
   const editConnector = (connector) => {
-    setEditConnectorForm({ ...connector, port: connector.port || '' });
+    const connectorType = connector.connector_type === 'AWS' ? 'Amazon Web Services' : connector.connector_type === 'Azure' ? 'Microsoft Azure' : connector.connector_type;
+    setEditConnectorForm({ ...connector, connector_type: connectorType, port: connector.port || '' });
     setEditingConnectorId(connector.id);
     setConnectorResult(null);
   };
@@ -415,11 +430,10 @@ function App() {
   if (!token) return <Login form={loginForm} setForm={setLoginForm} submit={login} error={error} />;
 
   const nav = [
+    ['connectors', ServerCog, 'Connectors'],
     ['dashboard', Gauge, 'Dashboard'],
     ['projects', Layers, 'Projects'],
     ['inventory', HardDrive, 'VM Inventory'],
-    ['hosts', ServerCog, 'Host Connectors'],
-    ['clouds', Cloud, 'Cloud Connectors'],
     ['engine', ArrowRightLeft, 'Migration Engine'],
     ['waves', CalendarClock, 'Waves'],
     ['reports', FileText, 'Reports'],
@@ -469,8 +483,7 @@ function App() {
         {active === 'dashboard' && <Dashboard summary={summary} vms={vms} connectors={connectors} />}
         {active === 'projects' && <Projects projects={projects} form={projectForm} setForm={setProjectForm} save={saveProject} editProject={editProject} editingProjectId={editingProjectId} editForm={editProjectForm} setEditForm={setEditProjectForm} saveEdit={saveProjectEdit} cancelEdit={() => { setEditProjectForm(blankProject); setEditingProjectId(null); }} />}
         {active === 'inventory' && <Inventory vms={vms} projects={projects} form={vmForm} setForm={setVmForm} create={createVm} changeStatus={changeStatus} />}
-        {active === 'hosts' && <Connectors title="Host Connector" category="host" rows={connectors.filter((c) => c.connector_category === 'host')} form={connectorForm} setForm={setConnectorForm} save={saveConnector} editForm={editConnectorForm} setEditForm={setEditConnectorForm} saveEdit={saveConnectorEdit} types={hostConnectorTypes} discover={discoverConnector} validate={validateConnector} edit={editConnector} cancelEdit={cancelConnectorEdit} editingConnectorId={editingConnectorId} result={connectorResult} />}
-        {active === 'clouds' && <Connectors title="Cloud Connector" category="cloud" rows={connectors.filter((c) => c.connector_category === 'cloud')} form={connectorForm} setForm={setConnectorForm} save={saveConnector} editForm={editConnectorForm} setEditForm={setEditConnectorForm} saveEdit={saveConnectorEdit} types={cloudConnectorTypes} discover={discoverConnector} validate={validateConnector} edit={editConnector} cancelEdit={cancelConnectorEdit} editingConnectorId={editingConnectorId} result={connectorResult} />}
+        {active === 'connectors' && <ConnectorWorkspace category={connectorCategory} setCategory={setConnectorCategory} catalog={connectorCatalog} connectors={connectors} form={connectorForm} setForm={setConnectorForm} save={saveConnector} editForm={editConnectorForm} setEditForm={setEditConnectorForm} saveEdit={saveConnectorEdit} discover={discoverConnector} validate={validateConnector} edit={editConnector} cancelEdit={cancelConnectorEdit} editingConnectorId={editingConnectorId} result={connectorResult} />}
         {active === 'engine' && <MigrationEngine connectors={connectors} form={migrationJobForm} setForm={setMigrationJobForm} save={createMigrationJob} jobs={migrationJobs} discoveryRuns={discoveryRuns} />}
         {active === 'waves' && <Waves waves={waves} />}
         {active === 'reports' && <Reports csv={csv} vms={vms} />}
@@ -486,7 +499,7 @@ function Login({ form, setForm, submit, error }) {
 }
 
 function titleFor(active) {
-  return ({ dashboard: 'Migration Command Center', projects: 'Saved Migration Projects', inventory: 'VM Inventory', hosts: 'Host Connectors', clouds: 'Cloud Connectors', engine: 'Discovery and Migration Engine', waves: 'Migration Waves', reports: 'Reports', users: 'User Management', settings: 'Settings Control' })[active];
+  return ({ connectors: 'Connectors', dashboard: 'Migration Command Center', projects: 'Saved Migration Projects', inventory: 'VM Inventory', engine: 'Discovery and Migration Engine', waves: 'Migration Waves', reports: 'Reports', users: 'User Management', settings: 'Settings Control' })[active];
 }
 
 function Dashboard({ summary, vms, connectors }) {
@@ -513,15 +526,30 @@ function Inventory({ vms, projects, form, setForm, create, changeStatus }) {
   return <section className="split"><FormPanel title="Add VM manually" onSubmit={create}><Select label="Project" value={form.project_id} options={projects.map((p) => [p.id, p.project_name])} onChange={(v) => setForm({ ...form, project_id: v })} /><Input label="VM name" value={form.vm_name} onChange={(v) => setForm({ ...form, vm_name: v })} required /><Select label="Source" value={form.source_platform} options={platforms} onChange={(v) => setForm({ ...form, source_platform: v })} /><Select label="Target" value={form.target_platform} options={platforms} onChange={(v) => setForm({ ...form, target_platform: v })} /><Input label="CPU" type="number" value={form.cpu} onChange={(v) => setForm({ ...form, cpu: v })} /><Input label="Memory GB" type="number" value={form.memory_gb} onChange={(v) => setForm({ ...form, memory_gb: v })} /><Input label="Disk GB" type="number" value={form.disk_gb} onChange={(v) => setForm({ ...form, disk_gb: v })} /><Input label="Owner" value={form.application_owner} onChange={(v) => setForm({ ...form, application_owner: v })} /><button className="primary"><Plus size={16} /> Add VM</button></FormPanel><div className="table-wrap"><table><thead><tr><th>VM</th><th>Source</th><th>Target</th><th>Size</th><th>Status</th><th>Change status</th></tr></thead><tbody>{vms.map((vm) => <tr key={vm.id}><td>{vm.vm_name}</td><td>{vm.source_platform}</td><td>{vm.target_platform}</td><td>{vm.cpu} CPU / {vm.memory_gb} GB</td><td><Badge value={vm.current_status} /></td><td><select value={vm.current_status} onChange={(e) => changeStatus(vm, e.target.value)}>{statuses.map((s) => <option key={s}>{s}</option>)}</select></td></tr>)}</tbody></table></div></section>;
 }
 
-function ConnectorFields({ form, setForm, category, types }) {
-  const scopedForm = form.connector_category === category ? form : { ...blankConnector, connector_category: category, connector_type: types[0] };
-  const update = (patch) => setForm({ ...scopedForm, ...patch, connector_category: category });
-  return <><Select label="Type" value={scopedForm.connector_type} options={types} onChange={(v) => update({ connector_type: v })} /><Input label="Connector name" value={scopedForm.name} onChange={(v) => update({ name: v })} required /><Input label="Endpoint / API URL" value={scopedForm.endpoint} onChange={(v) => update({ endpoint: v })} /><Input label="Port" type="number" value={scopedForm.port || ''} onChange={(v) => update({ port: v })} /><Input label="Username" value={scopedForm.username || ''} onChange={(v) => update({ username: v })} /><Input label="Credential reference" value={scopedForm.credential_reference || ''} onChange={(v) => update({ credential_reference: v })} /><Input label="Environment" value={scopedForm.environment || ''} onChange={(v) => update({ environment: v })} /><Select label="Status" value={scopedForm.status || 'Not validated'} options={['Not validated', 'Validated', 'Validation failed', 'Unsupported']} onChange={(v) => update({ status: v })} /><TextArea label="Notes" value={scopedForm.notes || ''} onChange={(v) => update({ notes: v })} /></>;
+function ConnectorWorkspace({ category, setCategory, catalog, connectors, ...props }) {
+  const categories = catalog.categories || fallbackConnectorPlatforms;
+  if (!category) {
+    return <section className="connector-home"><div className="connector-engine-grid">{[['host', ServerCog, 'Host Connectors', 'On-premises and private virtualization platforms'], ['cloud', Cloud, 'Cloud Connectors', 'Public cloud compute platforms']].map(([key, Icon, title, description]) => {
+      const engine = (catalog.engines || []).find((item) => item.category === key);
+      const count = connectors.filter((connector) => connector.connector_category === key).length;
+      return <button className="connector-engine-card" key={key} onClick={() => { setCategory(key); props.setForm({ ...blankConnector, connector_category: key, connector_type: categories[key][0].type }); }}><span className="connector-engine-icon"><Icon size={28} /></span><span><strong>{title}</strong><small>{description}</small><small>{count} configured connector{count === 1 ? '' : 's'} · Engine: {engine?.status || 'unknown'}</small></span></button>;
+    })}</div><div className="about"><h2>Available connector engines</h2><p>Select Host Connectors or Cloud Connectors to list existing connectors, create a new connector, validate credentials, and discover workloads.</p></div></section>;
+  }
+  const platforms = categories[category] || [];
+  return <section className="stack"><div className="connector-section-header"><button className="secondary" onClick={() => { setCategory(''); props.cancelEdit(); }}>All connector engines</button><div><h2>{category === 'host' ? 'Host Connectors' : 'Cloud Connectors'}</h2><p>{platforms.map((platform) => platform.type).join(' · ')}</p></div></div><Connectors title={category === 'host' ? 'Host Connector' : 'Cloud Connector'} category={category} rows={connectors.filter((connector) => connector.connector_category === category)} platforms={platforms} {...props} /></section>;
 }
 
-function Connectors({ title, category, rows, form, setForm, save, editForm, setEditForm, saveEdit, types, discover, validate, edit, cancelEdit, editingConnectorId, result }) {
+function ConnectorFields({ form, setForm, category, platforms }) {
+  const types = platforms.map((platform) => platform.type);
+  const scopedForm = form.connector_category === category ? form : { ...blankConnector, connector_category: category, connector_type: types[0] };
+  const update = (patch) => setForm({ ...scopedForm, ...patch, connector_category: category });
+  const platform = platforms.find((item) => item.type === scopedForm.connector_type) || platforms[0];
+  return <><Select label="Platform" value={scopedForm.connector_type} options={types} onChange={(v) => update({ connector_type: v, endpoint: '', credential_reference: '' })} /><div className="tip"><strong>{platform?.tool}</strong><br />Endpoint: {platform?.endpoint_hint}<br />Credential: {platform?.credential_hint}</div><Input label="Connector name" value={scopedForm.name} onChange={(v) => update({ name: v })} required /><Input label={category === 'cloud' ? 'Region / Project / Subscription' : 'Endpoint / API URL'} value={scopedForm.endpoint} onChange={(v) => update({ endpoint: v })} /><Input label="Port" type="number" value={scopedForm.port || ''} onChange={(v) => update({ port: v })} /><Input label="Username" value={scopedForm.username || ''} onChange={(v) => update({ username: v })} /><Input label="Credential reference" value={scopedForm.credential_reference || ''} onChange={(v) => update({ credential_reference: v })} /><Input label="Environment" value={scopedForm.environment || ''} onChange={(v) => update({ environment: v })} /><TextArea label="Notes" value={scopedForm.notes || ''} onChange={(v) => update({ notes: v })} /></>;
+}
+
+function Connectors({ title, category, rows, form, setForm, save, editForm, setEditForm, saveEdit, platforms, discover, validate, edit, cancelEdit, editingConnectorId, result }) {
   const isEditing = editingConnectorId && editForm.connector_category === category;
-  return <section className="split"><FormPanel title={`Add ${title}`} onSubmit={save}><ConnectorFields form={form} setForm={setForm} category={category} types={types} /><div className="tip">Validate performs a real connector check and shows the result. Discovery collects VM inventory when the required runtime tools and credentials are available.</div><button className="primary"><Save size={16} /> Add connector</button></FormPanel><div className="stack">{result && result.connector?.connector_category === category && <div className={`result ${result.status === 'Validated' ? 'success' : 'danger'}`}><strong>{result.status}</strong><span>{result.message}</span>{Boolean(result.commands?.length) && <code>{result.commands.join(' | ')}</code>}</div>}<div className="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Endpoint</th><th>Credential</th><th>Status</th><th>Actions</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td>{row.name}</td><td>{row.connector_type}</td><td>{row.endpoint || '-'}</td><td>{row.credential_reference || '-'}</td><td><Badge value={row.status} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini" onClick={() => validate(row)}><CheckCircle2 size={14} /> Validate</button><button className="mini" onClick={() => discover(row)}><Search size={14} /> Discover</button></div></td></tr>)}</tbody></table></div></div>{isEditing && <Modal title={`Edit ${title}`} onClose={cancelEdit}><FormPanel title="" onSubmit={saveEdit}><ConnectorFields form={editForm} setForm={setEditForm} category={category} types={types} /><div className="tip">Validate performs a real connector check and shows the result. Discovery collects VM inventory when the required runtime tools and credentials are available.</div><div className="button-row"><button className="primary"><Save size={16} /> Save changes</button><button className="secondary" type="button" onClick={cancelEdit}><X size={16} /> Cancel</button></div></FormPanel></Modal>}</section>;
+  return <section className="split"><FormPanel title={`Add ${title}`} onSubmit={save}><ConnectorFields form={form} setForm={setForm} category={category} platforms={platforms} /><div className="tip">New connectors are stored by DS Shift and executed by the dedicated {category === 'host' ? 'Host' : 'Cloud'} Connector Engine.</div><button className="primary"><Save size={16} /> Add connector</button></FormPanel><div className="stack">{result && result.connector?.connector_category === category && <div className={`result ${result.status === 'Validated' ? 'success' : 'danger'}`}><strong>{result.status}</strong><span>{result.message}</span>{Boolean(result.commands?.length) && <code>{result.commands.join(' | ')}</code>}</div>}<div className="table-wrap"><table><thead><tr><th>Name</th><th>Platform</th><th>Endpoint</th><th>Credential</th><th>Status</th><th>Actions</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td>{row.name}</td><td>{row.connector_type}</td><td>{row.endpoint || '-'}</td><td>{row.credential_reference || '-'}</td><td><Badge value={row.status} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini" onClick={() => validate(row)}><CheckCircle2 size={14} /> Validate</button><button className="mini" onClick={() => discover(row)}><Search size={14} /> Discover</button></div></td></tr>)}</tbody></table></div></div>{isEditing && <Modal title={`Edit ${title}`} onClose={cancelEdit}><FormPanel title="" onSubmit={saveEdit}><ConnectorFields form={editForm} setForm={setEditForm} category={category} platforms={platforms} /><div className="button-row"><button className="primary"><Save size={16} /> Save changes</button><button className="secondary" type="button" onClick={cancelEdit}><X size={16} /> Cancel</button></div></FormPanel></Modal>}</section>;
 }
 
 function MigrationEngine({ connectors, form, setForm, save, jobs, discoveryRuns }) {

@@ -1,0 +1,12 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+COPY requirements-host.txt .
+RUN pip install --no-cache-dir -r requirements-host.txt
+COPY common.py host_app.py ./
+
+EXPOSE 8101
+CMD ["uvicorn", "host_app:app", "--host", "0.0.0.0", "--port", "8101"]

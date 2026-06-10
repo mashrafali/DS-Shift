@@ -26,9 +26,22 @@ DS Shift uses a three-tier application architecture deployed with Docker Compose
 - Creates database tables at startup for the MVP.
 - Exposes OpenAPI documentation.
 - Provides local username/password authentication with bearer sessions.
-- Provides KVM discovery through Python SSH and `virsh`.
-- Provides vCenter discovery through the VMware SDK for Python.
+- Brokers connector validation and discovery requests to dedicated connector engine services.
 - Provides KVM-to-ESXi/vCenter migration test preflight job creation using connector validation, source VM inspection, target validation, and a `virt-v2v` runbook model.
+
+`host-connector-engine`
+
+- Validates and discovers KVM/libvirt with Paramiko and `virsh`.
+- Validates and discovers VMware vCenter/ESXi with pyVmomi.
+- Validates and discovers Nutanix AHV with the Prism Central v3 REST API.
+- Receives only host-platform credentials and the connector SSH key mount.
+
+`cloud-connector-engine`
+
+- Validates and discovers AWS EC2 with Boto3.
+- Validates and discovers Google Compute Engine with the Google Cloud Compute SDK.
+- Validates and discovers Azure VMs with Azure Identity and Compute Management SDKs.
+- Receives only cloud credential JSON environment variables.
 
 `database`
 
@@ -63,6 +76,6 @@ The migration engine is intentionally split into safe preflight and live executi
 
 - RBAC middleware.
 - Vault-backed credential references.
-- Platform discovery connectors for GCP, AWS, Azure, and Nutanix.
+- Additional platform discovery connectors and richer inventory attributes.
 - Controlled migration execution adapters for virt-v2v, cloud migration APIs, and replication tools.
 - Audit logging and report export services.
