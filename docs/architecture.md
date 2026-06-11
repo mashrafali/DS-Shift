@@ -66,7 +66,7 @@ DS Shift uses a three-tier application architecture deployed with Docker Compose
 - `MigrationProject`: retained legacy compatibility data; no longer exposed in
   navigation.
 - `PlatformProfile`: source or target platform placeholder with credential reference metadata.
-- `VmInventory`: connector-owned discovered VM inventory and migration state.
+- `VmInventory`: connector-owned discovered VM inventory with stable provider identifiers, host placement, and migration state.
 - `MigrationWave`: planned migration grouping and window.
 - `VmStatusHistory`: audit trail for VM migration status changes.
 - `LocalUser`: local login user with hashed password.

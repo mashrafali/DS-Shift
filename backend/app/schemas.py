@@ -100,6 +100,7 @@ class Wave(WaveBase):
 class VmBase(BaseModel):
     project_id: Optional[int] = None
     connector_id: Optional[int] = None
+    external_id: Optional[str] = None
     host_name: Optional[str] = None
     wave_id: Optional[int] = None
     vm_name: str

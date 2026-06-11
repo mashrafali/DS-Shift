@@ -98,6 +98,7 @@ def discover_aws(request: ConnectorRequest) -> EngineResult:
                     records.append(
                         {
                             "vm_name": name,
+                            "external_id": instance["InstanceId"],
                             "source_platform": "Amazon Web Services",
                             "cpu": instance.get("CpuOptions", {}).get("CoreCount", 0) * instance.get("CpuOptions", {}).get("ThreadsPerCore", 1),
                             "memory_gb": 0,
@@ -143,6 +144,7 @@ def discover_gcp(request: ConnectorRequest) -> EngineResult:
                 records.append(
                     {
                         "vm_name": instance.name,
+                        "external_id": str(instance.id),
                         "source_platform": "Google Cloud Platform",
                         "cpu": 0,
                         "memory_gb": 0,
@@ -190,6 +192,7 @@ def discover_azure(request: ConnectorRequest) -> EngineResult:
             records.append(
                 {
                     "vm_name": vm.name,
+                    "external_id": vm.id,
                     "source_platform": "Microsoft Azure",
                     "cpu": 0,
                     "memory_gb": 0,

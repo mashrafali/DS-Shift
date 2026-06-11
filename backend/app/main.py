@@ -159,7 +159,9 @@ def startup() -> None:
         connection.execute(text("ALTER TABLE local_users ADD COLUMN IF NOT EXISTS profile_photo TEXT"))
         connection.execute(text("ALTER TABLE vm_inventory ALTER COLUMN project_id DROP NOT NULL"))
         connection.execute(text("ALTER TABLE vm_inventory ADD COLUMN IF NOT EXISTS connector_id INTEGER REFERENCES connector_profiles(id) ON DELETE SET NULL"))
+        connection.execute(text("ALTER TABLE vm_inventory ADD COLUMN IF NOT EXISTS external_id VARCHAR(255)"))
         connection.execute(text("ALTER TABLE vm_inventory ADD COLUMN IF NOT EXISTS host_name VARCHAR(255)"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_vm_inventory_external_id ON vm_inventory (external_id)"))
     db = next(get_db())
     try:
         seed_defaults(db)
@@ -577,14 +579,32 @@ def sync_discovered_vms(db: Session, connector: models.ConnectorProfile, records
         name = record.get("vm_name")
         if not name:
             continue
-        existing = db.query(models.VmInventory).filter(
-            models.VmInventory.connector_id == connector.id,
-            models.VmInventory.vm_name == name,
-        ).first()
+        external_id = record.get("external_id") or record.get("instance_id") or record.get("vm_id")
+        host_name = record.get("host_name")
+        existing = None
+        if external_id:
+            existing = db.query(models.VmInventory).filter(
+                models.VmInventory.connector_id == connector.id,
+                models.VmInventory.external_id == str(external_id),
+            ).first()
+            if not existing:
+                existing = db.query(models.VmInventory).filter(
+                    models.VmInventory.connector_id == connector.id,
+                    models.VmInventory.external_id.is_(None),
+                    models.VmInventory.host_name == host_name,
+                    models.VmInventory.vm_name == name,
+                ).first()
+        else:
+            existing = db.query(models.VmInventory).filter(
+                models.VmInventory.connector_id == connector.id,
+                models.VmInventory.host_name == host_name,
+                models.VmInventory.vm_name == name,
+            ).first()
         values = {
             "project_id": None,
             "connector_id": connector.id,
-            "host_name": record.get("host_name"),
+            "external_id": str(external_id) if external_id else None,
+            "host_name": host_name,
             "source_platform": record.get("source_platform") or connector.connector_type,
             "cpu": record.get("cpu") or 0,
             "memory_gb": record.get("memory_gb") or 0,

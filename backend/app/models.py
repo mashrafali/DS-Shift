@@ -77,6 +77,7 @@ class VmInventory(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("migration_projects.id", ondelete="SET NULL"), nullable=True)
     connector_id: Mapped[int | None] = mapped_column(ForeignKey("connector_profiles.id", ondelete="SET NULL"), nullable=True, index=True)
+    external_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     host_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     wave_id: Mapped[int | None] = mapped_column(ForeignKey("migration_waves.id"), nullable=True)
     vm_name: Mapped[str] = mapped_column(String(160), index=True)

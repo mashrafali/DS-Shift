@@ -151,12 +151,22 @@ def test_discovery_inventory_and_migration_plan_execution(monkeypatch):
         assert sync_discovered_vms(
             db,
             source,
-            [{"vm_name": "vm-01", "host_name": "kvm01", "source_platform": "KVM", "cpu": 4, "memory_gb": 8, "os_type": "Linux"}],
+            [{"vm_name": "vm-01", "external_id": "vm-101", "host_name": "kvm01", "source_platform": "KVM", "cpu": 4, "memory_gb": 8, "os_type": "Linux"}],
         ) == 1
         vm = db.query(models.VmInventory).one()
         assert vm.project_id is None
         assert vm.connector_id == source.id
+        assert vm.external_id == "vm-101"
         assert vm.host_name == "kvm01"
+
+        duplicate_name_records = [
+            {"vm_name": "vm-01", "external_id": "vm-101", "host_name": "kvm01", "source_platform": "KVM"},
+            {"vm_name": "vm-01", "external_id": "vm-102", "host_name": "kvm01", "source_platform": "KVM"},
+        ]
+        assert sync_discovered_vms(db, source, duplicate_name_records) == 2
+        assert db.query(models.VmInventory).count() == 2
+        assert sync_discovered_vms(db, source, duplicate_name_records) == 2
+        assert db.query(models.VmInventory).count() == 2
 
         plan = create_migration_plan(
             schemas.MigrationPlanCreate(name="Plan 1", vm_ids=[vm.id], target_connector_id=target.id),

@@ -135,6 +135,7 @@ def discover_kvm(request: ConnectorRequest) -> EngineResult:
             records.append(
                 {
                     "vm_name": name,
+                    "external_id": name,
                     "source_platform": "KVM",
                     "cpu": _match_int(text, r"CPU\(s\):\s+(\d+)") or 0,
                     "memory_gb": round((_match_int(text, r"Max memory:\s+(\d+) KiB") or 0) / 1024 / 1024),
@@ -224,6 +225,7 @@ def discover_vcenter(request: ConnectorRequest) -> EngineResult:
                 records.append(
                     {
                         "vm_name": config.name,
+                        "external_id": vm_obj._moId,
                         "source_platform": "VMware ESXi / vCenter",
                         "cpu": config.numCpu or 0,
                         "memory_gb": round((config.memorySizeMB or 0) / 1024),
@@ -308,6 +310,7 @@ def discover_nutanix(request: ConnectorRequest) -> EngineResult:
                     records.append(
                         {
                             "vm_name": spec.get("name") or entity.get("metadata", {}).get("uuid"),
+                            "external_id": entity.get("metadata", {}).get("uuid"),
                             "source_platform": "Nutanix AHV",
                             "cpu": resources.get("num_sockets", 0) * resources.get("num_vcpus_per_socket", 0),
                             "memory_gb": round(resources.get("memory_size_mib", 0) / 1024),
