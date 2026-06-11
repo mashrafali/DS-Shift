@@ -75,7 +75,9 @@ class VmInventory(TimestampMixin, Base):
     __tablename__ = "vm_inventory"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey("migration_projects.id", ondelete="CASCADE"))
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("migration_projects.id", ondelete="SET NULL"), nullable=True)
+    connector_id: Mapped[int | None] = mapped_column(ForeignKey("connector_profiles.id", ondelete="SET NULL"), nullable=True, index=True)
+    host_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     wave_id: Mapped[int | None] = mapped_column(ForeignKey("migration_waves.id"), nullable=True)
     vm_name: Mapped[str] = mapped_column(String(160), index=True)
     source_platform: Mapped[str] = mapped_column(String(80))
@@ -90,7 +92,7 @@ class VmInventory(TimestampMixin, Base):
     migration_wave: Mapped[str | None] = mapped_column(String(120), nullable=True)
     current_status: Mapped[str] = mapped_column(String(80), default="Discovered")
 
-    project: Mapped[MigrationProject] = relationship(back_populates="vms")
+    project: Mapped[MigrationProject | None] = relationship(back_populates="vms")
     wave: Mapped[MigrationWave | None] = relationship(back_populates="vms")
     history: Mapped[list["VmStatusHistory"]] = relationship(back_populates="vm", cascade="all, delete-orphan")
 
@@ -184,3 +186,19 @@ class MigrationJob(TimestampMixin, Base):
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
     runbook_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     commands_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class MigrationPlan(TimestampMixin, Base):
+    __tablename__ = "migration_plans"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    source_connector_id: Mapped[int] = mapped_column(ForeignKey("connector_profiles.id"))
+    target_connector_id: Mapped[int] = mapped_column(ForeignKey("connector_profiles.id"))
+    migration_type: Mapped[str] = mapped_column(String(100))
+    vm_ids_json: Mapped[str] = mapped_column(Text)
+    target_datastore: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    status: Mapped[str] = mapped_column(String(60), default="Draft")
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    results_json: Mapped[str] = mapped_column(Text, default="[]")
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

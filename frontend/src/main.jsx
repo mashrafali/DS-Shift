@@ -10,7 +10,6 @@ import {
   FileText,
   Gauge,
   HardDrive,
-  Info,
   KeyRound,
   Layers,
   LogOut,
@@ -39,16 +38,6 @@ function loadStoredToken() {
   return token;
 }
 
-const migrationTypes = {
-  'Lift and shift': 'Planned execution: validate source and target, copy or replicate the VM with minimal redesign, schedule cutover, then validate the target VM.',
-  'Cold migration': 'Planned execution: shut down the source VM, copy or convert its disks, create the target VM, start it, and run post-migration validation. Downtime is required.',
-  'Replication assisted': 'Planned execution: establish replication or backup synchronization, monitor readiness, stop the source at cutover, complete the final sync, and activate the target VM.',
-  'Conversion based': 'Planned execution: inspect the source VM, convert its disks and guest configuration with tools such as virt-v2v, create the target VM, and validate drivers and boot.',
-  'Cloud rehost': 'Planned execution: assess cloud compatibility, convert or upload VM disks, create cloud networking and compute resources, launch the instance, and validate connectivity.',
-  'Any-to-any workflow': 'Planned execution: build a generic discovery, assessment, transfer, cutover, and validation runbook after the source and target platforms are finalized.',
-};
-
-const platforms = ['KVM', 'VMware ESXi / vCenter', 'Nutanix AHV', 'Google Cloud Platform', 'AWS', 'Azure', 'Other'];
 const fallbackConnectorPlatforms = {
   host: [
     { type: 'KVM', tool: 'Paramiko SSH and virsh', endpoint_hint: 'qemu+ssh://root@hostname/system', credential_hint: 'ssh-key:container or env:KVM_PASSWORD' },
@@ -62,34 +51,6 @@ const fallbackConnectorPlatforms = {
   ],
 };
 const statuses = ['Discovered', 'Assessed', 'Ready for migration', 'Replication prepared', 'Migration in progress', 'Cutover scheduled', 'Cutover completed', 'Validation completed', 'Failed', 'Rolled back', 'Blocked'];
-
-const blankProject = {
-  project_name: '',
-  customer_name: '',
-  source_platform: 'KVM',
-  target_platform: 'VMware ESXi / vCenter',
-  migration_type: 'Lift and shift',
-  planned_start_date: '',
-  planned_cutover_date: '',
-  status: 'Planning',
-  notes: '',
-};
-
-const blankVm = {
-  project_id: 1,
-  vm_name: '',
-  source_platform: 'KVM',
-  target_platform: 'VMware ESXi / vCenter',
-  cpu: 2,
-  memory_gb: 4,
-  disk_gb: 80,
-  os_type: 'Linux',
-  ip_address: '',
-  application_owner: '',
-  criticality: 'Medium',
-  migration_wave: 'Wave 1',
-  current_status: 'Discovered',
-};
 
 const blankConnector = {
   name: '',
@@ -121,13 +82,11 @@ const blankUser = {
   profile_photo: '',
 };
 
-const blankMigrationJob = {
-  source_connector_id: '',
+const blankMigrationPlan = {
+  name: '',
   target_connector_id: '',
-  vm_name: '',
-  target_name: '',
   target_datastore: '',
-  migration_type: 'KVM to ESXi',
+  notes: '',
 };
 
 function App() {
@@ -135,7 +94,6 @@ function App() {
   const [user, setUser] = useState(null);
   const [active, setActive] = useState('dashboard');
   const [summary, setSummary] = useState(null);
-  const [projects, setProjects] = useState([]);
   const [vms, setVms] = useState([]);
   const [waves, setWaves] = useState([]);
   const [connectors, setConnectors] = useState([]);
@@ -143,15 +101,15 @@ function App() {
   const [connectorCatalog, setConnectorCatalog] = useState({ categories: fallbackConnectorPlatforms, engines: [] });
   const [connectorCategory, setConnectorCategory] = useState('');
   const [users, setUsers] = useState([]);
-  const [discoveryRuns, setDiscoveryRuns] = useState([]);
-  const [migrationJobs, setMigrationJobs] = useState([]);
+  const [migrationPlans, setMigrationPlans] = useState([]);
   const [settings, setSettings] = useState(blankSettings);
   const [serviceStatus, setServiceStatus] = useState({ services: [], monitor_error: '' });
   const [serviceStatusLoading, setServiceStatusLoading] = useState(false);
-  const [projectForm, setProjectForm] = useState(blankProject);
-  const [editingProjectId, setEditingProjectId] = useState(null);
-  const [editProjectForm, setEditProjectForm] = useState(blankProject);
-  const [vmForm, setVmForm] = useState(blankVm);
+  const [selectedVmIds, setSelectedVmIds] = useState([]);
+  const [migrationPlanForm, setMigrationPlanForm] = useState(blankMigrationPlan);
+  const [showPlanModal, setShowPlanModal] = useState(false);
+  const [selectedPlan, setSelectedPlan] = useState(null);
+  const [executingPlanId, setExecutingPlanId] = useState(null);
   const [connectorForm, setConnectorForm] = useState(blankConnector);
   const [editingConnectorId, setEditingConnectorId] = useState(null);
   const [editConnectorForm, setEditConnectorForm] = useState(blankConnector);
@@ -160,7 +118,6 @@ function App() {
   const [userForm, setUserForm] = useState(blankUser);
   const [editingUserId, setEditingUserId] = useState(null);
   const [editUserForm, setEditUserForm] = useState(blankUser);
-  const [migrationJobForm, setMigrationJobForm] = useState(blankMigrationJob);
   const [loginForm, setLoginForm] = useState({ username: 'admin', password: '' });
   const [error, setError] = useState('');
 
@@ -189,33 +146,28 @@ function App() {
     if (!token) return;
     setError('');
     try {
-      const [me, dashboard, projectRows, vmRows, waveRows, connectorRows, connectorPlatformRows, hostRows, discoveryRows, migrationRows, appSettings] = await Promise.all([
+      const [me, dashboard, vmRows, waveRows, connectorRows, connectorPlatformRows, hostRows, planRows, appSettings] = await Promise.all([
         api('/auth/me'),
         api('/dashboard'),
-        api('/projects'),
         api('/vms'),
         api('/waves'),
         api('/connectors'),
         api('/connector-platforms'),
         api('/hosts'),
-        api('/discovery-runs'),
-        api('/migration-jobs'),
+        api('/migration-plans'),
         api('/settings'),
       ]);
       const userRows = me.role === 'admin' ? await api('/users') : [];
       setUser(me);
       setUsers(userRows);
       setSummary(dashboard);
-      setProjects(projectRows);
       setVms(vmRows);
       setWaves(waveRows);
       setConnectors(connectorRows);
       setConnectorCatalog(connectorPlatformRows);
       setHosts(hostRows);
-      setDiscoveryRuns(discoveryRows);
-      setMigrationJobs(migrationRows);
+      setMigrationPlans(planRows);
       setSettings(appSettings);
-      if (projectRows[0]) setVmForm((f) => ({ ...f, project_id: projectRows[0].id }));
     } catch (err) {
       setError(err.message);
     }
@@ -274,43 +226,6 @@ function App() {
     localStorage.removeItem(legacyTokenKey);
     setToken('');
     setUser(null);
-  };
-
-  const saveProject = async (event) => {
-    event.preventDefault();
-    await api('/projects', { method: 'POST', body: JSON.stringify(projectForm) });
-    setProjectForm(blankProject);
-    await load();
-  };
-
-  const saveProjectEdit = async (event) => {
-    event.preventDefault();
-    await api(`/projects/${editingProjectId}`, { method: 'PUT', body: JSON.stringify(editProjectForm) });
-    setEditingProjectId(null);
-    setEditProjectForm(blankProject);
-    await load();
-  };
-
-  const editProject = (project) => {
-    setEditProjectForm({
-      project_name: project.project_name,
-      customer_name: project.customer_name,
-      source_platform: project.source_platform,
-      target_platform: project.target_platform,
-      migration_type: project.migration_type,
-      planned_start_date: project.planned_start_date || '',
-      planned_cutover_date: project.planned_cutover_date || '',
-      status: project.status,
-      notes: project.notes || '',
-    });
-    setEditingProjectId(project.id);
-  };
-
-  const createVm = async (event) => {
-    event.preventDefault();
-    await api('/vms', { method: 'POST', body: JSON.stringify({ ...vmForm, project_id: Number(vmForm.project_id), cpu: Number(vmForm.cpu), memory_gb: Number(vmForm.memory_gb), disk_gb: Number(vmForm.disk_gb) }) });
-    setVmForm((f) => ({ ...blankVm, project_id: f.project_id }));
-    await load();
   };
 
   const saveConnector = async (event) => {
@@ -454,18 +369,52 @@ function App() {
     }
   };
 
-  const createMigrationJob = async (event) => {
+  const createMigrationPlan = async (event) => {
     event.preventDefault();
-    await api('/migration-jobs', {
-      method: 'POST',
-      body: JSON.stringify({
-        ...migrationJobForm,
-        source_connector_id: Number(migrationJobForm.source_connector_id),
-        target_connector_id: Number(migrationJobForm.target_connector_id),
-      }),
-    });
-    setMigrationJobForm(blankMigrationJob);
-    await load();
+    setError('');
+    try {
+      await api('/migration-plans', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...migrationPlanForm,
+          vm_ids: selectedVmIds,
+          target_connector_id: Number(migrationPlanForm.target_connector_id),
+        }),
+      });
+      setMigrationPlanForm(blankMigrationPlan);
+      setSelectedVmIds([]);
+      setShowPlanModal(false);
+      setActive('plans');
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const executeMigrationPlan = async (plan) => {
+    setError('');
+    setExecutingPlanId(plan.id);
+    try {
+      const updated = await api(`/migration-plans/${plan.id}/execute`, { method: 'POST' });
+      setSelectedPlan(updated);
+      await load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setExecutingPlanId(null);
+    }
+  };
+
+  const deleteMigrationPlan = async (plan) => {
+    if (!window.confirm(`Delete migration plan "${plan.name}"?`)) return;
+    setError('');
+    try {
+      await api(`/migration-plans/${plan.id}`, { method: 'DELETE' });
+      if (selectedPlan?.id === plan.id) setSelectedPlan(null);
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
   const changeStatus = async (vm, status) => {
@@ -485,9 +434,8 @@ function App() {
     ['connectors', ServerCog, 'Connectors'],
     ['hosts', Network, 'Hosts'],
     ['dashboard', Gauge, 'Dashboard'],
-    ['projects', Layers, 'Projects'],
     ['inventory', HardDrive, 'VM Inventory'],
-    ['engine', ArrowRightLeft, 'Migration Engine'],
+    ['plans', Layers, 'Migration Plans'],
     ['waves', CalendarClock, 'Waves'],
     ['reports', FileText, 'Reports'],
     ...(user?.role === 'admin' ? [['users', Users, 'Users']] : []),
@@ -534,15 +482,15 @@ function App() {
         {error && <div className="alert">API error: {error}</div>}
 
         {active === 'dashboard' && <Dashboard summary={summary} vms={vms} connectors={connectors} />}
-        {active === 'projects' && <Projects projects={projects} form={projectForm} setForm={setProjectForm} save={saveProject} editProject={editProject} editingProjectId={editingProjectId} editForm={editProjectForm} setEditForm={setEditProjectForm} saveEdit={saveProjectEdit} cancelEdit={() => { setEditProjectForm(blankProject); setEditingProjectId(null); }} />}
-        {active === 'inventory' && <Inventory vms={vms} projects={projects} form={vmForm} setForm={setVmForm} create={createVm} changeStatus={changeStatus} />}
+        {active === 'inventory' && <Inventory vms={vms} connectors={connectors} selectedVmIds={selectedVmIds} setSelectedVmIds={setSelectedVmIds} openPlan={() => { setMigrationPlanForm(blankMigrationPlan); setShowPlanModal(true); }} changeStatus={changeStatus} />}
         {active === 'connectors' && <ConnectorWorkspace category={connectorCategory} setCategory={setConnectorCategory} catalog={connectorCatalog} connectors={connectors} form={connectorForm} setForm={setConnectorForm} save={saveConnector} editForm={editConnectorForm} setEditForm={setEditConnectorForm} saveEdit={saveConnectorEdit} discover={discoverConnector} validate={validateConnector} edit={editConnector} remove={deleteConnector} cancelEdit={cancelConnectorEdit} editingConnectorId={editingConnectorId} discoveringConnectorId={discoveringConnectorId} result={connectorResult} />}
         {active === 'hosts' && <HostsView hosts={hosts} connectors={connectors} />}
-        {active === 'engine' && <MigrationEngine connectors={connectors} form={migrationJobForm} setForm={setMigrationJobForm} save={createMigrationJob} jobs={migrationJobs} discoveryRuns={discoveryRuns} />}
+        {active === 'plans' && <MigrationPlans plans={migrationPlans} vms={vms} connectors={connectors} execute={executeMigrationPlan} remove={deleteMigrationPlan} executingPlanId={executingPlanId} selectedPlan={selectedPlan} setSelectedPlan={setSelectedPlan} />}
         {active === 'waves' && <Waves waves={waves} />}
         {active === 'reports' && <Reports csv={csv} vms={vms} />}
         {active === 'users' && user?.role === 'admin' && <UsersView currentUser={user} users={users} form={userForm} setForm={setUserForm} save={saveUser} editForm={editUserForm} setEditForm={setEditUserForm} saveEdit={saveUserEdit} edit={editUser} remove={deleteUser} editingUserId={editingUserId} cancelEdit={cancelUserEdit} setError={setError} />}
         {active === 'settings' && <SettingsView settings={settings} setSettings={setSettings} save={saveSettings} user={user} serviceStatus={serviceStatus} serviceStatusLoading={serviceStatusLoading} />}
+        {showPlanModal && <MigrationPlanModal selectedVmIds={selectedVmIds} vms={vms} connectors={connectors} form={migrationPlanForm} setForm={setMigrationPlanForm} save={createMigrationPlan} close={() => setShowPlanModal(false)} />}
       </main>
     </div>
   );
@@ -553,12 +501,12 @@ function Login({ form, setForm, submit, error }) {
 }
 
 function titleFor(active) {
-  return ({ connectors: 'Connectors', hosts: 'Discovered Hosts', dashboard: 'Migration Command Center', projects: 'Saved Migration Projects', inventory: 'VM Inventory', engine: 'Discovery and Migration Engine', waves: 'Migration Waves', reports: 'Reports', users: 'User Management', settings: 'Settings Control' })[active];
+  return ({ connectors: 'Connectors', hosts: 'Discovered Hosts', dashboard: 'Migration Command Center', inventory: 'VM Inventory', plans: 'Migration Plans', waves: 'Migration Waves', reports: 'Reports', users: 'User Management', settings: 'Settings Control' })[active];
 }
 
 function Dashboard({ summary, vms, connectors }) {
   const cards = [
-    ['Total projects', summary?.total_projects ?? 0, Layers],
+    ['Migration plans', summary?.total_plans ?? 0, Layers],
     ['VMs discovered', summary?.vms_discovered ?? 0, HardDrive],
     ['VMs planned', summary?.vms_planned ?? 0, CalendarClock],
     ['VMs migrated', summary?.vms_migrated ?? 0, ArrowRightLeft],
@@ -568,16 +516,53 @@ function Dashboard({ summary, vms, connectors }) {
   return <section><div className="metric-grid">{cards.map(([label, value, Icon]) => <div className="metric" key={label}><Icon size={22} /><span>{label}</span><strong>{value}</strong></div>)}</div><StatusBoard vms={vms} /></section>;
 }
 
-function ProjectFields({ form, setForm }) {
-  return <><Input label="Project name" value={form.project_name} onChange={(v) => setForm({ ...form, project_name: v })} required /><Input label="Customer name" value={form.customer_name} onChange={(v) => setForm({ ...form, customer_name: v })} required /><Select label="Source platform" value={form.source_platform} options={platforms} onChange={(v) => setForm({ ...form, source_platform: v })} /><Select label="Target platform" value={form.target_platform} options={platforms} onChange={(v) => setForm({ ...form, target_platform: v })} /><MigrationTypeSelect value={form.migration_type} onChange={(v) => setForm({ ...form, migration_type: v })} /><Input label="Planned start" type="datetime-local" value={form.planned_start_date} onChange={(v) => setForm({ ...form, planned_start_date: v })} /><Input label="Cutover schedule" type="datetime-local" value={form.planned_cutover_date} onChange={(v) => setForm({ ...form, planned_cutover_date: v })} /><Input label="Status" value={form.status} onChange={(v) => setForm({ ...form, status: v })} /><TextArea label="Notes" value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} /></>;
+function Inventory({ vms, connectors, selectedVmIds, setSelectedVmIds, openPlan, changeStatus }) {
+  const selectedVms = vms.filter((vm) => selectedVmIds.includes(vm.id));
+  const selectedConnectorId = selectedVms[0]?.connector_id;
+  const selectableVms = selectedConnectorId ? vms.filter((vm) => vm.connector_id === selectedConnectorId) : vms;
+  const allSelectableSelected = selectableVms.length > 0 && selectableVms.every((vm) => selectedVmIds.includes(vm.id));
+  const toggleVm = (vm) => {
+    if (selectedVmIds.includes(vm.id)) {
+      setSelectedVmIds(selectedVmIds.filter((id) => id !== vm.id));
+      return;
+    }
+    if (selectedConnectorId && vm.connector_id !== selectedConnectorId) return;
+    setSelectedVmIds([...selectedVmIds, vm.id]);
+  };
+  const toggleAll = () => {
+    if (allSelectableSelected) setSelectedVmIds([]);
+    else setSelectedVmIds(selectableVms.map((vm) => vm.id));
+  };
+  return <section className="stack"><div className="inventory-actions"><div><strong>{selectedVmIds.length} VM{selectedVmIds.length === 1 ? '' : 's'} selected</strong><span>Select VMs from one source connector to build an executable migration plan.</span></div><button className="primary" disabled={!selectedVmIds.length} onClick={openPlan}><Plus size={16} /> Create Migration Plan</button></div><div className="table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="Select all VMs from source connector" checked={allSelectableSelected} onChange={toggleAll} /></th><th>VM</th><th>Source Connector</th><th>Host</th><th>Platform</th><th>OS</th><th>Size</th><th>IP address</th><th>Status</th><th>Change status</th></tr></thead><tbody>{vms.map((vm) => {
+    const connector = connectors.find((row) => row.id === vm.connector_id);
+    const disabled = Boolean(selectedConnectorId && vm.connector_id !== selectedConnectorId);
+    return <tr key={vm.id} className={disabled ? 'disabled-row' : ''}><td><input type="checkbox" checked={selectedVmIds.includes(vm.id)} disabled={disabled} onChange={() => toggleVm(vm)} /></td><td><strong>{vm.vm_name}</strong></td><td>{connector?.name || '-'}</td><td>{vm.host_name || '-'}</td><td>{vm.source_platform}</td><td>{vm.os_type || 'Unknown'}</td><td>{vm.cpu} CPU / {vm.memory_gb} GB / {vm.disk_gb} GB</td><td>{vm.ip_address || '-'}</td><td><Badge value={vm.current_status} /></td><td><select value={vm.current_status} onChange={(e) => changeStatus(vm, e.target.value)}>{statuses.map((s) => <option key={s}>{s}</option>)}</select></td></tr>;
+  })}</tbody></table></div></section>;
 }
 
-function Projects({ projects, form, setForm, save, editProject, editingProjectId, editForm, setEditForm, saveEdit, cancelEdit }) {
-  return <section className="split"><FormPanel title="Save migration project" onSubmit={save}><ProjectFields form={form} setForm={setForm} /><button className="primary"><Save size={16} /> Save project</button></FormPanel><div className="table-wrap"><table><thead><tr><th>Project</th><th>Customer</th><th>Source</th><th>Target</th><th>Start</th><th>Cutover</th><th></th></tr></thead><tbody>{projects.map((p) => <tr key={p.id}><td>{p.project_name}</td><td>{p.customer_name}</td><td>{p.source_platform}</td><td>{p.target_platform}</td><td>{formatDateTime(p.planned_start_date)}</td><td>{formatDateTime(p.planned_cutover_date)}</td><td><button className="mini" onClick={() => editProject(p)}><Edit3 size={14} /> Edit</button></td></tr>)}</tbody></table></div>{editingProjectId && <Modal title="Edit saved project" onClose={cancelEdit}><FormPanel title="" onSubmit={saveEdit}><ProjectFields form={editForm} setForm={setEditForm} /><div className="button-row"><button className="primary"><Save size={16} /> Save changes</button><button className="secondary" type="button" onClick={cancelEdit}><X size={16} /> Cancel</button></div></FormPanel></Modal>}</section>;
+function MigrationPlanModal({ selectedVmIds, vms, connectors, form, setForm, save, close }) {
+  const selectedVms = vms.filter((vm) => selectedVmIds.includes(vm.id));
+  const sourceConnectorId = selectedVms[0]?.connector_id;
+  const sourceConnector = connectors.find((row) => row.id === sourceConnectorId);
+  const targetConnectors = connectors.filter((row) => row.id !== sourceConnectorId);
+  useEffect(() => {
+    if (!form.target_connector_id && targetConnectors[0]) setForm({ ...form, target_connector_id: String(targetConnectors[0].id) });
+  }, [form.target_connector_id, sourceConnectorId]);
+  return <Modal title="Create executable migration plan" onClose={close}><FormPanel title="" onSubmit={save}><div className="tip"><strong>Selected source:</strong> {sourceConnector?.name || 'Unknown'} · {selectedVmIds.length} VM{selectedVmIds.length === 1 ? '' : 's'}<br />Execute runs real connector validation, VM inspection, conversion-tool checks, and records the per-VM runbook. It does not start destructive live conversion.</div><Input label="Plan name" value={form.name} onChange={(value) => setForm({ ...form, name: value })} required /><Select label="Target connector" value={form.target_connector_id} options={targetConnectors.map((connector) => [connector.id, `${connector.name} (${connector.connector_type})`])} onChange={(value) => setForm({ ...form, target_connector_id: value })} /><Input label="Target datastore (VMware plans)" value={form.target_datastore} onChange={(value) => setForm({ ...form, target_datastore: value })} /><TextArea label="Notes" value={form.notes} onChange={(value) => setForm({ ...form, notes: value })} /><div className="button-row"><button className="primary" disabled={!targetConnectors.length}><Save size={16} /> Save plan</button><button className="secondary" type="button" onClick={close}><X size={16} /> Cancel</button></div></FormPanel></Modal>;
 }
 
-function Inventory({ vms, projects, form, setForm, create, changeStatus }) {
-  return <section className="split"><FormPanel title="Add VM manually" onSubmit={create}><Select label="Project" value={form.project_id} options={projects.map((p) => [p.id, p.project_name])} onChange={(v) => setForm({ ...form, project_id: v })} /><Input label="VM name" value={form.vm_name} onChange={(v) => setForm({ ...form, vm_name: v })} required /><Select label="Source" value={form.source_platform} options={platforms} onChange={(v) => setForm({ ...form, source_platform: v })} /><Select label="Target" value={form.target_platform} options={platforms} onChange={(v) => setForm({ ...form, target_platform: v })} /><Input label="CPU" type="number" value={form.cpu} onChange={(v) => setForm({ ...form, cpu: v })} /><Input label="Memory GB" type="number" value={form.memory_gb} onChange={(v) => setForm({ ...form, memory_gb: v })} /><Input label="Disk GB" type="number" value={form.disk_gb} onChange={(v) => setForm({ ...form, disk_gb: v })} /><Input label="Owner" value={form.application_owner} onChange={(v) => setForm({ ...form, application_owner: v })} /><button className="primary"><Plus size={16} /> Add VM</button></FormPanel><div className="table-wrap"><table><thead><tr><th>VM</th><th>Source</th><th>Target</th><th>Size</th><th>Status</th><th>Change status</th></tr></thead><tbody>{vms.map((vm) => <tr key={vm.id}><td>{vm.vm_name}</td><td>{vm.source_platform}</td><td>{vm.target_platform}</td><td>{vm.cpu} CPU / {vm.memory_gb} GB</td><td><Badge value={vm.current_status} /></td><td><select value={vm.current_status} onChange={(e) => changeStatus(vm, e.target.value)}>{statuses.map((s) => <option key={s}>{s}</option>)}</select></td></tr>)}</tbody></table></div></section>;
+function MigrationPlans({ plans, vms, connectors, execute, remove, executingPlanId, selectedPlan, setSelectedPlan }) {
+  const planVms = selectedPlan ? vms.filter((vm) => parseJsonArray(selectedPlan.vm_ids_json).includes(vm.id)) : [];
+  const results = parseJsonArray(selectedPlan?.results_json);
+  return <section className="stack"><div className="about plan-about"><h2>Executable migration plans</h2><p>Plans group discovered VMs and a target connector. Execute runs the supported migration preflight per VM and records readiness, blockers, and the generated runbook. Live conversion remains separately controlled.</p></div><div className="table-wrap"><table><thead><tr><th>Plan</th><th>Migration</th><th>VMs</th><th>Status</th><th>Executed</th><th>Actions</th></tr></thead><tbody>{plans.map((plan) => {
+    const source = connectors.find((row) => row.id === plan.source_connector_id);
+    const target = connectors.find((row) => row.id === plan.target_connector_id);
+    const vmCount = parseJsonArray(plan.vm_ids_json).length;
+    return <tr key={plan.id}><td><strong>{plan.name}</strong></td><td>{source?.name || plan.source_connector_id} → {target?.name || plan.target_connector_id}</td><td>{vmCount}</td><td><Badge value={plan.status} /></td><td>{formatDateTime(plan.executed_at)}</td><td><div className="button-row compact"><button className="mini" onClick={() => setSelectedPlan(plan)}><FileText size={14} /> Details</button><button className="mini" disabled={executingPlanId === plan.id} onClick={() => execute(plan)}><Play size={14} /> {executingPlanId === plan.id ? 'Executing...' : 'Execute'}</button><button className="mini danger-button" onClick={() => remove(plan)}><Trash2 size={14} /> Delete</button></div></td></tr>;
+  })}</tbody></table></div>{selectedPlan && <Modal title={selectedPlan.name} onClose={() => setSelectedPlan(null)} wide><div className="plan-detail"><dl className="host-facts"><div><dt>Status</dt><dd>{selectedPlan.status}</dd></div><div><dt>Migration type</dt><dd>{selectedPlan.migration_type}</dd></div><div><dt>VMs</dt><dd>{planVms.length}</dd></div><div><dt>Executed</dt><dd>{formatDateTime(selectedPlan.executed_at)}</dd></div></dl><div className="table-wrap"><table><thead><tr><th>VM</th><th>Source</th><th>OS</th><th>Status</th><th>Execution result</th></tr></thead><tbody>{planVms.map((vm) => {
+    const result = results.find((row) => row.vm_id === vm.id);
+    return <tr key={vm.id}><td>{vm.vm_name}</td><td>{vm.source_platform}</td><td>{vm.os_type || 'Unknown'}</td><td><Badge value={vm.current_status} /></td><td>{result?.message || 'Not executed'}</td></tr>;
+  })}</tbody></table></div></div></Modal>}</section>;
 }
 
 function ConnectorWorkspace({ category, setCategory, catalog, connectors, ...props }) {
@@ -616,15 +601,6 @@ function HostsView({ hosts, connectors }) {
     const connector = connectors.find((row) => row.id === host.connector_id);
     return <tr className="clickable-row" key={host.id} onClick={() => setSelectedHost(host)}><td><strong>{host.host_name}</strong></td><td>{host.platform}</td><td>{connector?.name || `Connector ${host.connector_id}`}</td><td>{host.endpoint || '-'}</td><td>{host.cpu} CPU / {host.memory_gb} GB</td><td>{host.vm_count}</td><td><Badge value={host.status} /></td><td>{formatDateTime(host.last_discovered_at)}</td><td><button className="mini" onClick={(event) => { event.stopPropagation(); setSelectedHost(host); }}><HardDrive size={14} /> View VMs</button></td></tr>;
   })}</tbody></table></div>{selectedHost && <Modal title={`${selectedHost.host_name} virtual machines`} onClose={() => setSelectedHost(null)} wide><div className="host-detail"><dl className="host-facts"><div><dt>Platform</dt><dd>{selectedHost.platform}</dd></div><div><dt>Connector</dt><dd>{selectedConnector?.name || `Connector ${selectedHost.connector_id}`}</dd></div><div><dt>Endpoint</dt><dd>{selectedHost.endpoint || '-'}</dd></div><div><dt>Capacity</dt><dd>{selectedHost.cpu} CPU / {selectedHost.memory_gb} GB</dd></div><div><dt>VMs</dt><dd>{selectedHost.vm_count}</dd></div><div><dt>Status</dt><dd>{selectedHost.status}</dd></div></dl><div className="table-wrap"><table><thead><tr><th>VM</th><th>OS</th><th>CPU</th><th>Memory</th><th>Disk</th><th>IP address</th><th>Power</th></tr></thead><tbody>{selectedVms.length ? selectedVms.map((vm, index) => <tr key={`${vm.vm_name}-${index}`}><td>{vm.vm_name}</td><td>{vm.os_type || 'Unknown'}</td><td>{vm.cpu || 0}</td><td>{vm.memory_gb || 0} GB</td><td>{vm.disk_gb || 0} GB</td><td>{vm.ip_address || '-'}</td><td><Badge value={vm.power_state || vm.current_status || 'Discovered'} /></td></tr>) : <tr><td colSpan="7">No VMs reported by this host.</td></tr>}</tbody></table></div></div></Modal>}</section>;
-}
-
-function MigrationEngine({ connectors, form, setForm, save, jobs, discoveryRuns }) {
-  const hostConnectors = connectors.filter((c) => c.connector_category === 'host');
-  const kvmConnectors = hostConnectors.filter((c) => c.connector_type === 'KVM');
-  const vmwareConnectors = hostConnectors.filter((c) => c.connector_type.includes('VMware') || c.connector_type.includes('vCenter'));
-  const latestJob = jobs[0];
-  const runbook = parseJsonArray(latestJob?.runbook_json);
-  return <section className="split"><FormPanel title="KVM to ESXi migration test preflight" onSubmit={save}><Select label="Source KVM connector" value={form.source_connector_id} options={kvmConnectors.map((c) => [c.id, c.name])} onChange={(v) => setForm({ ...form, source_connector_id: v })} /><Select label="Target ESXi / vCenter connector" value={form.target_connector_id} options={vmwareConnectors.map((c) => [c.id, c.name])} onChange={(v) => setForm({ ...form, target_connector_id: v })} /><Input label="Source VM name" value={form.vm_name} onChange={(v) => setForm({ ...form, vm_name: v })} required /><Input label="Target VM name" value={form.target_name} onChange={(v) => setForm({ ...form, target_name: v })} /><Input label="Target datastore" value={form.target_datastore} onChange={(v) => setForm({ ...form, target_datastore: v })} /><div className="tip">This performs a non-destructive migration test preflight: source KVM validation, source VM inspection, target vCenter validation, and live conversion tool checks. It does not run virt-v2v.</div><button className="primary"><Play size={16} /> Create test preflight</button></FormPanel><div className="stack"><Table rows={jobs} columns={['vm_name', 'migration_type', 'status', 'message']} />{runbook.length > 0 && <div className="table-wrap"><table><thead><tr><th>Latest preflight item</th><th>Result / Command</th></tr></thead><tbody>{runbook.map((item, index) => <tr key={`${item.check || item.step}-${index}`}><td>{item.check || item.step}</td><td>{item.message || item.command}</td></tr>)}</tbody></table></div>}<Table rows={discoveryRuns} columns={['connector_id', 'status', 'message']} /></div></section>;
 }
 
 function Waves({ waves }) {
@@ -694,12 +670,12 @@ function BrandLogo({ className }) {
 }
 
 function StatusBoard({ vms }) {
-  return <div className="table-wrap"><table><thead><tr><th>VM</th><th>Project</th><th>Criticality</th><th>Wave</th><th>Status</th></tr></thead><tbody>{vms.map((vm) => <tr key={vm.id}><td>{vm.vm_name}</td><td>{vm.project_id}</td><td>{vm.criticality}</td><td>{vm.migration_wave || '-'}</td><td><Badge value={vm.current_status} /></td></tr>)}</tbody></table></div>;
+  return <div className="table-wrap"><table><thead><tr><th>VM</th><th>Source</th><th>Host</th><th>Criticality</th><th>Status</th></tr></thead><tbody>{vms.map((vm) => <tr key={vm.id}><td>{vm.vm_name}</td><td>{vm.source_platform}</td><td>{vm.host_name || '-'}</td><td>{vm.criticality}</td><td><Badge value={vm.current_status} /></td></tr>)}</tbody></table></div>;
 }
 
 function Badge({ value }) {
   const normalized = (value || '').toLowerCase();
-  const kind = normalized.includes('failed') || normalized.includes('blocked') || normalized.includes('rolled') || normalized === 'inactive' ? 'danger' : normalized.includes('completed') || normalized.includes('validated') || normalized === 'active' ? 'success' : 'neutral';
+  const kind = normalized.includes('failed') || normalized.includes('blocked') || normalized.includes('rolled') || normalized === 'inactive' ? 'danger' : normalized.includes('completed') || normalized.includes('validated') || normalized.includes('ready') || normalized === 'active' ? 'success' : 'neutral';
   return <span className={`badge ${kind}`}>{value}</span>;
 }
 
@@ -728,11 +704,6 @@ function TextArea({ label, value, onChange }) {
 
 function Select({ label, value, options, onChange }) {
   return <label>{label}<select value={value ?? ''} onChange={(e) => onChange(e.target.value)}>{options.map((o) => Array.isArray(o) ? <option key={o[0]} value={o[0]}>{o[1]}</option> : <option key={o}>{o}</option>)}</select></label>;
-}
-
-function MigrationTypeSelect({ value, onChange }) {
-  const description = migrationTypes[value] || migrationTypes['Any-to-any workflow'];
-  return <label className="migration-type-field"><span className="field-label">Migration type <span className="help-icon" tabIndex="0" aria-describedby="migration-type-help"><Info size={14} /></span></span><select value={value ?? ''} onChange={(event) => onChange(event.target.value)} aria-describedby="migration-type-help">{Object.keys(migrationTypes).map((type) => <option key={type} value={type}>{type}</option>)}</select><span className="migration-tooltip" id="migration-type-help" role="tooltip"><strong>{value}</strong>{description}<small>Saving the project records this plan. It does not start a live migration automatically.</small></span></label>;
 }
 
 function Table({ rows, columns }) {

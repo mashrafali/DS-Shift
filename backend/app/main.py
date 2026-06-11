@@ -157,6 +157,9 @@ def startup() -> None:
     Base.metadata.create_all(bind=engine)
     with engine.begin() as connection:
         connection.execute(text("ALTER TABLE local_users ADD COLUMN IF NOT EXISTS profile_photo TEXT"))
+        connection.execute(text("ALTER TABLE vm_inventory ALTER COLUMN project_id DROP NOT NULL"))
+        connection.execute(text("ALTER TABLE vm_inventory ADD COLUMN IF NOT EXISTS connector_id INTEGER REFERENCES connector_profiles(id) ON DELETE SET NULL"))
+        connection.execute(text("ALTER TABLE vm_inventory ADD COLUMN IF NOT EXISTS host_name VARCHAR(255)"))
     db = next(get_db())
     try:
         seed_defaults(db)
@@ -282,7 +285,7 @@ def delete_user(user_id: int, db: Session = Depends(get_db), admin: models.Local
 
 @app.get("/api/dashboard", response_model=schemas.DashboardSummary)
 def dashboard(db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
-    projects = db.query(models.MigrationProject).count()
+    plans = db.query(models.MigrationPlan).count()
     vms = db.query(models.VmInventory).all()
     status_counts = Counter(vm.current_status for vm in vms)
     migrated = status_counts["Validation completed"] + status_counts["Cutover completed"]
@@ -290,7 +293,7 @@ def dashboard(db: Session = Depends(get_db), _user: models.LocalUser = Depends(c
     planned = sum(status_counts[s] for s in ["Assessed", "Ready for migration", "Replication prepared", "Cutover scheduled"])
     progress = int((migrated / len(vms)) * 100) if vms else 0
     return schemas.DashboardSummary(
-        total_projects=projects,
+        total_plans=plans,
         vms_discovered=len(vms),
         vms_planned=planned,
         vms_migrated=migrated,
@@ -409,8 +412,15 @@ def delete_connector(connector_id: int, db: Session = Depends(get_db), _user: mo
         (models.MigrationJob.source_connector_id == connector_id)
         | (models.MigrationJob.target_connector_id == connector_id)
     ).count()
-    if referenced_jobs:
-        raise HTTPException(409, f"Connector is referenced by {referenced_jobs} migration job(s) and cannot be deleted")
+    referenced_plans = db.query(models.MigrationPlan).filter(
+        (models.MigrationPlan.source_connector_id == connector_id)
+        | (models.MigrationPlan.target_connector_id == connector_id)
+    ).count()
+    if referenced_jobs or referenced_plans:
+        raise HTTPException(
+            409,
+            f"Connector is referenced by {referenced_jobs} migration job(s) and {referenced_plans} migration plan(s) and cannot be deleted",
+        )
     db.query(models.DiscoveryRun).filter(models.DiscoveryRun.connector_id == connector_id).delete(synchronize_session=False)
     db.query(models.HostInventory).filter(models.HostInventory.connector_id == connector_id).delete(synchronize_session=False)
     db.delete(connector)
@@ -451,12 +461,18 @@ def discover_connector(connector_id: int, payload: schemas.DiscoveryRequest, db:
         discovered_hosts = 0
         if result.get("ok") and connector.connector_category == "host":
             discovered_hosts = sync_discovered_hosts(db, connector, hosts, records)
+        if result.get("ok"):
+            synced_vms = sync_discovered_vms(db, connector, records)
+        else:
+            synced_vms = 0
         connector.status = "Discovered" if result.get("ok") else "Discovery failed"
         if result.get("ok") and payload.import_to_project_id:
             imported = import_discovered_vms(db, payload.import_to_project_id, payload.target_platform or "Unassigned", records)
         message = result.get("message", "Connector engine returned no message")
         if discovered_hosts:
             message += f"; updated {discovered_hosts} host inventory record(s)"
+        if synced_vms:
+            message += f"; synchronized {synced_vms} VM inventory record(s)"
         if imported:
             message += f"; imported {imported} VMs"
         run = models.DiscoveryRun(
@@ -553,6 +569,46 @@ def sync_discovered_hosts(db: Session, connector: models.ConnectorProfile, hosts
 @app.get("/api/hosts", response_model=list[schemas.HostInventory])
 def list_hosts(db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
     return db.query(models.HostInventory).order_by(models.HostInventory.host_name).all()
+
+
+def sync_discovered_vms(db: Session, connector: models.ConnectorProfile, records: list[dict]) -> int:
+    count = 0
+    for record in records:
+        name = record.get("vm_name")
+        if not name:
+            continue
+        existing = db.query(models.VmInventory).filter(
+            models.VmInventory.connector_id == connector.id,
+            models.VmInventory.vm_name == name,
+        ).first()
+        values = {
+            "project_id": None,
+            "connector_id": connector.id,
+            "host_name": record.get("host_name"),
+            "source_platform": record.get("source_platform") or connector.connector_type,
+            "cpu": record.get("cpu") or 0,
+            "memory_gb": record.get("memory_gb") or 0,
+            "disk_gb": record.get("disk_gb") or 0,
+            "os_type": record.get("os_type") or "Unknown",
+            "ip_address": record.get("ip_address"),
+        }
+        if existing:
+            for key, value in values.items():
+                setattr(existing, key, value)
+        else:
+            vm = models.VmInventory(
+                vm_name=name,
+                target_platform="Unassigned",
+                criticality="Medium",
+                current_status="Discovered",
+                **values,
+            )
+            db.add(vm)
+            db.flush()
+            db.add(models.VmStatusHistory(vm_id=vm.id, status="Discovered", note=f"Discovered through connector {connector.name}"))
+        count += 1
+    db.commit()
+    return count
 
 
 def import_discovered_vms(db: Session, project_id: int, target_platform: str, records: list[dict]) -> int:
@@ -699,6 +755,94 @@ def list_discovery_runs(db: Session = Depends(get_db), _user: models.LocalUser =
 @app.get("/api/migration-jobs", response_model=list[schemas.MigrationJob])
 def list_migration_jobs(db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
     return db.query(models.MigrationJob).order_by(models.MigrationJob.created_at.desc()).all()
+
+
+@app.get("/api/migration-plans", response_model=list[schemas.MigrationPlan])
+def list_migration_plans(db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
+    return db.query(models.MigrationPlan).order_by(models.MigrationPlan.created_at.desc()).all()
+
+
+@app.post("/api/migration-plans", response_model=schemas.MigrationPlan, status_code=201)
+def create_migration_plan(payload: schemas.MigrationPlanCreate, db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "Migration plan name is required")
+    if not payload.vm_ids:
+        raise HTTPException(400, "Select at least one VM")
+    if db.query(models.MigrationPlan).filter(models.MigrationPlan.name == name).first():
+        raise HTTPException(409, "Migration plan name already exists")
+    vms = db.query(models.VmInventory).filter(models.VmInventory.id.in_(set(payload.vm_ids))).all()
+    if len(vms) != len(set(payload.vm_ids)):
+        raise HTTPException(404, "One or more selected VMs were not found")
+    source_ids = {vm.connector_id for vm in vms}
+    if None in source_ids or len(source_ids) != 1:
+        raise HTTPException(400, "All selected VMs must come from the same discovered source connector")
+    source_connector_id = source_ids.pop()
+    if source_connector_id == payload.target_connector_id:
+        raise HTTPException(400, "Source and target connectors must be different")
+    source = db.get(models.ConnectorProfile, source_connector_id)
+    target = db.get(models.ConnectorProfile, payload.target_connector_id)
+    if not source or not target:
+        raise HTTPException(404, "Source or target connector not found")
+    plan = models.MigrationPlan(
+        name=name,
+        source_connector_id=source.id,
+        target_connector_id=target.id,
+        migration_type=f"{source.connector_type} to {target.connector_type}",
+        vm_ids_json=json.dumps(sorted(set(payload.vm_ids))),
+        target_datastore=payload.target_datastore,
+        notes=payload.notes,
+    )
+    db.add(plan)
+    db.commit()
+    db.refresh(plan)
+    return plan
+
+
+@app.delete("/api/migration-plans/{plan_id}", status_code=204)
+def delete_migration_plan(plan_id: int, db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
+    plan = db.get(models.MigrationPlan, plan_id)
+    if not plan:
+        raise HTTPException(404, "Migration plan not found")
+    db.delete(plan)
+    db.commit()
+
+
+@app.post("/api/migration-plans/{plan_id}/execute", response_model=schemas.MigrationPlan)
+def execute_migration_plan(plan_id: int, db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
+    plan = db.get(models.MigrationPlan, plan_id)
+    if not plan:
+        raise HTTPException(404, "Migration plan not found")
+    source = db.get(models.ConnectorProfile, plan.source_connector_id)
+    target = db.get(models.ConnectorProfile, plan.target_connector_id)
+    vm_ids = json.loads(plan.vm_ids_json)
+    vms = db.query(models.VmInventory).filter(models.VmInventory.id.in_(vm_ids)).all()
+    results = []
+    supported = source and target and source.connector_type == "KVM" and target.connector_type in {"VMware ESXi / vCenter", "VMware ESXi", "vCenter"}
+    if not supported:
+        plan.status = "Blocked"
+        results.append({"ok": False, "message": "Executable adapter is currently available only for KVM to VMware ESXi / vCenter plans"})
+    else:
+        for vm in vms:
+            result = build_kvm_to_esxi_preflight(
+                source.endpoint,
+                source.username,
+                source.credential_reference,
+                target.endpoint,
+                target.username,
+                target.credential_reference,
+                vm.vm_name,
+                plan.target_datastore,
+            )
+            vm.current_status = "Ready for migration" if result.ok else "Blocked"
+            db.add(models.VmStatusHistory(vm_id=vm.id, status=vm.current_status, note=f"Migration plan {plan.name} execution preflight"))
+            results.append({"vm_id": vm.id, "vm_name": vm.vm_name, "ok": result.ok, "message": result.message, "runbook": result.records, "commands": result.commands})
+        plan.status = "Preflight ready" if results and all(row["ok"] for row in results) else "Blocked"
+    plan.results_json = json.dumps(results)
+    plan.executed_at = datetime.utcnow()
+    db.commit()
+    db.refresh(plan)
+    return plan
 
 
 @app.post("/api/migration-jobs", response_model=schemas.MigrationJob, status_code=201)

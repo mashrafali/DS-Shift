@@ -10,7 +10,19 @@ from sqlalchemy.orm import Session
 from app import models, schemas
 from app.connector_client import normalize_connector_type, validate_connector_platform
 from app.database import Base
-from app.main import app, delete_connector, delete_user, hash_password, seed_defaults, sync_discovered_hosts, update_user, validate_profile_photo
+from app.main import (
+    app,
+    create_migration_plan,
+    delete_connector,
+    delete_user,
+    execute_migration_plan,
+    hash_password,
+    seed_defaults,
+    sync_discovered_hosts,
+    sync_discovered_vms,
+    update_user,
+    validate_profile_photo,
+)
 from app.service_status import display_name, unavailable_statuses
 
 
@@ -122,3 +134,44 @@ def test_host_discovery_sync_and_connector_delete():
         delete_connector(connector.id, db, None)
         assert db.query(models.ConnectorProfile).count() == 0
         assert db.query(models.HostInventory).count() == 0
+
+
+def test_discovery_inventory_and_migration_plan_execution(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        source = models.ConnectorProfile(name="KVM Source", connector_category="host", connector_type="KVM")
+        target = models.ConnectorProfile(name="vCenter Target", connector_category="host", connector_type="VMware ESXi / vCenter")
+        db.add_all([source, target])
+        db.commit()
+        db.refresh(source)
+        db.refresh(target)
+
+        assert sync_discovered_vms(
+            db,
+            source,
+            [{"vm_name": "vm-01", "host_name": "kvm01", "source_platform": "KVM", "cpu": 4, "memory_gb": 8, "os_type": "Linux"}],
+        ) == 1
+        vm = db.query(models.VmInventory).one()
+        assert vm.project_id is None
+        assert vm.connector_id == source.id
+        assert vm.host_name == "kvm01"
+
+        plan = create_migration_plan(
+            schemas.MigrationPlanCreate(name="Plan 1", vm_ids=[vm.id], target_connector_id=target.id),
+            db,
+            None,
+        )
+        assert json.loads(plan.vm_ids_json) == [vm.id]
+        assert plan.status == "Draft"
+
+        monkeypatch.setattr(
+            "app.main.build_kvm_to_esxi_preflight",
+            lambda *args: type("Result", (), {"ok": True, "message": "Preflight passed", "records": [], "commands": []})(),
+        )
+        executed = execute_migration_plan(plan.id, db, None)
+
+        assert executed.status == "Preflight ready"
+        assert executed.executed_at is not None
+        assert db.get(models.VmInventory, vm.id).current_status == "Ready for migration"

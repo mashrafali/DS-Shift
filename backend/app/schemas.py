@@ -98,7 +98,9 @@ class Wave(WaveBase):
 
 
 class VmBase(BaseModel):
-    project_id: int
+    project_id: Optional[int] = None
+    connector_id: Optional[int] = None
+    host_name: Optional[str] = None
     wave_id: Optional[int] = None
     vm_name: str
     source_platform: str
@@ -140,7 +142,7 @@ class StatusHistory(BaseModel):
 
 
 class DashboardSummary(BaseModel):
-    total_projects: int
+    total_plans: int
     vms_discovered: int
     vms_planned: int
     vms_migrated: int
@@ -260,5 +262,30 @@ class MigrationJob(BaseModel):
     message: Optional[str] = None
     runbook_json: Optional[str] = None
     commands_json: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MigrationPlanCreate(BaseModel):
+    name: str
+    vm_ids: list[int]
+    target_connector_id: int
+    target_datastore: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class MigrationPlan(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    source_connector_id: int
+    target_connector_id: int
+    migration_type: str
+    vm_ids_json: str
+    target_datastore: Optional[str] = None
+    status: str
+    notes: Optional[str] = None
+    results_json: str
+    executed_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime

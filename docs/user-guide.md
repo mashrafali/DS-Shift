@@ -2,18 +2,27 @@
 
 ## Dashboard
 
-The dashboard summarizes project count, discovered VMs, planned VMs, completed migrations, failed or blocked migrations, and overall progress.
-
-## Migration Projects
-
-Create projects with customer name, source platform, target platform, migration type, planned start date, cutover date, status, and notes.
-
-Saved projects appear in the project list and can be reopened with the Edit action.
-Planned start and cutover schedule use date-time selectors in the web UI.
+The dashboard summarizes migration plan count, discovered VMs, planned VMs,
+completed migrations, failed or blocked migrations, and overall progress.
 
 ## VM Inventory
 
-Add VMs manually and associate them with a migration project. Capture CPU, memory, disk, operating system, IP address, owner, criticality, migration wave, and current workflow status.
+VM Inventory is synchronized automatically from every successful connector
+discovery. It records source connector and host, platform, operating system,
+CPU, memory, disk, IP address, and workflow status.
+
+Select VMs with checkboxes. A migration plan can contain VMs from one source
+connector so one execution adapter and credential context apply to the plan.
+
+## Migration Plans
+
+Select VMs in VM Inventory and choose `Create Migration Plan`. Specify a plan
+name, target connector, optional target datastore, and notes.
+
+The Migration Plans page provides `Execute`, `Details`, and `Delete`. Execute
+runs the supported KVM-to-vCenter connector validation, source VM inspection,
+conversion-tool checks, and per-VM runbook generation. It updates each VM to
+`Ready for migration` or `Blocked`. It does not start destructive conversion.
 
 ## Migration Workflow
 
@@ -45,7 +54,9 @@ Host Connectors support KVM, VMware ESXi / vCenter, and Nutanix AHV.
 Cloud Connectors support Amazon Web Services, Google Cloud Platform, and Microsoft Azure.
 Passwords and cloud credential JSON are not stored in PostgreSQL; connector records use `env:` references to secrets supplied to the relevant engine container.
 
-Use `Validate` to test the platform API with its public SDK or API client. Use `Discover` to collect VM or instance inventory. Discovery results are listed on the Migration Engine page.
+Use `Validate` to test the platform API with its public SDK or API client. Use
+`Discover` to collect VM or instance inventory. Successful discovery
+automatically synchronizes VM Inventory.
 
 Host Connector discovery also creates or refreshes entries under `Hosts`.
 Each host entry includes platform, capacity, endpoint, discovery time, and the
@@ -71,12 +82,6 @@ The Settings page shows the live state of each DS Shift container. Green `UP`
 means Docker reports the container as running, yellow `RESTARTING` means Docker
 is restarting it, and red `DOWN` means it is stopped, exited, or missing. The
 panel refreshes every 10 seconds.
-
-## Migration Engine
-
-The Migration Engine page creates KVM-to-ESXi/vCenter test preflight jobs. Select a source KVM connector, a target ESXi/vCenter connector, the source VM name, and the target datastore. DS Shift validates the source connector, inspects the source VM, validates the target vCenter connector, records the generated runbook, and reports whether live conversion tools are available.
-
-Live migration execution is intentionally not automatic in the MVP. Review the preflight result, verify credentials and rollback planning, and obtain explicit operational approval before enabling execution.
 
 ## Settings
 

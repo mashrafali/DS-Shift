@@ -15,7 +15,8 @@ DS Shift uses a three-tier application architecture deployed with Docker Compose
 `frontend`
 
 - React application.
-- Provides dashboard, saved project management, VM inventory, host connectors, cloud connectors, migration engine, waves, reports, and settings control.
+- Provides dashboard, connector-synchronized VM inventory, migration plans,
+  host connectors, cloud connectors, waves, reports, and settings control.
 - Talks to the backend through relative `/api` URLs.
 - Uses the DS Shift brand logo supplied by Defined Solutions.
 
@@ -29,7 +30,10 @@ DS Shift uses a three-tier application architecture deployed with Docker Compose
 - Brokers connector validation and discovery requests to dedicated connector engine services.
 - Persists host inventory and VM-to-host placement returned by Host Connector
   discovery.
-- Provides KVM-to-ESXi/vCenter migration test preflight job creation using connector validation, source VM inspection, target validation, and a `virt-v2v` runbook model.
+- Synchronizes discovered workloads into VM inventory.
+- Executes KVM-to-ESXi/vCenter migration-plan preflight using connector
+  validation, source VM inspection, target validation, and a `virt-v2v` runbook
+  model.
 
 `host-connector-engine`
 
@@ -59,9 +63,10 @@ DS Shift uses a three-tier application architecture deployed with Docker Compose
 
 ## Data Model
 
-- `MigrationProject`: customer migration engagement and source/target context.
+- `MigrationProject`: retained legacy compatibility data; no longer exposed in
+  navigation.
 - `PlatformProfile`: source or target platform placeholder with credential reference metadata.
-- `VmInventory`: VM assessment and migration state.
+- `VmInventory`: connector-owned discovered VM inventory and migration state.
 - `MigrationWave`: planned migration grouping and window.
 - `VmStatusHistory`: audit trail for VM migration status changes.
 - `LocalUser`: local login user with hashed password.
@@ -70,13 +75,16 @@ DS Shift uses a three-tier application architecture deployed with Docker Compose
 - `AppSetting`: editable product and UI settings.
 - `DiscoveryRun`: connector discovery result, command evidence, and discovered VM records.
 - `MigrationJob`: migration preflight job, runbook, dependency status, and operator-facing messages.
+- `MigrationPlan`: selected VMs, source and target connectors, execution state,
+  and per-VM preflight results.
 
 ## Engine Boundary
 
 The migration engine is intentionally split into safe preflight and live execution phases:
 
 - Discovery runs call real KVM/vCenter APIs or command interfaces and record success or failure.
-- Migration jobs create a non-destructive KVM-to-ESXi/vCenter test preflight and validate the live execution tool requirements.
+- Migration plan execution creates a non-destructive KVM-to-ESXi/vCenter
+  preflight per selected VM and validates live execution tool requirements.
 - Live migration execution is not triggered automatically from the MVP UI.
 - Runtime credentials should be injected through environment variables, mounted SSH keys, Docker secrets, or a future vault integration.
 

@@ -213,6 +213,12 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .host-facts dt { margin: 0; color: #607386; font-size: 11px; text-transform: uppercase; }
 .host-facts dd { overflow: hidden; margin-top: 5px; color: #172235; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .host-detail { display: grid; gap: 0; }
+.inventory-actions { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 18px; background: #fff; border: 1px solid #d9e4ee; border-radius: 8px; }
+.inventory-actions > div { display: grid; gap: 4px; }
+.inventory-actions span { color: #607386; font-size: 13px; }
+.disabled-row { opacity: 0.45; }
+.plan-about { max-width: none; }
+.plan-detail { display: grid; }
 .metric-grid { display: grid; grid-template-columns: repeat(6, minmax(130px, 1fr)); gap: 14px; margin-bottom: 22px; }
 .metric, .form-panel, .table-wrap, .about { background: #fff; border: 1px solid #d9e4ee; border-radius: 8px; }
 .metric { padding: 18px; }
