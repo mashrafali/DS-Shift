@@ -212,7 +212,11 @@ def discover_vcenter(request: ConnectorRequest) -> EngineResult:
             host_view.Destroy()
         view = content.viewManager.CreateContainerView(content.rootFolder, [vim.VirtualMachine], True)
         try:
+            seen_vm_ids = set()
             for vm_obj in view.view[:500]:
+                if vm_obj._moId in seen_vm_ids:
+                    continue
+                seen_vm_ids.add(vm_obj._moId)
                 summary = vm_obj.summary
                 config = summary.config
                 guest = summary.guest
