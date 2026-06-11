@@ -24,6 +24,7 @@ from .connector_client import (
 )
 from .database import Base, engine, get_db
 from .engines import build_kvm_to_esxi_preflight
+from .service_status import get_service_statuses
 
 MIGRATION_STATUSES = {
     "Discovered",
@@ -569,6 +570,11 @@ def get_settings(db: Session = Depends(get_db), _user: models.LocalUser = Depend
         db.commit()
         db.refresh(settings_row)
     return settings_row
+
+
+@app.get("/api/service-status")
+def service_status(_user: models.LocalUser = Depends(current_user)):
+    return get_service_statuses()
 
 
 @app.put("/api/settings", response_model=schemas.AppSettings)

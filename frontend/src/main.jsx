@@ -145,6 +145,8 @@ function App() {
   const [discoveryRuns, setDiscoveryRuns] = useState([]);
   const [migrationJobs, setMigrationJobs] = useState([]);
   const [settings, setSettings] = useState(blankSettings);
+  const [serviceStatus, setServiceStatus] = useState({ services: [], monitor_error: '' });
+  const [serviceStatusLoading, setServiceStatusLoading] = useState(false);
   const [projectForm, setProjectForm] = useState(blankProject);
   const [editingProjectId, setEditingProjectId] = useState(null);
   const [editProjectForm, setEditProjectForm] = useState(blankProject);
@@ -216,6 +218,28 @@ function App() {
   };
 
   useEffect(() => { load(); }, [token]);
+
+  useEffect(() => {
+    if (!token || active !== 'settings') return undefined;
+    let current = true;
+    const refresh = async () => {
+      setServiceStatusLoading(true);
+      try {
+        const result = await api('/service-status');
+        if (current) setServiceStatus(result);
+      } catch (err) {
+        if (current) setServiceStatus({ services: [], monitor_error: err.message });
+      } finally {
+        if (current) setServiceStatusLoading(false);
+      }
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 10000);
+    return () => {
+      current = false;
+      window.clearInterval(timer);
+    };
+  }, [token, active]);
 
   const login = async (event) => {
     event.preventDefault();
@@ -488,7 +512,7 @@ function App() {
         {active === 'waves' && <Waves waves={waves} />}
         {active === 'reports' && <Reports csv={csv} vms={vms} />}
         {active === 'users' && user?.role === 'admin' && <UsersView currentUser={user} users={users} form={userForm} setForm={setUserForm} save={saveUser} editForm={editUserForm} setEditForm={setEditUserForm} saveEdit={saveUserEdit} edit={editUser} remove={deleteUser} editingUserId={editingUserId} cancelEdit={cancelUserEdit} setError={setError} />}
-        {active === 'settings' && <SettingsView settings={settings} setSettings={setSettings} save={saveSettings} user={user} />}
+        {active === 'settings' && <SettingsView settings={settings} setSettings={setSettings} save={saveSettings} user={user} serviceStatus={serviceStatus} serviceStatusLoading={serviceStatusLoading} />}
       </main>
     </div>
   );
@@ -604,8 +628,17 @@ function UsersView({ currentUser, users, form, setForm, save, editForm, setEditF
   return <section className="split"><FormPanel title="Create user" onSubmit={save}><UserFields form={form} setForm={setForm} setError={setError} /><button className="primary"><Save size={16} /> Create user</button></FormPanel><div className="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>{users.map((row) => <tr key={row.id}><td><div className="user-table-identity"><UserAvatar user={row} /><div><strong>{row.username}</strong>{row.id === currentUser?.id && <span>Current user</span>}</div></div></td><td><Badge value={row.role} /></td><td><Badge value={row.is_active ? 'Active' : 'Inactive'} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini danger-button" disabled={row.id === currentUser?.id} onClick={() => remove(row)}><Trash2 size={14} /> Delete</button></div></td></tr>)}</tbody></table></div>{editingUserId && <Modal title="Edit user" onClose={cancelEdit}><FormPanel title="" onSubmit={saveEdit}><UserFields form={editForm} setForm={setEditForm} editingUserId={editingUserId} setError={setError} /><div className="button-row"><button className="primary"><Save size={16} /> Save changes</button><button className="secondary" type="button" onClick={cancelEdit}><X size={16} /> Cancel</button></div></FormPanel></Modal>}</section>;
 }
 
-function SettingsView({ settings, setSettings, save, user }) {
-  return <section className="split"><FormPanel title="Application settings" onSubmit={save}><Input label="Product name" value={settings.product_name || ''} onChange={(v) => setSettings({ ...settings, product_name: v })} /><Input label="Company name" value={settings.company_name || ''} onChange={(v) => setSettings({ ...settings, company_name: v })} /><Input label="Default timezone" value={settings.default_timezone || ''} onChange={(v) => setSettings({ ...settings, default_timezone: v })} /><Input label="Retention days" type="number" value={settings.retention_days || 365} onChange={(v) => setSettings({ ...settings, retention_days: v })} /><Input label="Maintenance window" value={settings.maintenance_window || ''} onChange={(v) => setSettings({ ...settings, maintenance_window: v })} /><TextArea label="Banner message" value={settings.banner_message || ''} onChange={(v) => setSettings({ ...settings, banner_message: v })} /><button className="primary"><Save size={16} /> Save settings</button></FormPanel><div className="about"><h2>Local authentication</h2><dl><dt>Signed in user</dt><dd>{user?.username}</dd><dt>Role</dt><dd>{user?.role}</dd><dt>User management</dt><dd>Administrators manage accounts and profile photos from the dedicated Users page.</dd></dl></div></section>;
+function SettingsView({ settings, setSettings, save, user, serviceStatus, serviceStatusLoading }) {
+  return <section className="split"><FormPanel title="Application settings" onSubmit={save}><Input label="Product name" value={settings.product_name || ''} onChange={(v) => setSettings({ ...settings, product_name: v })} /><Input label="Company name" value={settings.company_name || ''} onChange={(v) => setSettings({ ...settings, company_name: v })} /><Input label="Default timezone" value={settings.default_timezone || ''} onChange={(v) => setSettings({ ...settings, default_timezone: v })} /><Input label="Retention days" type="number" value={settings.retention_days || 365} onChange={(v) => setSettings({ ...settings, retention_days: v })} /><Input label="Maintenance window" value={settings.maintenance_window || ''} onChange={(v) => setSettings({ ...settings, maintenance_window: v })} /><TextArea label="Banner message" value={settings.banner_message || ''} onChange={(v) => setSettings({ ...settings, banner_message: v })} /><button className="primary"><Save size={16} /> Save settings</button></FormPanel><div className="stack"><ServiceStatusPanel data={serviceStatus} loading={serviceStatusLoading} /><div className="about"><h2>Local authentication</h2><dl><dt>Signed in user</dt><dd>{user?.username}</dd><dt>Role</dt><dd>{user?.role}</dd><dt>User management</dt><dd>Administrators manage accounts and profile photos from the dedicated Users page.</dd></dl></div></div></section>;
+}
+
+function ServiceStatusPanel({ data, loading }) {
+  return <div className="service-status-panel"><div className="service-status-header"><div><h2>Services status</h2><p>Live Docker container state, refreshed every 10 seconds.</p></div>{loading && <span className="service-refreshing">Refreshing</span>}</div>{data.monitor_error && <div className="alert">{data.monitor_error}</div>}<div className="service-status-list">{data.services.map((service) => <div className="service-status-row" key={service.service}><div><strong>{service.name}</strong><small>{service.detail || service.container_state}</small></div><ServiceState status={service.status} /></div>)}</div></div>;
+}
+
+function ServiceState({ status }) {
+  const normalized = status === 'UP' ? 'up' : status === 'RESTARTING' ? 'restarting' : 'down';
+  return <span className={`service-state ${normalized}`}><span />{status}</span>;
 }
 
 function UserAvatar({ user, large = false }) {

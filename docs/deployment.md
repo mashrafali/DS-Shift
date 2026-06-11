@@ -36,6 +36,12 @@ curl -k -I https://localhost
 ./scripts/validate.sh
 ```
 
+The Settings service-status panel requires the `service-status-monitor`
+container to read `/var/run/docker.sock`. The socket is not mounted into the
+application backend. The monitor uses a read-only root filesystem, drops Linux
+capabilities, enables `no-new-privileges`, and exposes only health and status
+endpoints on the internal Compose network.
+
 ## Migration Testing Credentials
 
 For lab migration testing, set connector credential references to environment-backed values and keep the real passwords only in `.env`:

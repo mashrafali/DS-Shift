@@ -47,6 +47,13 @@ Passwords and cloud credential JSON are not stored in PostgreSQL; connector reco
 
 Use `Validate` to test the platform API with its public SDK or API client. Use `Discover` to collect VM or instance inventory. Discovery results are listed on the Migration Engine page.
 
+## Service status
+
+The Settings page shows the live state of each DS Shift container. Green `UP`
+means Docker reports the container as running, yellow `RESTARTING` means Docker
+is restarting it, and red `DOWN` means it is stopped, exited, or missing. The
+panel refreshes every 10 seconds.
+
 ## Migration Engine
 
 The Migration Engine page creates KVM-to-ESXi/vCenter test preflight jobs. Select a source KVM connector, a target ESXi/vCenter connector, the source VM name, and the target datastore. DS Shift validates the source connector, inspects the source VM, validates the target vCenter connector, records the generated runbook, and reports whether live conversion tools are available.

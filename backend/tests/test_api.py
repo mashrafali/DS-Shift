@@ -10,6 +10,7 @@ from app import models, schemas
 from app.connector_client import normalize_connector_type, validate_connector_platform
 from app.database import Base
 from app.main import app, delete_user, hash_password, seed_defaults, update_user, validate_profile_photo
+from app.service_status import display_name, unavailable_statuses
 
 
 def test_about():
@@ -72,3 +73,18 @@ def test_admin_cannot_delete_or_deactivate_self():
 
         with pytest.raises(HTTPException, match="demote or deactivate"):
             update_user(admin.id, schemas.UserUpdate(is_active=False), db, admin)
+
+
+def test_service_status_fallback():
+    result = unavailable_statuses("monitor unavailable")
+
+    assert display_name("cloud-connector-engine") == "Cloud-Connector-Engine"
+    assert [row["service"] for row in result["services"]] == [
+        "backend",
+        "cloud-connector-engine",
+        "database",
+        "frontend",
+        "host-connector-engine",
+        "reverse-proxy",
+    ]
+    assert all(row["status"] == "DOWN" for row in result["services"])

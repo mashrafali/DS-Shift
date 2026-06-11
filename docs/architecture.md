@@ -43,6 +43,12 @@ DS Shift uses a three-tier application architecture deployed with Docker Compose
 - Validates and discovers Azure VMs with Azure Identity and Compute Management SDKs.
 - Receives only cloud credential JSON environment variables.
 
+`service-status-monitor`
+
+- Reads Docker Engine container state for the current Compose project.
+- Publishes a status-only internal endpoint consumed by the backend.
+- Keeps the Docker socket isolated from the main application backend.
+
 `database`
 
 - PostgreSQL.

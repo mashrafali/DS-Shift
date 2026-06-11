@@ -188,6 +188,24 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .connector-section-header { display: flex; align-items: center; gap: 16px; }
 .connector-section-header h2 { margin: 0 0 4px; }
 .connector-section-header p { margin: 0; color: #607386; font-size: 13px; }
+.service-status-panel { padding: 20px; background: #fff; border: 1px solid #d9e4ee; border-radius: 8px; }
+.service-status-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; margin-bottom: 14px; }
+.service-status-header h2 { margin-bottom: 4px; }
+.service-status-header p { margin: 0; color: #607386; font-size: 13px; }
+.service-refreshing { color: #806100; font-size: 12px; font-weight: 750; }
+.service-status-list { display: grid; border-top: 1px solid #e5edf4; }
+.service-status-row { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 18px; border-bottom: 1px solid #e5edf4; }
+.service-status-row > div { min-width: 0; display: grid; gap: 4px; }
+.service-status-row strong { color: #071c33; }
+.service-status-row small { overflow: hidden; color: #607386; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.service-state { min-width: 112px; min-height: 30px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; border-radius: 999px; font-size: 12px; font-weight: 800; }
+.service-state span { width: 9px; height: 9px; border-radius: 50%; }
+.service-state.up { color: #17623a; background: #e8f7ef; }
+.service-state.up span { background: #23a55a; box-shadow: 0 0 0 3px rgba(35, 165, 90, 0.14); }
+.service-state.restarting { color: #806100; background: #fff5cc; }
+.service-state.restarting span { background: #d6a800; box-shadow: 0 0 0 3px rgba(214, 168, 0, 0.14); }
+.service-state.down { color: #9b1c1c; background: #fdebea; }
+.service-state.down span { background: #d63b35; box-shadow: 0 0 0 3px rgba(214, 59, 53, 0.14); }
 .metric-grid { display: grid; grid-template-columns: repeat(6, minmax(130px, 1fr)); gap: 14px; margin-bottom: 22px; }
 .metric, .form-panel, .table-wrap, .about { background: #fff; border: 1px solid #d9e4ee; border-radius: 8px; }
 .metric { padding: 18px; }
