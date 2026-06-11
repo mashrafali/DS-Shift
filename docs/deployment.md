@@ -15,8 +15,8 @@
 ## Deploy
 
 ```bash
-git clone git@github.com:mashrafali/ds-replace.git
-cd ds-replace
+git clone git@github.com:mashrafali/DS-Shift.git
+cd DS-Shift
 cp .env.example .env
 openssl rand -base64 32
 vi .env
@@ -66,7 +66,7 @@ Cloud connector credential values are JSON strings stored only in `.env`:
 
 The release-candidate engine validates and discovers real KVM and vCenter inventory without storing these passwords in PostgreSQL. Live KVM-to-ESXi conversion remains gated and additionally requires `qemu-img` and `virt-v2v` in the runtime.
 
-For key-based KVM access in an upgraded legacy deployment, the engine SSH key may remain under `/opt/ds-replace/engine-ssh`. Install the public key on the KVM host and set the KVM connector credential reference to `ssh-key:container`. The Compose deployment mounts `./engine-ssh` read-only into the backend container as `/root/.ssh`.
+For key-based KVM access in an upgraded legacy deployment, move or preserve the engine SSH key under `/opt/ds-shift/engine-ssh`. Install the public key on the KVM host and set the KVM connector credential reference to `ssh-key:container`. The Compose deployment mounts `./engine-ssh` read-only into the backend container as `/root/.ssh`.
 
 ## Backup
 

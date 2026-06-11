@@ -1,3 +1,5 @@
+name: ds-shift
+
 services:
   database:
     image: postgres:16-alpine
@@ -17,6 +19,7 @@ services:
       - ds_shift
 
   backend:
+    image: ds-shift-backend:latest
     build:
       context: ./backend
       network: host
@@ -52,6 +55,7 @@ services:
       - ds_shift
 
   service-status-monitor:
+    image: ds-shift-service-status-monitor:latest
     build:
       context: ./status-monitor
     restart: unless-stopped
@@ -61,7 +65,7 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
-      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-ds-replace}
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-ds-shift}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     healthcheck:
@@ -114,6 +118,7 @@ services:
       - ds_shift
 
   frontend:
+    image: ds-shift-frontend:latest
     build:
       context: ./frontend
     restart: unless-stopped

@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 
 DOCKER_SOCKET = os.getenv("DOCKER_SOCKET", "/var/run/docker.sock")
-COMPOSE_PROJECT = os.getenv("COMPOSE_PROJECT_NAME", "ds-replace")
+COMPOSE_PROJECT = os.getenv("COMPOSE_PROJECT_NAME", "ds-shift")
 PORT = int(os.getenv("STATUS_MONITOR_PORT", "8090"))
 HIDDEN_SERVICES = {"service-status-monitor"}
 SERVICE_ORDER = [
