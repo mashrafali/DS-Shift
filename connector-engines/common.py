@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pydantic import BaseModel, Field
 
@@ -20,6 +20,7 @@ class EngineResponse(BaseModel):
     message: str
     records: list[dict] = Field(default_factory=list)
     commands: list[str] = Field(default_factory=list)
+    hosts: list[dict] = Field(default_factory=list)
 
 
 @dataclass
@@ -28,6 +29,7 @@ class EngineResult:
     message: str
     records: list[dict]
     commands: list[str]
+    hosts: list[dict] = field(default_factory=list)
 
 
 def credential_from_env(reference: str | None) -> str | None:

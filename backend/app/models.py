@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -149,6 +149,26 @@ class DiscoveryRun(TimestampMixin, Base):
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
     records_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     commands_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class HostInventory(TimestampMixin, Base):
+    __tablename__ = "host_inventory"
+    __table_args__ = (UniqueConstraint("connector_id", "host_key", name="uq_host_inventory_connector_key"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    connector_id: Mapped[int] = mapped_column(ForeignKey("connector_profiles.id", ondelete="CASCADE"), index=True)
+    host_key: Mapped[str] = mapped_column(String(255))
+    host_name: Mapped[str] = mapped_column(String(255), index=True)
+    platform: Mapped[str] = mapped_column(String(80))
+    endpoint: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    environment: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    status: Mapped[str] = mapped_column(String(80), default="Discovered")
+    cpu: Mapped[int] = mapped_column(Integer, default=0)
+    memory_gb: Mapped[int] = mapped_column(Integer, default=0)
+    vm_count: Mapped[int] = mapped_column(Integer, default=0)
+    vms_json: Mapped[str] = mapped_column(Text, default="[]")
+    details_json: Mapped[str] = mapped_column(Text, default="{}")
+    last_discovered_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class MigrationJob(TimestampMixin, Base):

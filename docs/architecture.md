@@ -27,6 +27,8 @@ DS Shift uses a three-tier application architecture deployed with Docker Compose
 - Exposes OpenAPI documentation.
 - Provides local username/password authentication with bearer sessions.
 - Brokers connector validation and discovery requests to dedicated connector engine services.
+- Persists host inventory and VM-to-host placement returned by Host Connector
+  discovery.
 - Provides KVM-to-ESXi/vCenter migration test preflight job creation using connector validation, source VM inspection, target validation, and a `virt-v2v` runbook model.
 
 `host-connector-engine`

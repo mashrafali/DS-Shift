@@ -400,6 +400,23 @@ def update_connector(connector_id: int, payload: schemas.ConnectorCreate, db: Se
     return connector
 
 
+@app.delete("/api/connectors/{connector_id}", status_code=204)
+def delete_connector(connector_id: int, db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
+    connector = db.get(models.ConnectorProfile, connector_id)
+    if not connector:
+        raise HTTPException(404, "Connector not found")
+    referenced_jobs = db.query(models.MigrationJob).filter(
+        (models.MigrationJob.source_connector_id == connector_id)
+        | (models.MigrationJob.target_connector_id == connector_id)
+    ).count()
+    if referenced_jobs:
+        raise HTTPException(409, f"Connector is referenced by {referenced_jobs} migration job(s) and cannot be deleted")
+    db.query(models.DiscoveryRun).filter(models.DiscoveryRun.connector_id == connector_id).delete(synchronize_session=False)
+    db.query(models.HostInventory).filter(models.HostInventory.connector_id == connector_id).delete(synchronize_session=False)
+    db.delete(connector)
+    db.commit()
+
+
 @app.post("/api/connectors/{connector_id}/validate", response_model=schemas.ConnectorValidationResult)
 def validate_connector(connector_id: int, db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
     connector = db.get(models.ConnectorProfile, connector_id)
@@ -430,9 +447,18 @@ def discover_connector(connector_id: int, payload: schemas.DiscoveryRequest, db:
         result = call_connector_engine(connector, "discover")
         imported = 0
         records = result.get("records", [])
+        hosts = result.get("hosts", [])
+        discovered_hosts = 0
+        if result.get("ok") and connector.connector_category == "host":
+            discovered_hosts = sync_discovered_hosts(db, connector, hosts, records)
+        connector.status = "Discovered" if result.get("ok") else "Discovery failed"
         if result.get("ok") and payload.import_to_project_id:
             imported = import_discovered_vms(db, payload.import_to_project_id, payload.target_platform or "Unassigned", records)
-        message = result.get("message", "Connector engine returned no message") + (f"; imported {imported} VMs" if imported else "")
+        message = result.get("message", "Connector engine returned no message")
+        if discovered_hosts:
+            message += f"; updated {discovered_hosts} host inventory record(s)"
+        if imported:
+            message += f"; imported {imported} VMs"
         run = models.DiscoveryRun(
             connector_id=connector.id,
             status="Completed" if result.get("ok") else "Failed",
@@ -441,6 +467,7 @@ def discover_connector(connector_id: int, payload: schemas.DiscoveryRequest, db:
             commands_json=json.dumps(result.get("commands", [])),
         )
     except Exception as exc:
+        connector.status = "Discovery failed"
         run = models.DiscoveryRun(
             connector_id=connector.id,
             status="Failed",
@@ -452,6 +479,80 @@ def discover_connector(connector_id: int, payload: schemas.DiscoveryRequest, db:
     db.commit()
     db.refresh(run)
     return run
+
+
+def sync_discovered_hosts(db: Session, connector: models.ConnectorProfile, hosts: list[dict], records: list[dict]) -> int:
+    grouped_vms: dict[str, list[dict]] = {}
+    for record in records:
+        key = str(record.get("host_key") or record.get("host_name") or connector.endpoint or connector.name)
+        grouped_vms.setdefault(key, []).append(record)
+
+    normalized_hosts = hosts or [
+        {
+            "host_key": connector.endpoint or connector.name,
+            "host_name": connector.endpoint or connector.name,
+            "platform": connector.connector_type,
+            "endpoint": connector.endpoint,
+            "status": "Discovered",
+        }
+    ]
+    seen_keys = set()
+    for host in normalized_hosts:
+        host_key = str(host.get("host_key") or host.get("host_name") or connector.endpoint or connector.name)
+        seen_keys.add(host_key)
+        host_vms = grouped_vms.get(host_key, [])
+        row = db.query(models.HostInventory).filter(
+            models.HostInventory.connector_id == connector.id,
+            models.HostInventory.host_key == host_key,
+        ).first()
+        values = {
+            "host_name": host.get("host_name") or host_key,
+            "platform": host.get("platform") or connector.connector_type,
+            "endpoint": host.get("endpoint") or connector.endpoint,
+            "environment": connector.environment,
+            "status": host.get("status") or "Discovered",
+            "cpu": host.get("cpu") or 0,
+            "memory_gb": host.get("memory_gb") or 0,
+            "vm_count": len(host_vms),
+            "vms_json": json.dumps(host_vms),
+            "details_json": json.dumps(host.get("details") or {}),
+            "last_discovered_at": datetime.utcnow(),
+        }
+        if row:
+            for key, value in values.items():
+                setattr(row, key, value)
+        else:
+            db.add(models.HostInventory(connector_id=connector.id, host_key=host_key, **values))
+
+    for host_key, host_vms in grouped_vms.items():
+        if host_key in seen_keys:
+            continue
+        db.add(
+            models.HostInventory(
+                connector_id=connector.id,
+                host_key=host_key,
+                host_name=host_vms[0].get("host_name") or host_key,
+                platform=connector.connector_type,
+                endpoint=connector.endpoint,
+                environment=connector.environment,
+                status="Discovered",
+                vm_count=len(host_vms),
+                vms_json=json.dumps(host_vms),
+                details_json="{}",
+                last_discovered_at=datetime.utcnow(),
+            )
+        )
+    db.query(models.HostInventory).filter(
+        models.HostInventory.connector_id == connector.id,
+        ~models.HostInventory.host_key.in_(seen_keys | set(grouped_vms)),
+    ).delete(synchronize_session=False)
+    db.commit()
+    return len(seen_keys | set(grouped_vms))
+
+
+@app.get("/api/hosts", response_model=list[schemas.HostInventory])
+def list_hosts(db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
+    return db.query(models.HostInventory).order_by(models.HostInventory.host_name).all()
 
 
 def import_discovered_vms(db: Session, project_id: int, target_platform: str, records: list[dict]) -> int:

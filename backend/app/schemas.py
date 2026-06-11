@@ -219,6 +219,26 @@ class DiscoveryRun(BaseModel):
     updated_at: datetime
 
 
+class HostInventory(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    connector_id: int
+    host_key: str
+    host_name: str
+    platform: str
+    endpoint: Optional[str] = None
+    environment: Optional[str] = None
+    status: str
+    cpu: int
+    memory_gb: int
+    vm_count: int
+    vms_json: str
+    details_json: str
+    last_discovered_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
 class MigrationJobCreate(BaseModel):
     source_connector_id: int
     target_connector_id: int

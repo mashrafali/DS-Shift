@@ -139,6 +139,7 @@ function App() {
   const [vms, setVms] = useState([]);
   const [waves, setWaves] = useState([]);
   const [connectors, setConnectors] = useState([]);
+  const [hosts, setHosts] = useState([]);
   const [connectorCatalog, setConnectorCatalog] = useState({ categories: fallbackConnectorPlatforms, engines: [] });
   const [connectorCategory, setConnectorCategory] = useState('');
   const [users, setUsers] = useState([]);
@@ -155,6 +156,7 @@ function App() {
   const [editingConnectorId, setEditingConnectorId] = useState(null);
   const [editConnectorForm, setEditConnectorForm] = useState(blankConnector);
   const [connectorResult, setConnectorResult] = useState(null);
+  const [discoveringConnectorId, setDiscoveringConnectorId] = useState(null);
   const [userForm, setUserForm] = useState(blankUser);
   const [editingUserId, setEditingUserId] = useState(null);
   const [editUserForm, setEditUserForm] = useState(blankUser);
@@ -187,7 +189,7 @@ function App() {
     if (!token) return;
     setError('');
     try {
-      const [me, dashboard, projectRows, vmRows, waveRows, connectorRows, connectorPlatformRows, discoveryRows, migrationRows, appSettings] = await Promise.all([
+      const [me, dashboard, projectRows, vmRows, waveRows, connectorRows, connectorPlatformRows, hostRows, discoveryRows, migrationRows, appSettings] = await Promise.all([
         api('/auth/me'),
         api('/dashboard'),
         api('/projects'),
@@ -195,6 +197,7 @@ function App() {
         api('/waves'),
         api('/connectors'),
         api('/connector-platforms'),
+        api('/hosts'),
         api('/discovery-runs'),
         api('/migration-jobs'),
         api('/settings'),
@@ -208,6 +211,7 @@ function App() {
       setWaves(waveRows);
       setConnectors(connectorRows);
       setConnectorCatalog(connectorPlatformRows);
+      setHosts(hostRows);
       setDiscoveryRuns(discoveryRows);
       setMigrationJobs(migrationRows);
       setSettings(appSettings);
@@ -345,6 +349,19 @@ function App() {
     await load();
   };
 
+  const deleteConnector = async (connector) => {
+    if (!window.confirm(`Delete connector "${connector.name}"? Its discovery history and discovered hosts will also be deleted.`)) return;
+    setError('');
+    try {
+      await api(`/connectors/${connector.id}`, { method: 'DELETE' });
+      if (editingConnectorId === connector.id) cancelConnectorEdit();
+      setConnectorResult(null);
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   const saveSettings = async (event) => {
     event.preventDefault();
     await api('/settings', { method: 'PUT', body: JSON.stringify({ ...settings, retention_days: Number(settings.retention_days) }) });
@@ -419,11 +436,22 @@ function App() {
   };
 
   const discoverConnector = async (connector, projectId = '') => {
-    await api(`/connectors/${connector.id}/discover`, {
-      method: 'POST',
-      body: JSON.stringify({ import_to_project_id: projectId ? Number(projectId) : null, target_platform: 'Unassigned' }),
-    });
-    await load();
+    setError('');
+    setDiscoveringConnectorId(connector.id);
+    setConnectorResult({ connector, status: 'Discovering', message: `Discovering ${connector.name} and its workloads...`, commands: [] });
+    try {
+      const result = await api(`/connectors/${connector.id}/discover`, {
+        method: 'POST',
+        body: JSON.stringify({ import_to_project_id: projectId ? Number(projectId) : null, target_platform: 'Unassigned' }),
+      });
+      setConnectorResult({ connector, status: result.status, message: result.message, commands: parseJsonArray(result.commands_json) });
+      await load();
+    } catch (err) {
+      setConnectorResult({ connector, status: 'Failed', message: err.message, commands: [] });
+      setError(err.message);
+    } finally {
+      setDiscoveringConnectorId(null);
+    }
   };
 
   const createMigrationJob = async (event) => {
@@ -455,6 +483,7 @@ function App() {
 
   const nav = [
     ['connectors', ServerCog, 'Connectors'],
+    ['hosts', Network, 'Hosts'],
     ['dashboard', Gauge, 'Dashboard'],
     ['projects', Layers, 'Projects'],
     ['inventory', HardDrive, 'VM Inventory'],
@@ -507,7 +536,8 @@ function App() {
         {active === 'dashboard' && <Dashboard summary={summary} vms={vms} connectors={connectors} />}
         {active === 'projects' && <Projects projects={projects} form={projectForm} setForm={setProjectForm} save={saveProject} editProject={editProject} editingProjectId={editingProjectId} editForm={editProjectForm} setEditForm={setEditProjectForm} saveEdit={saveProjectEdit} cancelEdit={() => { setEditProjectForm(blankProject); setEditingProjectId(null); }} />}
         {active === 'inventory' && <Inventory vms={vms} projects={projects} form={vmForm} setForm={setVmForm} create={createVm} changeStatus={changeStatus} />}
-        {active === 'connectors' && <ConnectorWorkspace category={connectorCategory} setCategory={setConnectorCategory} catalog={connectorCatalog} connectors={connectors} form={connectorForm} setForm={setConnectorForm} save={saveConnector} editForm={editConnectorForm} setEditForm={setEditConnectorForm} saveEdit={saveConnectorEdit} discover={discoverConnector} validate={validateConnector} edit={editConnector} cancelEdit={cancelConnectorEdit} editingConnectorId={editingConnectorId} result={connectorResult} />}
+        {active === 'connectors' && <ConnectorWorkspace category={connectorCategory} setCategory={setConnectorCategory} catalog={connectorCatalog} connectors={connectors} form={connectorForm} setForm={setConnectorForm} save={saveConnector} editForm={editConnectorForm} setEditForm={setEditConnectorForm} saveEdit={saveConnectorEdit} discover={discoverConnector} validate={validateConnector} edit={editConnector} remove={deleteConnector} cancelEdit={cancelConnectorEdit} editingConnectorId={editingConnectorId} discoveringConnectorId={discoveringConnectorId} result={connectorResult} />}
+        {active === 'hosts' && <HostsView hosts={hosts} connectors={connectors} />}
         {active === 'engine' && <MigrationEngine connectors={connectors} form={migrationJobForm} setForm={setMigrationJobForm} save={createMigrationJob} jobs={migrationJobs} discoveryRuns={discoveryRuns} />}
         {active === 'waves' && <Waves waves={waves} />}
         {active === 'reports' && <Reports csv={csv} vms={vms} />}
@@ -523,7 +553,7 @@ function Login({ form, setForm, submit, error }) {
 }
 
 function titleFor(active) {
-  return ({ connectors: 'Connectors', dashboard: 'Migration Command Center', projects: 'Saved Migration Projects', inventory: 'VM Inventory', engine: 'Discovery and Migration Engine', waves: 'Migration Waves', reports: 'Reports', users: 'User Management', settings: 'Settings Control' })[active];
+  return ({ connectors: 'Connectors', hosts: 'Discovered Hosts', dashboard: 'Migration Command Center', projects: 'Saved Migration Projects', inventory: 'VM Inventory', engine: 'Discovery and Migration Engine', waves: 'Migration Waves', reports: 'Reports', users: 'User Management', settings: 'Settings Control' })[active];
 }
 
 function Dashboard({ summary, vms, connectors }) {
@@ -571,9 +601,19 @@ function ConnectorFields({ form, setForm, category, platforms }) {
   return <><Select label="Platform" value={scopedForm.connector_type} options={types} onChange={(v) => update({ connector_type: v, endpoint: '', credential_reference: '' })} /><div className="tip"><strong>{platform?.tool}</strong><br />Endpoint: {platform?.endpoint_hint}<br />Credential: {platform?.credential_hint}</div><Input label="Connector name" value={scopedForm.name} onChange={(v) => update({ name: v })} required /><Input label={category === 'cloud' ? 'Region / Project / Subscription' : 'Endpoint / API URL'} value={scopedForm.endpoint} onChange={(v) => update({ endpoint: v })} /><Input label="Port" type="number" value={scopedForm.port || ''} onChange={(v) => update({ port: v })} /><Input label="Username" value={scopedForm.username || ''} onChange={(v) => update({ username: v })} /><Input label="Credential reference" value={scopedForm.credential_reference || ''} onChange={(v) => update({ credential_reference: v })} /><Input label="Environment" value={scopedForm.environment || ''} onChange={(v) => update({ environment: v })} /><TextArea label="Notes" value={scopedForm.notes || ''} onChange={(v) => update({ notes: v })} /></>;
 }
 
-function Connectors({ title, category, rows, form, setForm, save, editForm, setEditForm, saveEdit, platforms, discover, validate, edit, cancelEdit, editingConnectorId, result }) {
+function Connectors({ title, category, rows, form, setForm, save, editForm, setEditForm, saveEdit, platforms, discover, validate, edit, remove, cancelEdit, editingConnectorId, discoveringConnectorId, result }) {
   const isEditing = editingConnectorId && editForm.connector_category === category;
-  return <section className="split"><FormPanel title={`Add ${title}`} onSubmit={save}><ConnectorFields form={form} setForm={setForm} category={category} platforms={platforms} /><div className="tip">New connectors are stored by DS Shift and executed by the dedicated {category === 'host' ? 'Host' : 'Cloud'} Connector Engine.</div><button className="primary"><Save size={16} /> Add connector</button></FormPanel><div className="stack">{result && result.connector?.connector_category === category && <div className={`result ${result.status === 'Validated' ? 'success' : 'danger'}`}><strong>{result.status}</strong><span>{result.message}</span>{Boolean(result.commands?.length) && <code>{result.commands.join(' | ')}</code>}</div>}<div className="table-wrap"><table><thead><tr><th>Name</th><th>Platform</th><th>Endpoint</th><th>Credential</th><th>Status</th><th>Actions</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td>{row.name}</td><td>{row.connector_type}</td><td>{row.endpoint || '-'}</td><td>{row.credential_reference || '-'}</td><td><Badge value={row.status} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini" onClick={() => validate(row)}><CheckCircle2 size={14} /> Validate</button><button className="mini" onClick={() => discover(row)}><Search size={14} /> Discover</button></div></td></tr>)}</tbody></table></div></div>{isEditing && <Modal title={`Edit ${title}`} onClose={cancelEdit}><FormPanel title="" onSubmit={saveEdit}><ConnectorFields form={editForm} setForm={setEditForm} category={category} platforms={platforms} /><div className="button-row"><button className="primary"><Save size={16} /> Save changes</button><button className="secondary" type="button" onClick={cancelEdit}><X size={16} /> Cancel</button></div></FormPanel></Modal>}</section>;
+  const resultSuccess = ['Validated', 'Completed'].includes(result?.status);
+  return <section className="split"><FormPanel title={`Add ${title}`} onSubmit={save}><ConnectorFields form={form} setForm={setForm} category={category} platforms={platforms} /><div className="tip">New connectors are stored by DS Shift and executed by the dedicated {category === 'host' ? 'Host' : 'Cloud'} Connector Engine.</div><button className="primary"><Save size={16} /> Add connector</button></FormPanel><div className="stack">{result && result.connector?.connector_category === category && <div className={`result ${resultSuccess ? 'success' : result.status === 'Discovering' ? '' : 'danger'}`}><strong>{result.status}</strong><span>{result.message}</span>{Boolean(result.commands?.length) && <code>{result.commands.join(' | ')}</code>}</div>}<div className="table-wrap"><table><thead><tr><th>Name</th><th>Platform</th><th>Endpoint</th><th>Credential</th><th>Status</th><th>Actions</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td>{row.name}</td><td>{row.connector_type}</td><td>{row.endpoint || '-'}</td><td>{row.credential_reference || '-'}</td><td><Badge value={row.status} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini" onClick={() => validate(row)}><CheckCircle2 size={14} /> Validate</button><button className="mini" disabled={discoveringConnectorId === row.id} onClick={() => discover(row)}><Search size={14} /> {discoveringConnectorId === row.id ? 'Discovering...' : 'Discover'}</button><button className="mini danger-button" onClick={() => remove(row)}><Trash2 size={14} /> Delete</button></div></td></tr>)}</tbody></table></div></div>{isEditing && <Modal title={`Edit ${title}`} onClose={cancelEdit}><FormPanel title="" onSubmit={saveEdit}><ConnectorFields form={editForm} setForm={setEditForm} category={category} platforms={platforms} /><div className="button-row"><button className="primary"><Save size={16} /> Save changes</button><button className="secondary" type="button" onClick={cancelEdit}><X size={16} /> Cancel</button></div></FormPanel></Modal>}</section>;
+}
+
+function HostsView({ hosts, connectors }) {
+  if (!hosts.length) return <section className="about"><h2>No hosts discovered</h2><p>Open Connectors and run Discover on a Host Connector. DS Shift will add the host and its VMs here automatically.</p></section>;
+  return <section className="host-grid">{hosts.map((host) => {
+    const vms = parseJsonArray(host.vms_json);
+    const connector = connectors.find((row) => row.id === host.connector_id);
+    return <article className="host-card" key={host.id}><header><div><h2>{host.host_name}</h2><p>{host.platform} · {connector?.name || `Connector ${host.connector_id}`}</p></div><Badge value={host.status} /></header><dl className="host-facts"><div><dt>Endpoint</dt><dd>{host.endpoint || '-'}</dd></div><div><dt>Capacity</dt><dd>{host.cpu} CPU / {host.memory_gb} GB</dd></div><div><dt>VMs</dt><dd>{host.vm_count}</dd></div><div><dt>Last discovery</dt><dd>{formatDateTime(host.last_discovered_at)}</dd></div></dl><div className="table-wrap"><table><thead><tr><th>VM</th><th>CPU</th><th>Memory</th><th>IP address</th><th>Power</th></tr></thead><tbody>{vms.length ? vms.map((vm, index) => <tr key={`${vm.vm_name}-${index}`}><td>{vm.vm_name}</td><td>{vm.cpu || 0}</td><td>{vm.memory_gb || 0} GB</td><td>{vm.ip_address || '-'}</td><td><Badge value={vm.power_state || vm.current_status || 'Discovered'} /></td></tr>) : <tr><td colSpan="5">No VMs reported by this host.</td></tr>}</tbody></table></div></article>;
+  })}</section>;
 }
 
 function MigrationEngine({ connectors, form, setForm, save, jobs, discoveryRuns }) {

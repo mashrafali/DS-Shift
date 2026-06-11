@@ -47,6 +47,21 @@ Passwords and cloud credential JSON are not stored in PostgreSQL; connector reco
 
 Use `Validate` to test the platform API with its public SDK or API client. Use `Discover` to collect VM or instance inventory. Discovery results are listed on the Migration Engine page.
 
+Host Connector discovery also creates or refreshes entries under `Hosts`.
+Each host entry includes platform, capacity, endpoint, discovery time, and the
+VMs currently reported by that host. Connector discovery shows progress and its
+completion or failure result directly on the Connectors page.
+
+Use `Delete` to remove a connector together with its discovery history and
+discovered host inventory. DS Shift blocks deletion when a migration job still
+references the connector.
+
+## Hosts
+
+The Hosts page is populated automatically by successful Host Connector
+discovery. Re-running discovery updates the existing host record rather than
+creating a duplicate, and refreshes its associated VM list.
+
 ## Service status
 
 The Settings page shows the live state of each DS Shift container. Green `UP`

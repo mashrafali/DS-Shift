@@ -103,13 +103,26 @@ def validate_kvm(request: ConnectorRequest) -> EngineResult:
 
 
 def discover_kvm(request: ConnectorRequest) -> EngineResult:
-    commands = ["virsh list --all --name"]
+    commands = ["hostname", "virsh nodeinfo", "virsh list --all --name"]
     try:
         client = _ssh_client(request)
     except Exception as exc:
         return EngineResult(False, f"KVM discovery failed: {exc}", [], commands)
     records = []
     try:
+        _, host_name, _ = _ssh_exec(client, "hostname", timeout=10)
+        _, node_info, _ = _ssh_exec(client, "virsh nodeinfo", timeout=15)
+        host_name = host_name.strip() or _ssh_parts(request)[0]
+        host = {
+            "host_key": host_name,
+            "host_name": host_name,
+            "platform": "KVM",
+            "endpoint": request.endpoint,
+            "status": "Discovered",
+            "cpu": _match_int(node_info, r"CPU\(s\):\s+(\d+)") or 0,
+            "memory_gb": round((_match_int(node_info, r"Memory size:\s+(\d+) KiB") or 0) / 1024 / 1024),
+            "details": {"node_info": node_info.strip()},
+        }
         code, listed, error = _ssh_exec(client, "virsh list --all --name", timeout=20)
         if code:
             return EngineResult(False, f"KVM discovery failed: {error.strip()}", [], commands)
@@ -130,9 +143,11 @@ def discover_kvm(request: ConnectorRequest) -> EngineResult:
                     "ip_address": _match_text(_section(text, "__ADDR__", None), r"ipv4\s+([0-9.]+)/"),
                     "current_status": "Discovered",
                     "power_state": _match_text(text, r"State:\s+(.+)") or "unknown",
+                    "host_key": host_name,
+                    "host_name": host_name,
                 }
             )
-        return EngineResult(True, f"Discovered {len(records)} KVM VMs", records, commands)
+        return EngineResult(True, f"Discovered KVM host {host_name} and {len(records)} VMs", records, commands, [host])
     finally:
         client.close()
 
@@ -166,7 +181,7 @@ def validate_vcenter(request: ConnectorRequest) -> EngineResult:
 
 
 def discover_vcenter(request: ConnectorRequest) -> EngineResult:
-    commands = ["pyVmomi SmartConnect", "ContainerView VirtualMachine"]
+    commands = ["pyVmomi SmartConnect", "ContainerView HostSystem and VirtualMachine"]
     try:
         service_instance = _vc_connect(request)
     except Exception as exc:
@@ -174,6 +189,26 @@ def discover_vcenter(request: ConnectorRequest) -> EngineResult:
     records = []
     try:
         content = service_instance.RetrieveContent()
+        host_view = content.viewManager.CreateContainerView(content.rootFolder, [vim.HostSystem], True)
+        try:
+            hosts = [
+                {
+                    "host_key": host_obj._moId,
+                    "host_name": host_obj.name,
+                    "platform": "VMware ESXi / vCenter",
+                    "endpoint": request.endpoint,
+                    "status": str(host_obj.runtime.connectionState),
+                    "cpu": host_obj.summary.hardware.numCpuCores or 0,
+                    "memory_gb": round((host_obj.summary.hardware.memorySize or 0) / 1024 / 1024 / 1024),
+                    "details": {
+                        "vendor": host_obj.summary.hardware.vendor,
+                        "model": host_obj.summary.hardware.model,
+                    },
+                }
+                for host_obj in host_view.view
+            ]
+        finally:
+            host_view.Destroy()
         view = content.viewManager.CreateContainerView(content.rootFolder, [vim.VirtualMachine], True)
         try:
             for vm_obj in view.view[:500]:
@@ -185,6 +220,7 @@ def discover_vcenter(request: ConnectorRequest) -> EngineResult:
                     for device in (vm_obj.config.hardware.device if vm_obj.config and vm_obj.config.hardware else [])
                     if isinstance(device, vim.vm.device.VirtualDisk)
                 ]
+                vm_host = summary.runtime.host
                 records.append(
                     {
                         "vm_name": config.name,
@@ -196,11 +232,13 @@ def discover_vcenter(request: ConnectorRequest) -> EngineResult:
                         "ip_address": guest.ipAddress,
                         "current_status": "Discovered",
                         "power_state": str(summary.runtime.powerState),
+                        "host_key": vm_host._moId if vm_host else "unassigned",
+                        "host_name": vm_host.name if vm_host else "Unassigned",
                     }
                 )
         finally:
             view.Destroy()
-        return EngineResult(True, f"Discovered {len(records)} vCenter VMs", records, commands)
+        return EngineResult(True, f"Discovered {len(hosts)} VMware hosts and {len(records)} VMs", records, commands, hosts)
     finally:
         Disconnect(service_instance)
 
@@ -230,11 +268,31 @@ def validate_nutanix(request: ConnectorRequest) -> EngineResult:
 
 
 def discover_nutanix(request: ConnectorRequest) -> EngineResult:
-    commands = ["POST /api/nutanix/v3/vms/list with offset pagination"]
+    commands = ["POST /api/nutanix/v3/hosts/list", "POST /api/nutanix/v3/vms/list with offset pagination"]
     records = []
+    hosts = []
     try:
         client, base = _nutanix_client(request)
         with client:
+            host_response = client.post(f"{base}/api/nutanix/v3/hosts/list", json={"kind": "host", "length": 500})
+            host_response.raise_for_status()
+            for entity in host_response.json().get("entities", []):
+                status = entity.get("status", {})
+                resources = status.get("resources", {})
+                metadata = entity.get("metadata", {})
+                host_name = status.get("name") or entity.get("spec", {}).get("name") or metadata.get("uuid")
+                hosts.append(
+                    {
+                        "host_key": metadata.get("uuid") or host_name,
+                        "host_name": host_name,
+                        "platform": "Nutanix AHV",
+                        "endpoint": request.endpoint,
+                        "status": resources.get("state", "Discovered"),
+                        "cpu": resources.get("num_cpu_cores", 0),
+                        "memory_gb": round(resources.get("memory_capacity_mib", 0) / 1024),
+                        "details": {"hypervisor_address": resources.get("hypervisor_address")},
+                    }
+                )
             offset = 0
             while len(records) < 1000:
                 response = client.post(f"{base}/api/nutanix/v3/vms/list", json={"kind": "vm", "offset": offset, "length": 200})
@@ -246,6 +304,7 @@ def discover_nutanix(request: ConnectorRequest) -> EngineResult:
                     status_resources = entity.get("status", {}).get("resources", {})
                     nic_list = status_resources.get("nic_list") or []
                     ip_endpoints = (nic_list[0].get("ip_endpoint_list") or []) if nic_list else []
+                    host_reference = status_resources.get("host_reference") or {}
                     records.append(
                         {
                             "vm_name": spec.get("name") or entity.get("metadata", {}).get("uuid"),
@@ -257,12 +316,14 @@ def discover_nutanix(request: ConnectorRequest) -> EngineResult:
                             "ip_address": ip_endpoints[0].get("ip") if ip_endpoints else None,
                             "current_status": "Discovered",
                             "power_state": status_resources.get("power_state", "unknown"),
+                            "host_key": host_reference.get("uuid") or "unassigned",
+                            "host_name": host_reference.get("name") or "Unassigned",
                         }
                     )
                 if len(entities) < 200:
                     break
                 offset += len(entities)
-        return EngineResult(True, f"Discovered {len(records)} Nutanix AHV VMs", records, commands)
+        return EngineResult(True, f"Discovered {len(hosts)} Nutanix hosts and {len(records)} VMs", records, commands, hosts)
     except Exception as exc:
         return EngineResult(False, f"Nutanix AHV discovery failed: {exc}", [], commands)
 
