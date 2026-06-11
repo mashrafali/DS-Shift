@@ -59,8 +59,11 @@ references the connector.
 ## Hosts
 
 The Hosts page is populated automatically by successful Host Connector
-discovery. Re-running discovery updates the existing host record rather than
-creating a duplicate, and refreshes its associated VM list.
+discovery. The first page lists hosts only and identifies the connector used
+for each host. Select a host or `View VMs` to open its VM inventory in a
+separate detail window, including the OS reported by the host, CPU, memory,
+disk, IP address, and power state. Re-running discovery updates the existing
+host record rather than creating a duplicate.
 
 ## Service status
 

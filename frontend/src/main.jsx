@@ -608,12 +608,14 @@ function Connectors({ title, category, rows, form, setForm, save, editForm, setE
 }
 
 function HostsView({ hosts, connectors }) {
+  const [selectedHost, setSelectedHost] = useState(null);
   if (!hosts.length) return <section className="about"><h2>No hosts discovered</h2><p>Open Connectors and run Discover on a Host Connector. DS Shift will add the host and its VMs here automatically.</p></section>;
-  return <section className="host-grid">{hosts.map((host) => {
-    const vms = parseJsonArray(host.vms_json);
+  const selectedConnector = selectedHost ? connectors.find((row) => row.id === selectedHost.connector_id) : null;
+  const selectedVms = parseJsonArray(selectedHost?.vms_json);
+  return <section><div className="table-wrap hosts-table"><table><thead><tr><th>Host</th><th>Platform</th><th>Connector</th><th>Endpoint</th><th>Capacity</th><th>VMs</th><th>Status</th><th>Last discovery</th><th></th></tr></thead><tbody>{hosts.map((host) => {
     const connector = connectors.find((row) => row.id === host.connector_id);
-    return <article className="host-card" key={host.id}><header><div><h2>{host.host_name}</h2><p>{host.platform} · {connector?.name || `Connector ${host.connector_id}`}</p></div><Badge value={host.status} /></header><dl className="host-facts"><div><dt>Endpoint</dt><dd>{host.endpoint || '-'}</dd></div><div><dt>Capacity</dt><dd>{host.cpu} CPU / {host.memory_gb} GB</dd></div><div><dt>VMs</dt><dd>{host.vm_count}</dd></div><div><dt>Last discovery</dt><dd>{formatDateTime(host.last_discovered_at)}</dd></div></dl><div className="table-wrap"><table><thead><tr><th>VM</th><th>CPU</th><th>Memory</th><th>IP address</th><th>Power</th></tr></thead><tbody>{vms.length ? vms.map((vm, index) => <tr key={`${vm.vm_name}-${index}`}><td>{vm.vm_name}</td><td>{vm.cpu || 0}</td><td>{vm.memory_gb || 0} GB</td><td>{vm.ip_address || '-'}</td><td><Badge value={vm.power_state || vm.current_status || 'Discovered'} /></td></tr>) : <tr><td colSpan="5">No VMs reported by this host.</td></tr>}</tbody></table></div></article>;
-  })}</section>;
+    return <tr className="clickable-row" key={host.id} onClick={() => setSelectedHost(host)}><td><strong>{host.host_name}</strong></td><td>{host.platform}</td><td>{connector?.name || `Connector ${host.connector_id}`}</td><td>{host.endpoint || '-'}</td><td>{host.cpu} CPU / {host.memory_gb} GB</td><td>{host.vm_count}</td><td><Badge value={host.status} /></td><td>{formatDateTime(host.last_discovered_at)}</td><td><button className="mini" onClick={(event) => { event.stopPropagation(); setSelectedHost(host); }}><HardDrive size={14} /> View VMs</button></td></tr>;
+  })}</tbody></table></div>{selectedHost && <Modal title={`${selectedHost.host_name} virtual machines`} onClose={() => setSelectedHost(null)} wide><div className="host-detail"><dl className="host-facts"><div><dt>Platform</dt><dd>{selectedHost.platform}</dd></div><div><dt>Connector</dt><dd>{selectedConnector?.name || `Connector ${selectedHost.connector_id}`}</dd></div><div><dt>Endpoint</dt><dd>{selectedHost.endpoint || '-'}</dd></div><div><dt>Capacity</dt><dd>{selectedHost.cpu} CPU / {selectedHost.memory_gb} GB</dd></div><div><dt>VMs</dt><dd>{selectedHost.vm_count}</dd></div><div><dt>Status</dt><dd>{selectedHost.status}</dd></div></dl><div className="table-wrap"><table><thead><tr><th>VM</th><th>OS</th><th>CPU</th><th>Memory</th><th>Disk</th><th>IP address</th><th>Power</th></tr></thead><tbody>{selectedVms.length ? selectedVms.map((vm, index) => <tr key={`${vm.vm_name}-${index}`}><td>{vm.vm_name}</td><td>{vm.os_type || 'Unknown'}</td><td>{vm.cpu || 0}</td><td>{vm.memory_gb || 0} GB</td><td>{vm.disk_gb || 0} GB</td><td>{vm.ip_address || '-'}</td><td><Badge value={vm.power_state || vm.current_status || 'Discovered'} /></td></tr>) : <tr><td colSpan="7">No VMs reported by this host.</td></tr>}</tbody></table></div></div></Modal>}</section>;
 }
 
 function MigrationEngine({ connectors, form, setForm, save, jobs, discoveryRuns }) {
@@ -705,7 +707,7 @@ function FormPanel({ title, onSubmit, children }) {
   return <form className="form-panel" onSubmit={onSubmit}>{title && <h2>{title}</h2>}{children}</form>;
 }
 
-function Modal({ title, onClose, children }) {
+function Modal({ title, onClose, children, wide = false }) {
   useEffect(() => {
     const onKeyDown = (event) => {
       if (event.key === 'Escape') onClose();
@@ -713,7 +715,7 @@ function Modal({ title, onClose, children }) {
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [onClose]);
-  return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}><div className="modal-panel" role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}><div className="modal-header"><h2>{title}</h2><button className="icon-button" type="button" onClick={onClose} title="Close"><X size={18} /></button></div>{children}</div></div>;
+  return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}><div className={`modal-panel${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}><div className="modal-header"><h2>{title}</h2><button className="icon-button" type="button" onClick={onClose} title="Close"><X size={18} /></button></div>{children}</div></div>;
 }
 
 function Input({ label, value, onChange, type = 'text', required = false }) {
