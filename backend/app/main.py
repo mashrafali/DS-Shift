@@ -155,8 +155,10 @@ def admin_user(user: models.LocalUser = Depends(current_user)) -> models.LocalUs
 
 @app.on_event("startup")
 def startup() -> None:
-    Base.metadata.create_all(bind=engine)
     with engine.begin() as connection:
+        if engine.dialect.name == "postgresql":
+            connection.execute(text("SELECT pg_advisory_xact_lock(84752002)"))
+        Base.metadata.create_all(bind=connection)
         connection.execute(text("ALTER TABLE local_users ADD COLUMN IF NOT EXISTS profile_photo TEXT"))
         connection.execute(text("ALTER TABLE vm_inventory ALTER COLUMN project_id DROP NOT NULL"))
         connection.execute(text("ALTER TABLE vm_inventory ADD COLUMN IF NOT EXISTS connector_id INTEGER REFERENCES connector_profiles(id) ON DELETE SET NULL"))
@@ -167,11 +169,8 @@ def startup() -> None:
         connection.execute(text("ALTER TABLE migration_plans ADD COLUMN IF NOT EXISTS execution_options_json TEXT NOT NULL DEFAULT '{}'"))
         connection.execute(text("ALTER TABLE migration_plans ADD COLUMN IF NOT EXISTS spark_job_id INTEGER"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_migration_plans_spark_job_id ON migration_plans (spark_job_id)"))
-    db = next(get_db())
-    try:
-        seed_defaults(db)
-    finally:
-        db.close()
+        with Session(bind=connection) as db:
+            seed_defaults(db)
 
 
 @app.get("/api/health")

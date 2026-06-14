@@ -6,15 +6,22 @@ DS Shift uses a service-oriented application architecture deployed with Docker C
 
 `reverse-proxy`
 
-- Nginx public edge.
-- Redirects HTTP to HTTPS.
+- Three internal Nginx replicas.
 - Terminates TLS using a self-signed certificate.
-- Routes `/api/*`, `/docs`, and `/openapi.json` to the backend.
-- Routes all other requests to the frontend.
+- Load balances `/api/*`, `/docs`, and `/openapi.json` across three backend
+  replicas using Docker DNS.
+- Load balances all other requests across three frontend replicas.
+
+`edge-gateway`
+
+- Single Nginx host-port binding for TCP ports 80 and 443.
+- Redirects HTTP to HTTPS and load balances HTTPS requests across the three
+  reverse-proxy replicas.
+- Exists because multiple Compose containers cannot bind the same host ports.
 
 `frontend`
 
-- React application.
+- Three stateless React/Nginx application replicas.
 - Provides dashboard, connector-synchronized VM inventory, migration plans,
   host connectors, cloud connectors, waves, reports, and settings control.
 - Talks to the backend through relative `/api` URLs.
@@ -22,7 +29,7 @@ DS Shift uses a service-oriented application architecture deployed with Docker C
 
 `backend`
 
-- FastAPI API service.
+- Three stateless FastAPI API replicas.
 - Owns validation and workflow state changes.
 - Creates database tables at startup for the MVP.
 - Exposes OpenAPI documentation.
@@ -35,6 +42,7 @@ DS Shift uses a service-oriented application architecture deployed with Docker C
 
 `host-connector-engine`
 
+- Three stateless connector replicas.
 - Validates and discovers KVM/libvirt with Paramiko and `virsh`.
 - Validates and discovers VMware vCenter/ESXi with pyVmomi.
 - Validates and discovers Nutanix AHV with the Prism Central v3 REST API.
@@ -42,6 +50,7 @@ DS Shift uses a service-oriented application architecture deployed with Docker C
 
 `cloud-connector-engine`
 
+- Three stateless connector replicas.
 - Validates and discovers AWS EC2 with Boto3.
 - Validates and discovers Google Compute Engine with the Google Cloud Compute SDK.
 - Validates and discovers Azure VMs with Azure Identity and Compute Management SDKs.
@@ -59,15 +68,18 @@ DS Shift uses a service-oriented application architecture deployed with Docker C
 
 `service-status-monitor`
 
+- Three stateless monitor replicas.
 - Reads Docker Engine container state for the current Compose project.
 - Publishes a status-only internal endpoint consumed by the backend.
 - Keeps the Docker socket isolated from the main application backend.
 
 `database`
 
-- PostgreSQL.
+- One PostgreSQL primary.
 - Persistent named Docker volume.
 - Internal-only Compose network.
+- A three-node database tier is not created by setting `replicas: 3`; it
+  requires replication, health-aware routing, fencing, and controlled failover.
 
 ## Data Model
 

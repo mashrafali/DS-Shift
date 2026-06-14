@@ -14,8 +14,11 @@ approval-gated and disabled by default.
 - Database: PostgreSQL with a persistent Docker volume.
 - Edge: Nginx reverse proxy with self-signed HTTPS.
 - Runtime: Docker Compose.
-- Execution workers: three stateless Spark Engine replicas backed by a
-  PostgreSQL job queue.
+- Runtime scaling: three replicas for every stateless application service,
+  with Docker DNS-aware Nginx load balancing.
+- Data tier: one PostgreSQL primary. Database HA requires a separate
+  primary/standby and failover design; cloning the primary container against
+  one volume is not supported.
 
 ## Quick Start
 
@@ -44,6 +47,7 @@ Default MVP login:
 - `backend`
 - `database`
 - `reverse-proxy`
+- `edge-gateway` (single host-port binding in front of the proxy pool)
 - `host-connector-engine`
 - `cloud-connector-engine`
 - `spark-engine` (three replicas)

@@ -37,10 +37,25 @@ curl -k -I https://localhost
 ```
 
 The Settings service-status panel requires the `service-status-monitor`
-container to read `/var/run/docker.sock`. The socket is not mounted into the
+replicas to read `/var/run/docker.sock`. The socket is not mounted into the
 application backend. The monitor uses a read-only root filesystem, drops Linux
 capabilities, enables `no-new-privileges`, and exposes only health and status
 endpoints on the internal Compose network.
+
+## Replica Topology
+
+Docker Compose starts three replicas for backend, frontend, host connector,
+cloud connector, Spark Engine, reverse proxy, and service status monitor.
+`edge-gateway` remains a singleton because it owns host ports 80 and 443.
+PostgreSQL remains one primary because replicas sharing the same data volume
+would corrupt data and would not provide database HA.
+
+Validate the topology:
+
+```bash
+docker compose ps --format json |
+  jq -s 'group_by(.Service) | map({service: .[0].Service, replicas: length})'
+```
 
 ## Migration Testing Credentials
 
