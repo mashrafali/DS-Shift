@@ -29,6 +29,19 @@ sed -i 's/change-me-to-a-random-local-secret/replace-with-a-random-secret/' .env
 ./scripts/validate.sh
 ```
 
+One-command installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mashrafali/DS-Shift/main/install-ds-shift.sh | sudo bash
+```
+
+Useful overrides:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mashrafali/DS-Shift/main/install-ds-shift.sh | \
+  sudo DS_SHIFT_INSTALL_DIR=/opt/ds-shift DS_SHIFT_BRANCH=main DS_SHIFT_ADMIN_INITIAL_PASSWORD='StrongPasswordHere' bash
+```
+
 Access:
 
 - GUI: `https://<host>/`
