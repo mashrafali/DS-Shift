@@ -3,7 +3,8 @@
 ## Dashboard
 
 The dashboard summarizes migration plan count, discovered VMs, planned VMs,
-completed migrations, failed or blocked migrations, and overall progress.
+completed migrations, failed or blocked migrations, and overall progress. The
+dashboard table lists current migration plans and their execution readiness.
 
 ## VM Inventory
 

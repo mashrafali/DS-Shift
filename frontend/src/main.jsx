@@ -431,9 +431,9 @@ function App() {
   if (!token) return <Login form={loginForm} setForm={setLoginForm} submit={login} error={error} />;
 
   const nav = [
+    ['dashboard', Gauge, 'Dashboard'],
     ['connectors', ServerCog, 'Connectors'],
     ['hosts', Network, 'Hosts'],
-    ['dashboard', Gauge, 'Dashboard'],
     ['inventory', HardDrive, 'VM Inventory'],
     ['plans', Layers, 'Migration Plans'],
     ['waves', CalendarClock, 'Waves'],
@@ -481,7 +481,7 @@ function App() {
         {settings.banner_message && <div className="notice"><Building2 size={20} /> {settings.banner_message}</div>}
         {error && <div className="alert">API error: {error}</div>}
 
-        {active === 'dashboard' && <Dashboard summary={summary} vms={vms} connectors={connectors} />}
+        {active === 'dashboard' && <Dashboard summary={summary} plans={migrationPlans} connectors={connectors} />}
         {active === 'inventory' && <Inventory vms={vms} connectors={connectors} selectedVmIds={selectedVmIds} setSelectedVmIds={setSelectedVmIds} openPlan={() => { setMigrationPlanForm(blankMigrationPlan); setShowPlanModal(true); }} changeStatus={changeStatus} />}
         {active === 'connectors' && <ConnectorWorkspace category={connectorCategory} setCategory={setConnectorCategory} catalog={connectorCatalog} connectors={connectors} form={connectorForm} setForm={setConnectorForm} save={saveConnector} editForm={editConnectorForm} setEditForm={setEditConnectorForm} saveEdit={saveConnectorEdit} discover={discoverConnector} validate={validateConnector} edit={editConnector} remove={deleteConnector} cancelEdit={cancelConnectorEdit} editingConnectorId={editingConnectorId} discoveringConnectorId={discoveringConnectorId} result={connectorResult} />}
         {active === 'hosts' && <HostsView hosts={hosts} connectors={connectors} />}
@@ -504,7 +504,7 @@ function titleFor(active) {
   return ({ connectors: 'Connectors', hosts: 'Discovered Hosts', dashboard: 'Migration Command Center', inventory: 'VM Inventory', plans: 'Migration Plans', waves: 'Migration Waves', reports: 'Reports', users: 'User Management', settings: 'Settings Control' })[active];
 }
 
-function Dashboard({ summary, vms, connectors }) {
+function Dashboard({ summary, plans, connectors }) {
   const cards = [
     ['Migration plans', summary?.total_plans ?? 0, Layers],
     ['VMs discovered', summary?.vms_discovered ?? 0, HardDrive],
@@ -513,7 +513,15 @@ function Dashboard({ summary, vms, connectors }) {
     ['Failed or blocked', summary?.vms_failed_or_blocked ?? 0, Network],
     ['Connectors', connectors.length, ServerCog],
   ];
-  return <section><div className="metric-grid">{cards.map(([label, value, Icon]) => <div className="metric" key={label}><Icon size={22} /><span>{label}</span><strong>{value}</strong></div>)}</div><StatusBoard vms={vms} /></section>;
+  return <section><div className="metric-grid">{cards.map(([label, value, Icon]) => <div className="metric" key={label}><Icon size={22} /><span>{label}</span><strong>{value}</strong></div>)}</div><DashboardPlans plans={plans} connectors={connectors} /></section>;
+}
+
+function DashboardPlans({ plans, connectors }) {
+  return <div className="stack"><div className="section-heading"><div><h2>Migration Plans</h2><p>Current migration plans and their execution readiness.</p></div></div><div className="table-wrap"><table><thead><tr><th>Plan</th><th>Migration</th><th>VMs</th><th>Status</th><th>Executed</th></tr></thead><tbody>{plans.length ? plans.map((plan) => {
+    const source = connectors.find((row) => row.id === plan.source_connector_id);
+    const target = connectors.find((row) => row.id === plan.target_connector_id);
+    return <tr key={plan.id}><td><strong>{plan.name}</strong></td><td>{source?.name || plan.source_connector_id} → {target?.name || plan.target_connector_id}</td><td>{parseJsonArray(plan.vm_ids_json).length}</td><td><Badge value={plan.status} /></td><td>{formatDateTime(plan.executed_at)}</td></tr>;
+  }) : <tr><td colSpan="5">No migration plans have been created.</td></tr>}</tbody></table></div></div>;
 }
 
 function Inventory({ vms, connectors, selectedVmIds, setSelectedVmIds, openPlan, changeStatus }) {
