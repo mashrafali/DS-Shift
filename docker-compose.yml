@@ -35,9 +35,6 @@ services:
       CLOUD_CONNECTOR_ENGINE_URL: http://cloud-connector-engine:8102
       SPARK_ENGINE_URL: http://spark-engine:8200
       SERVICE_STATUS_MONITOR_URL: http://service-status-monitor:8090
-    extra_hosts:
-      - "kvm:192.168.0.9"
-      - "vcsa.test.local:192.168.0.11"
     depends_on:
       database:
         condition: service_healthy
@@ -95,9 +92,6 @@ services:
       KVM_PASSWORD: ${KVM_PASSWORD:-}
       VCENTER_PASSWORD: ${VCENTER_PASSWORD:-}
       NUTANIX_PASSWORD: ${NUTANIX_PASSWORD:-}
-    extra_hosts:
-      - "kvm:192.168.0.9"
-      - "vcsa.test.local:192.168.0.11"
     volumes:
       - ./engine-ssh:/root/.ssh:ro
     healthcheck:
@@ -144,9 +138,6 @@ services:
       AWS_CONNECTOR_CREDENTIALS: ${AWS_CONNECTOR_CREDENTIALS:-}
       GCP_CONNECTOR_CREDENTIALS: ${GCP_CONNECTOR_CREDENTIALS:-}
       AZURE_CONNECTOR_CREDENTIALS: ${AZURE_CONNECTOR_CREDENTIALS:-}
-    extra_hosts:
-      - "kvm:192.168.0.9"
-      - "vcsa.test.local:192.168.0.11"
     depends_on:
       database:
         condition: service_healthy

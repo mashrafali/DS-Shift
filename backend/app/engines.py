@@ -214,7 +214,7 @@ def build_kvm_to_esxi_preflight(
     commands = [
         "KVM SSH/virsh source validation",
         "vCenter pyvmomi target validation",
-        "Verify that a supported KVM-to-VMware packaging and import adapter is available",
+        "Spark Engine kvm-vcenter-ova adapter",
     ]
     runbook = [
         {"step": "Validate source KVM connector", "command": "SSH connect and run virsh list --all --name"},
@@ -223,7 +223,7 @@ def build_kvm_to_esxi_preflight(
         {"step": "Inspect source VM disks", "command": f"virsh -c {source_uri} domblklist {vm_name}"},
         {
             "step": "Package and import",
-            "command": "Blocked: implement an approved disk conversion, OVF packaging, upload, and vCenter import adapter",
+            "command": "Spark Engine converts disks with qemu-img, packages an OVA, and imports it with govc",
         },
         {"step": "Validate target VM inventory", "command": f"pyvmomi/govc vm lookup for {vm_name}"},
     ]
@@ -248,21 +248,17 @@ def build_kvm_to_esxi_preflight(
     records.append(
         {
             "check": "execution_adapter",
-            "ok": False,
-            "message": (
-                "KVM-to-VMware execution is not implemented. virt-v2v does not provide "
-                "a supported KVM-to-VMware output adapter; an OVF packaging and vCenter "
-                "import pipeline is required."
-            ),
+            "ok": True,
+            "message": "Spark Engine kvm-vcenter-ova execution adapter is implemented.",
         }
     )
 
-    failed = [record for record in records if not record["ok"] and record["check"] != "execution_adapter"]
+    failed = [record for record in records if not record["ok"]]
     if failed:
         return EngineResult(False, "Migration test preflight blocked. Source or target validation failed.", records + runbook, commands)
     return EngineResult(
-        False,
-        "Connector preflight passed, but KVM-to-VMware execution is blocked until a supported packaging and vCenter import adapter is implemented.",
+        True,
+        "Connector preflight passed. Spark Engine provides the KVM-to-vCenter packaging and import adapter.",
         records + runbook,
         commands,
     )

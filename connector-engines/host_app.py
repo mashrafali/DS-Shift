@@ -127,11 +127,17 @@ def discover_kvm(request: ConnectorRequest) -> EngineResult:
         if code:
             return EngineResult(False, f"KVM discovery failed: {error.strip()}", [], commands)
         for name in [line.strip() for line in listed.splitlines() if line.strip()]:
-            command = f"virsh dominfo {name!r}; echo __BLK__; virsh domblklist {name!r}; echo __ADDR__; virsh domifaddr {name!r} || true"
+            command = f"virsh dominfo {name!r}; echo __BLK__; virsh domblklist --details {name!r}; echo __ADDR__; virsh domifaddr {name!r} || true"
             commands.append(command)
             code, text, _ = _ssh_exec(client, command)
             if code:
                 continue
+            block_text = _section(text, "__BLK__", "__ADDR__")
+            disks = []
+            for line in block_text.splitlines():
+                fields = line.split()
+                if len(fields) >= 4 and fields[0] in {"file", "block", "network"} and fields[1] == "disk":
+                    disks.append({"type": fields[0], "target": fields[2], "source": " ".join(fields[3:])})
             records.append(
                 {
                     "vm_name": name,
@@ -146,6 +152,7 @@ def discover_kvm(request: ConnectorRequest) -> EngineResult:
                     "power_state": _match_text(text, r"State:\s+(.+)") or "unknown",
                     "host_key": host_name,
                     "host_name": host_name,
+                    "disks": disks,
                 }
             )
         return EngineResult(True, f"Discovered KVM host {host_name} and {len(records)} VMs", records, commands, [host])
@@ -226,6 +233,8 @@ def discover_vcenter(request: ConnectorRequest) -> EngineResult:
                     if isinstance(device, vim.vm.device.VirtualDisk)
                 ]
                 vm_host = summary.runtime.host
+                datacenter = _ancestor(vm_obj, vim.Datacenter)
+                compute_resource = _ancestor(vm_host, vim.ComputeResource) if vm_host else None
                 records.append(
                     {
                         "vm_name": config.name,
@@ -240,6 +249,11 @@ def discover_vcenter(request: ConnectorRequest) -> EngineResult:
                         "power_state": str(summary.runtime.powerState),
                         "host_key": vm_host._moId if vm_host else "unassigned",
                         "host_name": vm_host.name if vm_host else "Unassigned",
+                        "datacenter": datacenter.name if datacenter else None,
+                        "compute_resource": compute_resource.name if compute_resource else None,
+                        "inventory_path": _inventory_path(vm_obj),
+                        "datastores": [datastore.name for datastore in (vm_obj.datastore or [])],
+                        "networks": [network.name for network in (vm_obj.network or [])],
                     }
                 )
         finally:
@@ -247,6 +261,26 @@ def discover_vcenter(request: ConnectorRequest) -> EngineResult:
         return EngineResult(True, f"Discovered {len(hosts)} VMware hosts and {len(records)} VMs", records, commands, hosts)
     finally:
         Disconnect(service_instance)
+
+
+def _ancestor(obj, object_type):
+    current = obj
+    while current is not None:
+        if isinstance(current, object_type):
+            return current
+        current = getattr(current, "parent", None)
+    return None
+
+
+def _inventory_path(obj) -> str:
+    parts = []
+    current = obj
+    while current is not None and not isinstance(current, vim.ServiceInstance):
+        name = getattr(current, "name", None)
+        if name:
+            parts.append(name)
+        current = getattr(current, "parent", None)
+    return "/" + "/".join(reversed(parts))
 
 
 def _nutanix_client(request: ConnectorRequest) -> tuple[httpx.Client, str]:

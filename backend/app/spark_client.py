@@ -18,6 +18,14 @@ def create_spark_job(payload: dict) -> dict:
         return response.json()
 
 
+def preflight_spark_job(payload: dict) -> dict:
+    with httpx.Client(timeout=120) as client:
+        response = client.post(f"{settings.spark_engine_url}/preflight", json=payload)
+        if response.status_code >= 400:
+            raise ValueError(response.text)
+        return response.json()
+
+
 def get_spark_job(job_id: int) -> dict:
     with httpx.Client(timeout=10) as client:
         response = client.get(f"{settings.spark_engine_url}/jobs/{job_id}")

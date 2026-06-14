@@ -92,10 +92,15 @@ Set the flag to `true` only after validating provider permissions, target
 network mappings, rollback procedures, and operational approval. Enabling the
 flag does not bypass the admin-only launch and exact plan-name confirmation.
 
-The release-candidate engine validates and discovers real inventory without
-storing provider passwords in PostgreSQL. KVM-to-VMware execution is not
-implemented; it requires a supported conversion, OVF packaging, upload, and
-vCenter import pipeline.
+The Spark image includes `virt-v2v`, `qemu-img`, libvirt clients, and `govc`.
+KVM-to-vCenter plans require a target datastore and network. vCenter-to-KVM
+plans require a target libvirt storage pool and discovered datacenter/compute
+resource metadata. Both source VM types must be powered off for these cold
+conversion adapters.
+
+Compose does not contain host-specific DNS or IP mappings. Connector endpoints
+must be addresses resolvable and reachable from the connector and Spark
+containers, so each deployment can use its own KVM, ESXi, or vCenter systems.
 
 For key-based KVM access in an upgraded legacy deployment, move or preserve the engine SSH key under `/opt/ds-shift/engine-ssh`. Install the public key on the KVM host and set the KVM connector credential reference to `ssh-key:container`. The Compose deployment mounts `./engine-ssh` read-only into the backend container as `/root/.ssh`.
 

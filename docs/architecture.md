@@ -61,7 +61,10 @@ DS Shift uses a service-oriented application architecture deployed with Docker C
 - Runs as three stateless worker replicas.
 - Claims durable PostgreSQL jobs with row locking and `SKIP LOCKED`, so one
   execution job is handled by only one replica.
-- Executes AWS-to-AWS, GCP-to-GCP, Azure-to-Azure, and KVM-to-KVM adapters.
+- Executes AWS-to-AWS, GCP-to-GCP, Azure-to-Azure, KVM-to-KVM,
+  KVM-to-vCenter, and vCenter-to-KVM adapters.
+- Contains `virt-v2v`, `qemu-img`, libvirt clients, and pinned `govc` for host
+  conversion, packaging, import, and target definition.
 - Keeps live execution disabled unless `SPARK_LIVE_EXECUTION_ENABLED=true`.
 - Rejects unsupported source and target combinations instead of generating
   commands that the underlying tools cannot execute.
@@ -105,15 +108,17 @@ DS Shift uses a service-oriented application architecture deployed with Docker C
 The migration engine is intentionally split into preflight and live execution phases:
 
 - Discovery runs call real KVM/vCenter APIs or command interfaces and record success or failure.
-- `Preflight` performs the existing non-destructive connector and workload
-  inspection. KVM-to-VMware remains blocked because no supported import adapter
-  has been implemented.
+- `Preflight` calls the selected Spark adapter and checks tools, connector
+  credentials, source power state, target storage, and target networking
+  without creating or changing a VM.
 - `Launch` is admin-only, requires exact plan-name confirmation, and submits a
   live job to Spark Engine.
-- Spark Engine supports AWS-to-AWS in one account, GCP-to-GCP using machine
-  images, Azure-to-Azure in one subscription, and KVM-to-KVM with libvirt.
-- Cross-account, cross-subscription, cross-provider, and KVM-to-VMware
-  execution are rejected until explicit staging and import workflows exist.
+- KVM-to-vCenter converts powered-off file-backed disks to stream-optimized
+  VMDK, packages an OVA, and imports it with `govc`.
+- vCenter-to-KVM uses `virt-v2v`, transfers converted qcow2 disks to the
+  selected target storage pool, and defines the generated libvirt domain.
+- Cross-account, cross-subscription, and other cross-provider combinations are
+  rejected until explicit staging and import workflows exist.
 - Runtime credentials should be injected through environment variables, mounted SSH keys, Docker secrets, or a future vault integration.
 
 ## Future Integration Points
@@ -121,5 +126,5 @@ The migration engine is intentionally split into preflight and live execution ph
 - RBAC middleware.
 - Vault-backed credential references.
 - Additional platform discovery connectors and richer inventory attributes.
-- VMware import, cross-provider cloud staging, and replication-based adapters.
+- Cross-provider cloud staging and replication-based adapters.
 - Audit logging and report export services.

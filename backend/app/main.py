@@ -25,7 +25,7 @@ from .connector_client import (
 from .database import Base, engine, get_db
 from .engines import build_kvm_to_esxi_preflight
 from .service_status import get_service_statuses
-from .spark_client import create_spark_job, get_spark_job, spark_capabilities
+from .spark_client import create_spark_job, get_spark_job, preflight_spark_job, spark_capabilities
 
 MIGRATION_STATUSES = {
     "Discovered",
@@ -846,6 +846,39 @@ def connector_execution_payload(connector: models.ConnectorProfile) -> dict:
     }
 
 
+def migration_plan_execution_payload(
+    plan: models.MigrationPlan,
+    source: models.ConnectorProfile,
+    target: models.ConnectorProfile,
+    vms: list[models.VmInventory],
+    requested_by: str,
+    *,
+    live: bool,
+) -> dict:
+    return {
+        "plan_id": plan.id,
+        "source_connector": connector_execution_payload(source),
+        "target_connector": connector_execution_payload(target),
+        "workloads": [
+            {
+                "id": vm.id,
+                "vm_name": vm.vm_name,
+                "external_id": vm.external_id,
+                "host_name": vm.host_name,
+                "details": json.loads(vm.details_json or "{}"),
+            }
+            for vm in vms
+        ],
+        "options": {
+            **json.loads(plan.execution_options_json or "{}"),
+            **({"target_datastore": plan.target_datastore} if plan.target_datastore else {}),
+        },
+        "requested_by": requested_by,
+        "live": live,
+        "approval": f"EXECUTE:{plan.id}" if live else f"PREFLIGHT:{plan.id}",
+    }
+
+
 def apply_spark_job(db: Session, plan: models.MigrationPlan, job: dict) -> None:
     spark_status = job.get("status")
     if spark_status in {"Queued", "Running"}:
@@ -886,28 +919,7 @@ def launch_migration_plan(
     vms = db.query(models.VmInventory).filter(models.VmInventory.id.in_(vm_ids)).all()
     if len(vms) != len(vm_ids):
         raise HTTPException(409, "One or more migration plan VMs no longer exist")
-    request = {
-        "plan_id": plan.id,
-        "source_connector": connector_execution_payload(source),
-        "target_connector": connector_execution_payload(target),
-        "workloads": [
-            {
-                "id": vm.id,
-                "vm_name": vm.vm_name,
-                "external_id": vm.external_id,
-                "host_name": vm.host_name,
-                "details": json.loads(vm.details_json or "{}"),
-            }
-            for vm in vms
-        ],
-        "options": {
-            **json.loads(plan.execution_options_json or "{}"),
-            **({"target_datastore": plan.target_datastore} if plan.target_datastore else {}),
-        },
-        "requested_by": admin.username,
-        "live": True,
-        "approval": f"EXECUTE:{plan.id}",
-    }
+    request = migration_plan_execution_payload(plan, source, target, vms, admin.username, live=True)
     try:
         job = create_spark_job(request)
     except ValueError as exc:
@@ -958,27 +970,49 @@ def execute_migration_plan(plan_id: int, db: Session = Depends(get_db), _user: m
     target = db.get(models.ConnectorProfile, plan.target_connector_id)
     vm_ids = json.loads(plan.vm_ids_json)
     vms = db.query(models.VmInventory).filter(models.VmInventory.id.in_(vm_ids)).all()
-    results = []
-    supported = source and target and source.connector_type == "KVM" and target.connector_type in {"VMware ESXi / vCenter", "VMware ESXi", "vCenter"}
-    if not supported:
-        plan.status = "Blocked"
-        results.append({"ok": False, "message": "Executable adapter is currently available only for KVM to VMware ESXi / vCenter plans"})
-    else:
-        for vm in vms:
-            result = build_kvm_to_esxi_preflight(
-                source.endpoint,
-                source.username,
-                source.credential_reference,
-                target.endpoint,
-                target.username,
-                target.credential_reference,
-                vm.vm_name,
-                plan.target_datastore,
+    if not source or not target:
+        raise HTTPException(404, "Source or target connector not found")
+    if len(vms) != len(vm_ids):
+        raise HTTPException(409, "One or more migration plan VMs no longer exist")
+    try:
+        preflight = preflight_spark_job(
+            migration_plan_execution_payload(
+                plan,
+                source,
+                target,
+                vms,
+                _user.username if _user else "system",
+                live=False,
             )
-            vm.current_status = "Ready for migration" if result.ok else "Blocked"
-            db.add(models.VmStatusHistory(vm_id=vm.id, status=vm.current_status, note=f"Migration plan {plan.name} execution preflight"))
-            results.append({"vm_id": vm.id, "vm_name": vm.vm_name, "ok": result.ok, "message": result.message, "runbook": result.records, "commands": result.commands})
-        plan.status = "Preflight ready" if results and all(row["ok"] for row in results) else "Blocked"
+        )
+    except ValueError as exc:
+        raise HTTPException(409, f"Spark Engine rejected preflight: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(503, f"Spark Engine unavailable: {exc}") from exc
+    checks_by_vm = {}
+    shared_checks = []
+    for check in preflight.get("checks", []):
+        if check.get("vm_name"):
+            checks_by_vm.setdefault(check["vm_name"], []).append(check)
+        else:
+            shared_checks.append(check)
+    results = []
+    for vm in vms:
+        checks = shared_checks + checks_by_vm.get(vm.vm_name, [])
+        ok = bool(checks) and all(check.get("ok") for check in checks)
+        vm.current_status = "Ready for migration" if ok else "Blocked"
+        db.add(models.VmStatusHistory(vm_id=vm.id, status=vm.current_status, note=f"Migration plan {plan.name} Spark preflight"))
+        results.append(
+            {
+                "vm_id": vm.id,
+                "vm_name": vm.vm_name,
+                "ok": ok,
+                "message": "Preflight passed" if ok else "Preflight found blocking checks",
+                "checks": checks,
+                "adapter": preflight.get("adapter"),
+            }
+        )
+    plan.status = "Preflight ready" if preflight.get("ok") else "Blocked"
     plan.results_json = json.dumps(results)
     plan.executed_at = datetime.utcnow()
     db.commit()

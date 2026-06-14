@@ -81,8 +81,11 @@ The seeded lab admin is `admin` with the configured `ADMIN_INITIAL_PASSWORD`.
 - Spark Engine has executable adapters for AWS-to-AWS within one account,
   GCP-to-GCP using machine images, Azure-to-Azure within one subscription, and
   KVM-to-KVM using `virsh migrate`.
-- KVM-to-VMware and cross-provider cloud execution remain blocked until their
-  required packaging, staging, network mapping, and import pipelines exist.
+- KVM-to-vCenter uses `qemu-img` plus an OVA import through `govc`.
+- vCenter-to-KVM uses `virt-v2v`, transfers converted disks to the selected
+  KVM storage pool, and defines the generated libvirt domain.
+- Other cross-provider execution remains blocked until its required packaging,
+  staging, network mapping, and import pipeline exists.
 - Spark Engine accepts live jobs only when
   `SPARK_LIVE_EXECUTION_ENABLED=true`; each launch also requires an admin and
   exact migration-plan-name confirmation.

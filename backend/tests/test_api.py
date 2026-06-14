@@ -195,8 +195,15 @@ def test_discovery_inventory_and_migration_plan_execution(monkeypatch):
         db.commit()
 
         monkeypatch.setattr(
-            "app.main.build_kvm_to_esxi_preflight",
-            lambda *args: type("Result", (), {"ok": True, "message": "Preflight passed", "records": [], "commands": []})(),
+            "app.main.preflight_spark_job",
+            lambda payload: {
+                "ok": True,
+                "adapter": "kvm-vcenter-ova",
+                "checks": [
+                    {"check": "adapter", "ok": True, "message": "Migration adapter is ready"},
+                    {"check": "source_vm_state", "vm_name": "vm-01", "ok": True, "message": "shut off"},
+                ],
+            },
         )
         executed = execute_migration_plan(plan.id, db, None)
 

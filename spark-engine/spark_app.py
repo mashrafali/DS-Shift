@@ -37,6 +37,13 @@ import paramiko
 from pydantic import BaseModel, Field
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, Text, create_engine, select, text, update
 
+from host_migrations import (
+    execute_kvm_to_vcenter,
+    execute_vcenter_to_kvm,
+    preflight_kvm_to_vcenter,
+    preflight_vcenter_to_kvm,
+)
+
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://dsshift:dsshift@database:5432/dsshift")
 LIVE_EXECUTION_ENABLED = os.getenv("SPARK_LIVE_EXECUTION_ENABLED", "false").lower() == "true"
@@ -101,10 +108,18 @@ CAPABILITIES = [
     {
         "source": "KVM",
         "target": "VMware ESXi / vCenter",
-        "adapter": "kvm-vmware-pipeline",
-        "live": False,
-        "required_options": ["target_datastore"],
-        "notes": "Blocked until an OVF packaging/import pipeline is implemented. virt-v2v does not provide a supported KVM-to-VMware output path.",
+        "adapter": "kvm-vcenter-ova",
+        "live": True,
+        "required_options": ["target_datastore", "target_network"],
+        "notes": "Copies powered-off file-backed KVM disks into Spark staging, converts them to stream-optimized VMDK, packages an OVA, and imports it with govc.",
+    },
+    {
+        "source": "VMware ESXi / vCenter",
+        "target": "KVM",
+        "adapter": "vcenter-kvm-virt-v2v",
+        "live": True,
+        "required_options": ["target_storage_pool"],
+        "notes": "Converts a powered-off vCenter VM with virt-v2v, transfers the generated qcow2 disks to the target KVM storage pool, and defines the libvirt domain.",
     },
 ]
 
@@ -223,6 +238,30 @@ def create_job(request: JobRequest):
     return row_dict(row)
 
 
+@app.post("/preflight")
+def preflight(request: JobRequest):
+    capability = adapter_for(request.source_connector.connector_type, request.target_connector.connector_type)
+    if not capability:
+        raise HTTPException(400, "No Spark Engine adapter is available for this source and target combination")
+    if not request.workloads:
+        raise HTTPException(400, "At least one workload is required")
+    missing = [key for key in capability["required_options"] if not request.options.get(key)]
+    if missing:
+        raise HTTPException(400, f"Missing execution options: {', '.join(missing)}")
+    if capability["adapter"] == "kvm-vcenter-ova":
+        checks = preflight_kvm_to_vcenter(request)
+    elif capability["adapter"] == "vcenter-kvm-virt-v2v":
+        checks = preflight_vcenter_to_kvm(request)
+    else:
+        checks = [{"check": "adapter", "ok": True, "message": f"{capability['adapter']} is available"}]
+    return {
+        "ok": bool(checks) and all(check["ok"] for check in checks),
+        "adapter": capability["adapter"],
+        "checks": checks,
+        "live_execution_enabled": LIVE_EXECUTION_ENABLED,
+    }
+
+
 @app.get("/jobs/{job_id}")
 def get_job(job_id: int):
     with engine.connect() as connection:
@@ -274,6 +313,10 @@ def execute_job(job: dict) -> None:
             result = execute_azure(request)
         elif job["adapter"] == "kvm-libvirt-migrate":
             result = execute_kvm(request)
+        elif job["adapter"] == "kvm-vcenter-ova":
+            result = execute_kvm_to_vcenter(request)
+        elif job["adapter"] == "vcenter-kvm-virt-v2v":
+            result = execute_vcenter_to_kvm(request)
         else:
             raise RuntimeError(f"Unknown Spark adapter: {job['adapter']}")
         status = "Succeeded"

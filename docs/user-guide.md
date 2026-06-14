@@ -30,10 +30,13 @@ operator to type the exact plan name and submits a live job to one of the three
 Spark Engine workers.
 
 Executable Spark adapters are AWS-to-AWS within one account, GCP-to-GCP using
-machine images, Azure-to-Azure within one subscription, and KVM-to-KVM using
-libvirt migration. Other combinations are rejected. Live launch is disabled
-unless the deployment explicitly sets `SPARK_LIVE_EXECUTION_ENABLED=true`.
-Plans with queued or running jobs cannot be deleted.
+machine images, Azure-to-Azure within one subscription, KVM-to-KVM using
+libvirt migration, KVM-to-vCenter through VMDK/OVA import, and
+vCenter-to-KVM through `virt-v2v`. Host conversion plans require powered-off
+source VMs and explicit target storage and network options. Other combinations
+are rejected. Live launch is disabled unless the deployment explicitly sets
+`SPARK_LIVE_EXECUTION_ENABLED=true`. Plans with queued or running jobs cannot
+be deleted.
 
 ## Migration Workflow
 
