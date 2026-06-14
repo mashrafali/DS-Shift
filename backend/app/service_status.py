@@ -11,6 +11,7 @@ EXPECTED_SERVICES = [
     "frontend",
     "host-connector-engine",
     "reverse-proxy",
+    "spark-engine",
 ]
 
 

@@ -64,7 +64,23 @@ Cloud connector credential values are JSON strings stored only in `.env`:
 - Google Cloud: `GCP_CONNECTOR_CREDENTIALS` containing a service-account JSON document.
 - Azure: `AZURE_CONNECTOR_CREDENTIALS` with `tenant_id`, `client_id`, `client_secret`, and `subscription_id`.
 
-The release-candidate engine validates and discovers real KVM and vCenter inventory without storing these passwords in PostgreSQL. Live KVM-to-ESXi conversion remains gated and additionally requires `qemu-img` and `virt-v2v` in the runtime.
+Spark Engine runs three Compose replicas and uses PostgreSQL as its shared job
+queue. Keep live execution disabled during installation and validation:
+
+```bash
+SPARK_LIVE_EXECUTION_ENABLED=false
+docker compose up -d --build
+docker compose ps spark-engine
+```
+
+Set the flag to `true` only after validating provider permissions, target
+network mappings, rollback procedures, and operational approval. Enabling the
+flag does not bypass the admin-only launch and exact plan-name confirmation.
+
+The release-candidate engine validates and discovers real inventory without
+storing provider passwords in PostgreSQL. KVM-to-VMware execution is not
+implemented; it requires a supported conversion, OVF packaging, upload, and
+vCenter import pipeline.
 
 For key-based KVM access in an upgraded legacy deployment, move or preserve the engine SSH key under `/opt/ds-shift/engine-ssh`. Install the public key on the KVM host and set the KVM connector credential reference to `ssh-key:container`. The Compose deployment mounts `./engine-ssh` read-only into the backend container as `/root/.ssh`.
 

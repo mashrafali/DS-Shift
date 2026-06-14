@@ -22,12 +22,18 @@ connector so one execution adapter and credential context apply to the plan.
 ## Migration Plans
 
 Select VMs in VM Inventory and choose `Create Migration Plan`. Specify a plan
-name, target connector, optional target datastore, and notes.
+name, target connector, provider execution options, and notes.
 
-The Migration Plans page provides `Execute`, `Details`, and `Delete`. Execute
-runs the supported KVM-to-vCenter connector validation, source VM inspection,
-conversion-tool checks, and per-VM runbook generation. It updates each VM to
-`Ready for migration` or `Blocked`. It does not start destructive conversion.
+The Migration Plans page provides `Preflight`, admin-only `Launch`, `Details`,
+and `Delete`. Preflight performs non-destructive checks. Launch requires the
+operator to type the exact plan name and submits a live job to one of the three
+Spark Engine workers.
+
+Executable Spark adapters are AWS-to-AWS within one account, GCP-to-GCP using
+machine images, Azure-to-Azure within one subscription, and KVM-to-KVM using
+libvirt migration. Other combinations are rejected. Live launch is disabled
+unless the deployment explicitly sets `SPARK_LIVE_EXECUTION_ENABLED=true`.
+Plans with queued or running jobs cannot be deleted.
 
 ## Migration Workflow
 
@@ -83,10 +89,11 @@ host record rather than creating a duplicate.
 
 ## Service status
 
-The Settings page shows the live state of each DS Shift container. Green `UP`
+The Settings page shows the live state of each DS Shift service. Green `UP`
 means Docker reports the container as running, yellow `RESTARTING` means Docker
 is restarting it, and red `DOWN` means it is stopped, exited, or missing. The
-panel refreshes every 10 seconds.
+panel refreshes every 10 seconds. Spark Engine reports aggregate replica state,
+including how many of its three replicas are running.
 
 ## Settings
 

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ProjectBase(BaseModel):
@@ -111,6 +111,7 @@ class VmBase(BaseModel):
     disk_gb: int
     os_type: Optional[str] = None
     ip_address: Optional[str] = None
+    details_json: str = "{}"
     application_owner: Optional[str] = None
     criticality: str = "Medium"
     migration_wave: Optional[str] = None
@@ -248,7 +249,7 @@ class MigrationJobCreate(BaseModel):
     vm_name: str
     target_name: Optional[str] = None
     target_datastore: Optional[str] = None
-    migration_type: str = "KVM to ESXi"
+    migration_type: str = "Connector migration"
 
 
 class MigrationJob(BaseModel):
@@ -273,6 +274,11 @@ class MigrationPlanCreate(BaseModel):
     target_connector_id: int
     target_datastore: Optional[str] = None
     notes: Optional[str] = None
+    execution_options: dict = Field(default_factory=dict)
+
+
+class MigrationLaunch(BaseModel):
+    confirmation: str
 
 
 class MigrationPlan(BaseModel):
@@ -286,6 +292,8 @@ class MigrationPlan(BaseModel):
     target_datastore: Optional[str] = None
     status: str
     notes: Optional[str] = None
+    execution_options_json: str
+    spark_job_id: Optional[int] = None
     results_json: str
     executed_at: Optional[datetime] = None
     created_at: datetime

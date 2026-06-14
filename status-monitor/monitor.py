@@ -16,6 +16,7 @@ SERVICE_ORDER = [
     "frontend",
     "host-connector-engine",
     "reverse-proxy",
+    "spark-engine",
 ]
 
 
@@ -55,7 +56,9 @@ def display_name(service: str) -> str:
     return "-".join(part.capitalize() for part in service.split("-"))
 
 
-def public_status(state: str) -> str:
+def public_status(state: str, detail: str = "") -> str:
+    if "(unhealthy)" in detail.lower():
+        return "DOWN"
     if state == "running":
         return "UP"
     if state == "restarting":
@@ -72,28 +75,37 @@ def service_statuses() -> list[dict]:
         service = labels.get("com.docker.compose.service")
         if not service or service in HIDDEN_SERVICES:
             continue
-        by_service[service] = {
-            "service": service,
-            "name": display_name(service),
-            "status": public_status(container.get("State", "")),
-            "container_state": container.get("State", "missing"),
-            "detail": container.get("Status", ""),
-        }
+        by_service.setdefault(service, []).append(container)
 
     services = SERVICE_ORDER + sorted(set(by_service) - set(SERVICE_ORDER))
-    return [
-        by_service.get(
-            service,
-            {
+    result = []
+    for service in services:
+        replicas = by_service.get(service, [])
+        if not replicas:
+            result.append({
                 "service": service,
                 "name": display_name(service),
                 "status": "DOWN",
                 "container_state": "missing",
                 "detail": "Container not found",
-            },
-        )
-        for service in services
-    ]
+                "replicas": 0,
+            })
+            continue
+        states = [container.get("State", "missing") for container in replicas]
+        public_states = [
+            public_status(container.get("State", "missing"), container.get("Status", ""))
+            for container in replicas
+        ]
+        status = "DOWN" if "DOWN" in public_states else "RESTARTING" if "RESTARTING" in public_states else "UP"
+        result.append({
+            "service": service,
+            "name": display_name(service),
+            "status": status,
+            "container_state": ",".join(sorted(set(states))),
+            "detail": f"{sum(state == 'running' for state in states)}/{len(replicas)} replicas running",
+            "replicas": len(replicas),
+        })
+    return result
 
 
 class Handler(BaseHTTPRequestHandler):

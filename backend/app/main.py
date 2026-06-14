@@ -25,6 +25,7 @@ from .connector_client import (
 from .database import Base, engine, get_db
 from .engines import build_kvm_to_esxi_preflight
 from .service_status import get_service_statuses
+from .spark_client import create_spark_job, get_spark_job, spark_capabilities
 
 MIGRATION_STATUSES = {
     "Discovered",
@@ -161,7 +162,11 @@ def startup() -> None:
         connection.execute(text("ALTER TABLE vm_inventory ADD COLUMN IF NOT EXISTS connector_id INTEGER REFERENCES connector_profiles(id) ON DELETE SET NULL"))
         connection.execute(text("ALTER TABLE vm_inventory ADD COLUMN IF NOT EXISTS external_id VARCHAR(255)"))
         connection.execute(text("ALTER TABLE vm_inventory ADD COLUMN IF NOT EXISTS host_name VARCHAR(255)"))
+        connection.execute(text("ALTER TABLE vm_inventory ADD COLUMN IF NOT EXISTS details_json TEXT NOT NULL DEFAULT '{}'"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_vm_inventory_external_id ON vm_inventory (external_id)"))
+        connection.execute(text("ALTER TABLE migration_plans ADD COLUMN IF NOT EXISTS execution_options_json TEXT NOT NULL DEFAULT '{}'"))
+        connection.execute(text("ALTER TABLE migration_plans ADD COLUMN IF NOT EXISTS spark_job_id INTEGER"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_migration_plans_spark_job_id ON migration_plans (spark_job_id)"))
     db = next(get_db())
     try:
         seed_defaults(db)
@@ -611,6 +616,7 @@ def sync_discovered_vms(db: Session, connector: models.ConnectorProfile, records
             "disk_gb": record.get("disk_gb") or 0,
             "os_type": record.get("os_type") or "Unknown",
             "ip_address": record.get("ip_address"),
+            "details_json": json.dumps(record),
         }
         if existing:
             for key, value in values.items():
@@ -812,6 +818,7 @@ def create_migration_plan(payload: schemas.MigrationPlanCreate, db: Session = De
         vm_ids_json=json.dumps(sorted(set(payload.vm_ids))),
         target_datastore=payload.target_datastore,
         notes=payload.notes,
+        execution_options_json=json.dumps(payload.execution_options),
     )
     db.add(plan)
     db.commit()
@@ -819,11 +826,126 @@ def create_migration_plan(payload: schemas.MigrationPlanCreate, db: Session = De
     return plan
 
 
+@app.get("/api/spark/capabilities")
+def get_spark_capabilities(_user: models.LocalUser = Depends(current_user)):
+    try:
+        return spark_capabilities()
+    except Exception as exc:
+        raise HTTPException(503, f"Spark Engine unavailable: {exc}") from exc
+
+
+def connector_execution_payload(connector: models.ConnectorProfile) -> dict:
+    return {
+        "id": connector.id,
+        "name": connector.name,
+        "connector_category": connector.connector_category,
+        "connector_type": connector.connector_type,
+        "endpoint": connector.endpoint,
+        "port": connector.port,
+        "username": connector.username,
+        "credential_reference": connector.credential_reference,
+    }
+
+
+def apply_spark_job(db: Session, plan: models.MigrationPlan, job: dict) -> None:
+    spark_status = job.get("status")
+    if spark_status in {"Queued", "Running"}:
+        plan.status = spark_status
+        return
+    results = job.get("result") or []
+    plan.results_json = json.dumps(results)
+    plan.executed_at = datetime.utcnow()
+    plan.status = "Completed" if spark_status == "Succeeded" else "Failed"
+    vm_ids = {row.get("vm_id") for row in results if row.get("vm_id")}
+    vms = db.query(models.VmInventory).filter(models.VmInventory.id.in_(vm_ids)).all() if vm_ids else []
+    result_by_vm = {row.get("vm_id"): row for row in results}
+    for vm in vms:
+        result = result_by_vm.get(vm.id, {})
+        vm.current_status = "Validation completed" if result.get("ok") else "Failed"
+        db.add(models.VmStatusHistory(vm_id=vm.id, status=vm.current_status, note=f"Spark Engine job {job.get('id')}: {result.get('message') or job.get('message')}"))
+
+
+@app.post("/api/migration-plans/{plan_id}/launch")
+def launch_migration_plan(
+    plan_id: int,
+    payload: schemas.MigrationLaunch,
+    db: Session = Depends(get_db),
+    admin: models.LocalUser = Depends(admin_user),
+):
+    plan = db.get(models.MigrationPlan, plan_id)
+    if not plan:
+        raise HTTPException(404, "Migration plan not found")
+    if payload.confirmation != plan.name:
+        raise HTTPException(400, "Type the exact migration plan name to approve live execution")
+    if plan.status in {"Queued", "Running"}:
+        raise HTTPException(409, "Migration plan already has an active Spark Engine job")
+    source = db.get(models.ConnectorProfile, plan.source_connector_id)
+    target = db.get(models.ConnectorProfile, plan.target_connector_id)
+    if not source or not target:
+        raise HTTPException(404, "Source or target connector not found")
+    vm_ids = json.loads(plan.vm_ids_json)
+    vms = db.query(models.VmInventory).filter(models.VmInventory.id.in_(vm_ids)).all()
+    if len(vms) != len(vm_ids):
+        raise HTTPException(409, "One or more migration plan VMs no longer exist")
+    request = {
+        "plan_id": plan.id,
+        "source_connector": connector_execution_payload(source),
+        "target_connector": connector_execution_payload(target),
+        "workloads": [
+            {
+                "id": vm.id,
+                "vm_name": vm.vm_name,
+                "external_id": vm.external_id,
+                "host_name": vm.host_name,
+                "details": json.loads(vm.details_json or "{}"),
+            }
+            for vm in vms
+        ],
+        "options": {
+            **json.loads(plan.execution_options_json or "{}"),
+            **({"target_datastore": plan.target_datastore} if plan.target_datastore else {}),
+        },
+        "requested_by": admin.username,
+        "live": True,
+        "approval": f"EXECUTE:{plan.id}",
+    }
+    try:
+        job = create_spark_job(request)
+    except ValueError as exc:
+        raise HTTPException(409, f"Spark Engine rejected execution: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(503, f"Spark Engine unavailable: {exc}") from exc
+    plan.spark_job_id = job["id"]
+    plan.status = job["status"]
+    db.commit()
+    db.refresh(plan)
+    return {"plan": schemas.MigrationPlan.model_validate(plan), "job": job}
+
+
+@app.get("/api/migration-plans/{plan_id}/execution")
+def migration_plan_execution(plan_id: int, db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
+    plan = db.get(models.MigrationPlan, plan_id)
+    if not plan:
+        raise HTTPException(404, "Migration plan not found")
+    if not plan.spark_job_id:
+        raise HTTPException(404, "Migration plan has no Spark Engine execution")
+    try:
+        job = get_spark_job(plan.spark_job_id)
+    except Exception as exc:
+        raise HTTPException(503, f"Spark Engine unavailable: {exc}") from exc
+    apply_spark_job(db, plan, job)
+    db.commit()
+    db.refresh(plan)
+    return {"plan": schemas.MigrationPlan.model_validate(plan), "job": job}
+
+
 @app.delete("/api/migration-plans/{plan_id}", status_code=204)
 def delete_migration_plan(plan_id: int, db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
     plan = db.get(models.MigrationPlan, plan_id)
     if not plan:
         raise HTTPException(404, "Migration plan not found")
+    if plan.status in {"Queued", "Running"}:
+        raise HTTPException(409, "Cannot delete a migration plan while its Spark Engine job is active")
     db.delete(plan)
     db.commit()
 

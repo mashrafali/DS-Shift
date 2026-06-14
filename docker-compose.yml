@@ -31,6 +31,7 @@ services:
       VCENTER_PASSWORD: ${VCENTER_PASSWORD:-}
       HOST_CONNECTOR_ENGINE_URL: http://host-connector-engine:8101
       CLOUD_CONNECTOR_ENGINE_URL: http://cloud-connector-engine:8102
+      SPARK_ENGINE_URL: http://spark-engine:8200
       SERVICE_STATUS_MONITOR_URL: http://service-status-monitor:8090
     extra_hosts:
       - "kvm:192.168.0.9"
@@ -41,6 +42,8 @@ services:
       host-connector-engine:
         condition: service_healthy
       cloud-connector-engine:
+        condition: service_healthy
+      spark-engine:
         condition: service_healthy
       service-status-monitor:
         condition: service_healthy
@@ -111,6 +114,38 @@ services:
       AZURE_CONNECTOR_CREDENTIALS: ${AZURE_CONNECTOR_CREDENTIALS:-}
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8102/health', timeout=3).read()\""]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ds_shift
+
+  spark-engine:
+    image: ds-shift-spark-engine:latest
+    build:
+      context: ./spark-engine
+    restart: unless-stopped
+    deploy:
+      replicas: 3
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-dsshift}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB:-dsshift}
+      SPARK_LIVE_EXECUTION_ENABLED: ${SPARK_LIVE_EXECUTION_ENABLED:-false}
+      KVM_PASSWORD: ${KVM_PASSWORD:-}
+      VCENTER_PASSWORD: ${VCENTER_PASSWORD:-}
+      NUTANIX_PASSWORD: ${NUTANIX_PASSWORD:-}
+      AWS_CONNECTOR_CREDENTIALS: ${AWS_CONNECTOR_CREDENTIALS:-}
+      GCP_CONNECTOR_CREDENTIALS: ${GCP_CONNECTOR_CREDENTIALS:-}
+      AZURE_CONNECTOR_CREDENTIALS: ${AZURE_CONNECTOR_CREDENTIALS:-}
+    extra_hosts:
+      - "kvm:192.168.0.9"
+      - "vcsa.test.local:192.168.0.11"
+    depends_on:
+      database:
+        condition: service_healthy
+    volumes:
+      - ./engine-ssh:/root/.ssh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8200/health', timeout=3).read()\""]
       interval: 20s
       timeout: 5s
       retries: 5

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import ssl
 import subprocess
 from dataclasses import dataclass
@@ -212,18 +211,20 @@ def build_kvm_to_esxi_preflight(
     target_datastore: str | None,
 ) -> EngineResult:
     source_uri = source_endpoint or "qemu+ssh://root@kvm/system"
-    datastore = target_datastore or "<target-vmware-datastore>"
     commands = [
         "KVM SSH/virsh source validation",
         "vCenter pyvmomi target validation",
-        "Check qemu-img and virt-v2v for live conversion execution",
+        "Verify that a supported KVM-to-VMware packaging and import adapter is available",
     ]
     runbook = [
         {"step": "Validate source KVM connector", "command": "SSH connect and run virsh list --all --name"},
         {"step": "Validate target vCenter connector", "command": "pyvmomi SmartConnect and retrieve ServiceContent.About"},
         {"step": "Inspect source VM state", "command": f"virsh -c {source_uri} domstate {vm_name}"},
         {"step": "Inspect source VM disks", "command": f"virsh -c {source_uri} domblklist {vm_name}"},
-        {"step": "Live conversion command", "command": f"virt-v2v -ic {source_uri} {vm_name} -o vpx -os {datastore} -op /run/secrets/vcenter-password"},
+        {
+            "step": "Package and import",
+            "command": "Blocked: implement an approved disk conversion, OVF packaging, upload, and vCenter import adapter",
+        },
         {"step": "Validate target VM inventory", "command": f"pyvmomi/govc vm lookup for {vm_name}"},
     ]
 
@@ -244,15 +245,27 @@ def build_kvm_to_esxi_preflight(
         except Exception as exc:
             records.append({"check": "source_vm_inspection", "ok": False, "message": str(exc)})
 
-    live_missing = [tool for tool in ["qemu-img", "virt-v2v"] if not shutil.which(tool)]
-    records.append({"check": "live_conversion_tools", "ok": not live_missing, "message": ", ".join(live_missing) if live_missing else "qemu-img and virt-v2v available"})
+    records.append(
+        {
+            "check": "execution_adapter",
+            "ok": False,
+            "message": (
+                "KVM-to-VMware execution is not implemented. virt-v2v does not provide "
+                "a supported KVM-to-VMware output adapter; an OVF packaging and vCenter "
+                "import pipeline is required."
+            ),
+        }
+    )
 
-    failed = [record for record in records if not record["ok"] and record["check"] != "live_conversion_tools"]
+    failed = [record for record in records if not record["ok"] and record["check"] != "execution_adapter"]
     if failed:
         return EngineResult(False, "Migration test preflight blocked. Source or target validation failed.", records + runbook, commands)
-    if live_missing:
-        return EngineResult(False, f"Migration test preflight passed for connectors, but live conversion is blocked until tools are installed: {', '.join(live_missing)}", records + runbook, commands)
-    return EngineResult(True, "Migration test preflight passed. Live execution still requires explicit approval.", records + runbook, commands)
+    return EngineResult(
+        False,
+        "Connector preflight passed, but KVM-to-VMware execution is blocked until a supported packaging and vCenter import adapter is implemented.",
+        records + runbook,
+        commands,
+    )
 
 
 def _match_int(text: str, pattern: str) -> int | None:

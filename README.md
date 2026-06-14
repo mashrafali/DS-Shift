@@ -1,8 +1,11 @@
 # DS Shift
 
-Defined Solutions cloud-native platform for any-to-any VM migration planning, launch, execution, tracking, and workflow management.
+Defined Solutions platform for VM migration planning, controlled execution, tracking, and workflow management.
 
-DS Shift 1.0 RC1 is an MVP focused on assessment, source/target inventory, migration planning, migration waves, VM workflow state tracking, dashboard metrics, discovery runs, and migration preflight jobs. Live migration execution is approval-gated and should only be enabled after credential, network, and rollback controls are validated.
+DS Shift 1.0 RC1 is an MVP focused on assessment, source/target inventory,
+migration planning, migration waves, VM workflow state tracking, dashboard
+metrics, discovery runs, and migration execution jobs. Live execution is
+approval-gated and disabled by default.
 
 ## Architecture
 
@@ -11,6 +14,8 @@ DS Shift 1.0 RC1 is an MVP focused on assessment, source/target inventory, migra
 - Database: PostgreSQL with a persistent Docker volume.
 - Edge: Nginx reverse proxy with self-signed HTTPS.
 - Runtime: Docker Compose.
+- Execution workers: three stateless Spark Engine replicas backed by a
+  PostgreSQL job queue.
 
 ## Quick Start
 
@@ -39,6 +44,10 @@ Default MVP login:
 - `backend`
 - `database`
 - `reverse-proxy`
+- `host-connector-engine`
+- `cloud-connector-engine`
+- `spark-engine` (three replicas)
+- `service-status-monitor`
 
 PostgreSQL is internal to the Docker network and is not exposed publicly.
 
@@ -65,12 +74,20 @@ The seeded lab admin is `admin` with the configured `ADMIN_INITIAL_PASSWORD`.
 - The Host Connector Engine supports KVM through Paramiko/`virsh`, VMware through pyVmomi, and Nutanix AHV through the Prism Central v3 API.
 - The Cloud Connector Engine supports AWS EC2 through Boto3, Google Compute Engine through the Google Cloud SDK, and Azure VMs through Azure Identity and Compute Management SDKs.
 - Connector metadata and discovery history remain in the main backend; validation and discovery execute in the isolated engine containers.
-- KVM to ESXi/vCenter migration jobs run a non-destructive migration test preflight: source connector validation, source VM inspection, target vCenter validation, and live conversion tool checks.
-- The engine container must receive `KVM_PASSWORD` and `VCENTER_PASSWORD` through `.env` for lab testing. Live conversion still requires `qemu-img` and `virt-v2v`.
+- Spark Engine has executable adapters for AWS-to-AWS within one account,
+  GCP-to-GCP using machine images, Azure-to-Azure within one subscription, and
+  KVM-to-KVM using `virsh migrate`.
+- KVM-to-VMware and cross-provider cloud execution remain blocked until their
+  required packaging, staging, network mapping, and import pipelines exist.
+- Spark Engine accepts live jobs only when
+  `SPARK_LIVE_EXECUTION_ENABLED=true`; each launch also requires an admin and
+  exact migration-plan-name confirmation.
 
 ## MVP Limitations
 
-- Discovery engines are implemented for KVM and vCenter and require reachable endpoints and runtime credentials.
-- KVM to ESXi/vCenter migration testing is implemented as a non-destructive preflight/runbook engine. Live execution still requires explicit operational approval.
+- Execution is limited to the adapter matrix listed above; the product is not
+  yet an unrestricted any-to-any migration engine.
+- Credentials are environment-backed; production deployments still require a
+  vault, least-privilege identities, rollback procedures, and audited approvals.
 - No production RBAC yet.
 - No external certificate automation yet.

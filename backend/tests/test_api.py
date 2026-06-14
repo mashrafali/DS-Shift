@@ -17,6 +17,7 @@ from app.main import (
     delete_user,
     execute_migration_plan,
     hash_password,
+    launch_migration_plan,
     seed_defaults,
     sync_discovered_hosts,
     sync_discovered_vms,
@@ -99,6 +100,7 @@ def test_service_status_fallback():
         "frontend",
         "host-connector-engine",
         "reverse-proxy",
+        "spark-engine",
     ]
     assert all(row["status"] == "DOWN" for row in result["services"])
 
@@ -158,6 +160,7 @@ def test_discovery_inventory_and_migration_plan_execution(monkeypatch):
         assert vm.connector_id == source.id
         assert vm.external_id == "vm-101"
         assert vm.host_name == "kvm01"
+        assert json.loads(vm.details_json)["external_id"] == "vm-101"
 
         duplicate_name_records = [
             {"vm_name": "vm-01", "external_id": "vm-101", "host_name": "kvm01", "source_platform": "KVM"},
@@ -175,6 +178,21 @@ def test_discovery_inventory_and_migration_plan_execution(monkeypatch):
         )
         assert json.loads(plan.vm_ids_json) == [vm.id]
         assert plan.status == "Draft"
+
+        monkeypatch.setattr(
+            "app.main.create_spark_job",
+            lambda payload: {"id": 42, "plan_id": payload["plan_id"], "status": "Queued", "adapter": "test"},
+        )
+        launched = launch_migration_plan(
+            plan.id,
+            schemas.MigrationLaunch(confirmation=plan.name),
+            db,
+            models.LocalUser(username="admin", password_hash="unused", role="admin", is_active="true"),
+        )
+        assert launched["job"]["id"] == 42
+        assert db.get(models.MigrationPlan, plan.id).spark_job_id == 42
+        plan.status = "Draft"
+        db.commit()
 
         monkeypatch.setattr(
             "app.main.build_kvm_to_esxi_preflight",

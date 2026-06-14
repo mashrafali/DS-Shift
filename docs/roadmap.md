@@ -18,8 +18,12 @@
 
 ## Migration Execution Integrations
 
-- Controlled live execution for the implemented `virt-v2v` KVM-to-ESXi/vCenter preflight engine.
-- VMware vCenter APIs.
+- Supported KVM disk conversion, OVF packaging, upload, and VMware vCenter
+  import.
+- Cross-account AWS image and snapshot sharing.
+- Cross-project GCP image permissions and staging.
+- Cross-subscription Azure disk copy and staging.
+- Cross-provider cloud object-storage transfer pipelines.
 - Google Cloud Migrate to Virtual Machines.
 - AWS Application Migration Service.
 - Azure Migrate.

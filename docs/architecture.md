@@ -1,6 +1,6 @@
 # Architecture
 
-DS Shift uses a three-tier application architecture deployed with Docker Compose.
+DS Shift uses a service-oriented application architecture deployed with Docker Compose.
 
 ## Components
 
@@ -31,9 +31,7 @@ DS Shift uses a three-tier application architecture deployed with Docker Compose
 - Persists host inventory and VM-to-host placement returned by Host Connector
   discovery.
 - Synchronizes discovered workloads into VM inventory.
-- Executes KVM-to-ESXi/vCenter migration-plan preflight using connector
-  validation, source VM inspection, target validation, and a `virt-v2v` runbook
-  model.
+- Creates and monitors durable Spark Engine execution jobs.
 
 `host-connector-engine`
 
@@ -48,6 +46,16 @@ DS Shift uses a three-tier application architecture deployed with Docker Compose
 - Validates and discovers Google Compute Engine with the Google Cloud Compute SDK.
 - Validates and discovers Azure VMs with Azure Identity and Compute Management SDKs.
 - Receives only cloud credential JSON environment variables.
+
+`spark-engine`
+
+- Runs as three stateless worker replicas.
+- Claims durable PostgreSQL jobs with row locking and `SKIP LOCKED`, so one
+  execution job is handled by only one replica.
+- Executes AWS-to-AWS, GCP-to-GCP, Azure-to-Azure, and KVM-to-KVM adapters.
+- Keeps live execution disabled unless `SPARK_LIVE_EXECUTION_ENABLED=true`.
+- Rejects unsupported source and target combinations instead of generating
+  commands that the underlying tools cannot execute.
 
 `service-status-monitor`
 
@@ -75,17 +83,25 @@ DS Shift uses a three-tier application architecture deployed with Docker Compose
 - `AppSetting`: editable product and UI settings.
 - `DiscoveryRun`: connector discovery result, command evidence, and discovered VM records.
 - `MigrationJob`: migration preflight job, runbook, dependency status, and operator-facing messages.
-- `MigrationPlan`: selected VMs, source and target connectors, execution state,
-  and per-VM preflight results.
+- `MigrationPlan`: selected VMs, source and target connectors, provider options,
+  Spark job reference, execution state, and per-VM results.
+- `spark_execution_jobs`: durable Spark worker queue, ownership, status, request,
+  and result data.
 
 ## Engine Boundary
 
-The migration engine is intentionally split into safe preflight and live execution phases:
+The migration engine is intentionally split into preflight and live execution phases:
 
 - Discovery runs call real KVM/vCenter APIs or command interfaces and record success or failure.
-- Migration plan execution creates a non-destructive KVM-to-ESXi/vCenter
-  preflight per selected VM and validates live execution tool requirements.
-- Live migration execution is not triggered automatically from the MVP UI.
+- `Preflight` performs the existing non-destructive connector and workload
+  inspection. KVM-to-VMware remains blocked because no supported import adapter
+  has been implemented.
+- `Launch` is admin-only, requires exact plan-name confirmation, and submits a
+  live job to Spark Engine.
+- Spark Engine supports AWS-to-AWS in one account, GCP-to-GCP using machine
+  images, Azure-to-Azure in one subscription, and KVM-to-KVM with libvirt.
+- Cross-account, cross-subscription, cross-provider, and KVM-to-VMware
+  execution are rejected until explicit staging and import workflows exist.
 - Runtime credentials should be injected through environment variables, mounted SSH keys, Docker secrets, or a future vault integration.
 
 ## Future Integration Points
@@ -93,5 +109,5 @@ The migration engine is intentionally split into safe preflight and live executi
 - RBAC middleware.
 - Vault-backed credential references.
 - Additional platform discovery connectors and richer inventory attributes.
-- Controlled migration execution adapters for virt-v2v, cloud migration APIs, and replication tools.
+- VMware import, cross-provider cloud staging, and replication-based adapters.
 - Audit logging and report export services.

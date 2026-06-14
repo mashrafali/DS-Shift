@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     app_version: str = "1.0 RC1"
     database_url: str = "postgresql+psycopg://dsshift:dsshift@database:5432/dsshift"
     cors_origins: str = "*"
+    spark_engine_url: str = "http://spark-engine:8200"
 
     class Config:
         env_file = ".env"
