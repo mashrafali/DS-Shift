@@ -186,7 +186,7 @@ def about():
         "product": "DS Shift",
         "brand": "Defined Solutions",
         "version": settings.app_version,
-        "purpose": "Any-to-any VM migration planning, launch, execution, and tracking platform.",
+        "purpose": "VM migration planning, controlled execution, and tracking platform.",
     }
 
 
