@@ -216,6 +216,9 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .inventory-actions { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 18px; background: #fff; border: 1px solid #d9e4ee; border-radius: 8px; }
 .inventory-actions > div { display: grid; gap: 4px; }
 .inventory-actions span { color: #607386; font-size: 13px; }
+.inventory-search { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: #fff; border: 1px solid #d9e4ee; border-radius: 8px; color: #607386; }
+.inventory-search input { flex: 1; min-width: 220px; border: 0; outline: 0; background: transparent; }
+.inventory-search span { white-space: nowrap; font-size: 13px; }
 .disabled-row { opacity: 0.45; }
 .plan-about { max-width: none; }
 .plan-detail { display: grid; }

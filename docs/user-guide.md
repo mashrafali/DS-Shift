@@ -12,6 +12,10 @@ VM Inventory is synchronized automatically from every successful connector
 discovery. It records source connector and host, platform, operating system,
 CPU, memory, disk, IP address, and workflow status.
 
+Use the search bar to filter by VM name, connector, host, platform, operating
+system, IP address, or migration status. Select All applies to the filtered
+results while preserving the single-source-connector selection rule.
+
 Select VMs with checkboxes. A migration plan can contain VMs from one source
 connector so one execution adapter and credential context apply to the plan.
 

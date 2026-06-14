@@ -525,9 +525,24 @@ function DashboardPlans({ plans, connectors }) {
 }
 
 function Inventory({ vms, connectors, selectedVmIds, setSelectedVmIds, openPlan, changeStatus }) {
+  const [searchTerm, setSearchTerm] = useState('');
   const selectedVms = vms.filter((vm) => selectedVmIds.includes(vm.id));
   const selectedConnectorId = selectedVms[0]?.connector_id;
-  const selectableVms = selectedConnectorId ? vms.filter((vm) => vm.connector_id === selectedConnectorId) : vms;
+  const normalizedSearch = searchTerm.trim().toLowerCase();
+  const filteredVms = vms.filter((vm) => {
+    if (!normalizedSearch) return true;
+    const connector = connectors.find((row) => row.id === vm.connector_id);
+    return [
+      vm.vm_name,
+      connector?.name,
+      vm.host_name,
+      vm.source_platform,
+      vm.os_type,
+      vm.ip_address,
+      vm.current_status,
+    ].some((value) => String(value || '').toLowerCase().includes(normalizedSearch));
+  });
+  const selectableVms = selectedConnectorId ? filteredVms.filter((vm) => vm.connector_id === selectedConnectorId) : filteredVms;
   const allSelectableSelected = selectableVms.length > 0 && selectableVms.every((vm) => selectedVmIds.includes(vm.id));
   const toggleVm = (vm) => {
     if (selectedVmIds.includes(vm.id)) {
@@ -538,14 +553,18 @@ function Inventory({ vms, connectors, selectedVmIds, setSelectedVmIds, openPlan,
     setSelectedVmIds([...selectedVmIds, vm.id]);
   };
   const toggleAll = () => {
-    if (allSelectableSelected) setSelectedVmIds([]);
-    else setSelectedVmIds(selectableVms.map((vm) => vm.id));
+    if (allSelectableSelected) {
+      const visibleIds = new Set(selectableVms.map((vm) => vm.id));
+      setSelectedVmIds(selectedVmIds.filter((id) => !visibleIds.has(id)));
+    } else {
+      setSelectedVmIds([...new Set([...selectedVmIds, ...selectableVms.map((vm) => vm.id)])]);
+    }
   };
-  return <section className="stack"><div className="inventory-actions"><div><strong>{selectedVmIds.length} VM{selectedVmIds.length === 1 ? '' : 's'} selected</strong><span>Select VMs from one source connector to build an executable migration plan.</span></div><button className="primary" disabled={!selectedVmIds.length} onClick={openPlan}><Plus size={16} /> Create Migration Plan</button></div><div className="table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="Select all VMs from source connector" checked={allSelectableSelected} onChange={toggleAll} /></th><th>VM</th><th>Source Connector</th><th>Host</th><th>Platform</th><th>OS</th><th>Size</th><th>IP address</th><th>Status</th><th>Change status</th></tr></thead><tbody>{vms.map((vm) => {
+  return <section className="stack"><div className="inventory-actions"><div><strong>{selectedVmIds.length} VM{selectedVmIds.length === 1 ? '' : 's'} selected</strong><span>Select VMs from one source connector to build an executable migration plan.</span></div><button className="primary" disabled={!selectedVmIds.length} onClick={openPlan}><Plus size={16} /> Create Migration Plan</button></div><label className="inventory-search"><Search size={18} /><input type="search" value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search VMs by name, connector, host, platform, OS, IP, or status" aria-label="Search VM Inventory" />{searchTerm && <button type="button" className="icon-button" onClick={() => setSearchTerm('')} title="Clear VM search" aria-label="Clear VM search"><X size={16} /></button>}<span>{filteredVms.length} of {vms.length} VMs</span></label><div className="table-wrap"><table><thead><tr><th><input type="checkbox" aria-label="Select all filtered VMs from source connector" checked={allSelectableSelected} onChange={toggleAll} /></th><th>VM</th><th>Source Connector</th><th>Host</th><th>Platform</th><th>OS</th><th>Size</th><th>IP address</th><th>Status</th><th>Change status</th></tr></thead><tbody>{filteredVms.map((vm) => {
     const connector = connectors.find((row) => row.id === vm.connector_id);
     const disabled = Boolean(selectedConnectorId && vm.connector_id !== selectedConnectorId);
     return <tr key={vm.id} className={disabled ? 'disabled-row' : ''}><td><input type="checkbox" checked={selectedVmIds.includes(vm.id)} disabled={disabled} onChange={() => toggleVm(vm)} /></td><td><strong>{vm.vm_name}</strong></td><td>{connector?.name || '-'}</td><td>{vm.host_name || '-'}</td><td>{vm.source_platform}</td><td>{vm.os_type || 'Unknown'}</td><td>{vm.cpu} CPU / {vm.memory_gb} GB / {vm.disk_gb} GB</td><td>{vm.ip_address || '-'}</td><td><Badge value={vm.current_status} /></td><td><select value={vm.current_status} onChange={(e) => changeStatus(vm, e.target.value)}>{statuses.map((s) => <option key={s}>{s}</option>)}</select></td></tr>;
-  })}</tbody></table></div></section>;
+  })}{!filteredVms.length && <tr><td colSpan="10">No VMs match “{searchTerm}”.</td></tr>}</tbody></table></div></section>;
 }
 
 function MigrationPlanModal({ selectedVmIds, vms, connectors, form, setForm, save, close }) {
