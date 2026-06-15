@@ -165,6 +165,55 @@ def test_host_discovery_sync_and_connector_delete():
         assert db.query(models.HostInventory).count() == 0
 
 
+def test_connector_delete_removes_legacy_migration_jobs_but_blocks_plans():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        source = models.ConnectorProfile(name="KVM Source", connector_category="host", connector_type="KVM", endpoint="qemu+ssh://root@kvm/system")
+        target = models.ConnectorProfile(name="vCenter Target", connector_category="host", connector_type="VMware ESXi / vCenter", endpoint="https://vcsa.test.local/sdk")
+        db.add_all([source, target])
+        db.commit()
+        db.refresh(source)
+        db.refresh(target)
+
+        db.add(
+            models.MigrationJob(
+                source_connector_id=source.id,
+                target_connector_id=target.id,
+                vm_name="legacy-preflight-vm",
+                status="Blocked",
+            )
+        )
+        db.commit()
+
+        delete_connector(source.id, db, None)
+        assert db.query(models.ConnectorProfile).filter(models.ConnectorProfile.id == source.id).count() == 0
+        assert db.query(models.MigrationJob).count() == 0
+
+    with Session(engine) as db:
+        source = models.ConnectorProfile(name="KVM Source 2", connector_category="host", connector_type="KVM", endpoint="qemu+ssh://root@kvm2/system")
+        target = models.ConnectorProfile(name="vCenter Target 2", connector_category="host", connector_type="VMware ESXi / vCenter", endpoint="https://vcsa2.test.local/sdk")
+        db.add_all([source, target])
+        db.flush()
+        vm = models.VmInventory(vm_name="vm-01", source_platform="KVM", target_platform="VMware ESXi / vCenter", cpu=2, memory_gb=4, disk_gb=50, connector_id=source.id)
+        db.add(vm)
+        db.flush()
+        db.add(
+            models.MigrationPlan(
+                name="Protected Plan",
+                source_connector_id=source.id,
+                target_connector_id=target.id,
+                migration_type="KVM to VMware ESXi / vCenter",
+                vm_ids_json=json.dumps([vm.id]),
+            )
+        )
+        db.commit()
+
+        with pytest.raises(HTTPException, match="migration plan"):
+            delete_connector(source.id, db, None)
+
+
 def test_discovery_inventory_and_migration_plan_execution(monkeypatch):
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)

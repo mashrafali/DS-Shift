@@ -614,19 +614,19 @@ def delete_connector(connector_id: int, db: Session = Depends(get_db), _user: mo
     connector = db.get(models.ConnectorProfile, connector_id)
     if not connector:
         raise HTTPException(404, "Connector not found")
-    referenced_jobs = db.query(models.MigrationJob).filter(
-        (models.MigrationJob.source_connector_id == connector_id)
-        | (models.MigrationJob.target_connector_id == connector_id)
-    ).count()
     referenced_plans = db.query(models.MigrationPlan).filter(
         (models.MigrationPlan.source_connector_id == connector_id)
         | (models.MigrationPlan.target_connector_id == connector_id)
     ).count()
-    if referenced_jobs or referenced_plans:
+    if referenced_plans:
         raise HTTPException(
             409,
-            f"Connector is referenced by {referenced_jobs} migration job(s) and {referenced_plans} migration plan(s) and cannot be deleted",
+            f"Connector is referenced by {referenced_plans} migration plan(s) and cannot be deleted",
         )
+    db.query(models.MigrationJob).filter(
+        (models.MigrationJob.source_connector_id == connector_id)
+        | (models.MigrationJob.target_connector_id == connector_id)
+    ).delete(synchronize_session=False)
     db.query(models.DiscoveryRun).filter(models.DiscoveryRun.connector_id == connector_id).delete(synchronize_session=False)
     db.query(models.HostInventory).filter(models.HostInventory.connector_id == connector_id).delete(synchronize_session=False)
     db.delete(connector)
