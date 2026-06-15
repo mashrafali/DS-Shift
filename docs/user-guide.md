@@ -22,7 +22,8 @@ connector so one execution adapter and credential context apply to the plan.
 ## Migration Plans
 
 Select VMs in VM Inventory and choose `Create Migration Plan`. Specify a plan
-name, target connector, provider execution options, and notes.
+name, target connector, provider execution options, and notes. Existing plans
+can be edited to add or remove VMs from the same source connector.
 
 The Migration Plans page provides `Preflight`, admin-only `Launch`, `Details`,
 and `Delete`. Preflight performs non-destructive checks. Launch requires the
@@ -33,8 +34,10 @@ Executable Spark adapters are AWS-to-AWS within one account, GCP-to-GCP using
 machine images, Azure-to-Azure within one subscription, KVM-to-KVM using
 libvirt migration, KVM-to-vCenter through VMDK/OVA import, and
 vCenter-to-KVM through `virt-v2v`. Host conversion plans require powered-off
-source VMs and explicit target storage and network options. Other combinations
-are rejected. Live launch is disabled unless the deployment explicitly sets
+source VMs. For KVM-to-vCenter paths, destination network, datastore, and vDC
+defaults are configured on the target connector and verified during connector
+validation and plan preflight. Other combinations are rejected. Live launch is
+disabled unless the deployment explicitly sets
 `SPARK_LIVE_EXECUTION_ENABLED=true`. Plans with queued or running jobs cannot
 be deleted.
 
@@ -66,7 +69,7 @@ Use the Reports page to export a basic VM readiness CSV from the current invento
 
 Host Connectors support KVM, VMware ESXi / vCenter, and Nutanix AHV.
 Cloud Connectors support Amazon Web Services, Google Cloud Platform, and Microsoft Azure.
-Passwords and cloud credential JSON are not stored in PostgreSQL; connector records use `env:` references to secrets supplied to the relevant engine container.
+Connector passwords and cloud credential JSON can be entered in the UI and are encrypted before DS Shift stores them in PostgreSQL. Legacy `env:` references remain supported.
 
 Use `Validate` to test the platform API with its public SDK or API client. Use
 `Discover` to collect VM or instance inventory. Successful discovery
@@ -100,5 +103,9 @@ including how many of its three replicas are running.
 
 ## Settings
 
-The Settings page controls product name, company name, default timezone, data retention days, maintenance window, and an optional banner message.
-Admins also use Settings to view the local user list and add users. Passwords are stored as backend PBKDF2 hashes.
+The Settings page controls default timezone, data retention days, and an
+optional banner message. Product name and company name are shown as fixed
+identity values and are not editable there.
+
+Admins can also reset the dashboard counters baseline from Settings without
+deleting plans or inventory.

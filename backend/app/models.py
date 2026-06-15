@@ -53,6 +53,9 @@ class ConnectorProfile(TimestampMixin, Base):
     username: Mapped[str | None] = mapped_column(String(160), nullable=True)
     credential_reference: Mapped[str | None] = mapped_column(String(180), nullable=True)
     secret_json_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_network: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    target_datastore: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    target_vdc_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     environment: Mapped[str | None] = mapped_column(String(80), nullable=True)
     status: Mapped[str] = mapped_column(String(60), default="Not validated")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -62,13 +65,14 @@ class MigrationWave(TimestampMixin, Base):
     __tablename__ = "migration_waves"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey("migration_projects.id", ondelete="CASCADE"))
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("migration_projects.id", ondelete="CASCADE"), nullable=True)
     wave_name: Mapped[str] = mapped_column(String(160), index=True)
     planned_window: Mapped[str | None] = mapped_column(String(160), nullable=True)
     status: Mapped[str] = mapped_column(String(60), default="Planned")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    plan_ids_json: Mapped[str] = mapped_column(Text, default="[]")
 
-    project: Mapped[MigrationProject] = relationship(back_populates="waves")
+    project: Mapped[MigrationProject | None] = relationship(back_populates="waves")
     vms: Mapped[list["VmInventory"]] = relationship(back_populates="wave")
 
 
@@ -143,6 +147,7 @@ class AppSetting(TimestampMixin, Base):
     retention_days: Mapped[int] = mapped_column(Integer, default=365)
     maintenance_window: Mapped[str | None] = mapped_column(String(160), nullable=True)
     banner_message: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    dashboard_reset_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
 class DiscoveryRun(TimestampMixin, Base):

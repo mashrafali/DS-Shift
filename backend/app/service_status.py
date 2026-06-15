@@ -6,10 +6,10 @@ import httpx
 STATUS_MONITOR_URL = os.getenv("SERVICE_STATUS_MONITOR_URL", "http://service-status-monitor:8090")
 EXPECTED_SERVICES = [
     "backend",
-    "cloud-connector-engine",
+    "cloud-connector",
     "database",
     "frontend",
-    "host-connector-engine",
+    "host-connector",
     "reverse-proxy",
     "spark-engine",
 ]

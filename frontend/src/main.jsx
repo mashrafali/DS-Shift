@@ -40,9 +40,9 @@ function loadStoredToken() {
 
 const fallbackConnectorPlatforms = {
   host: [
-    { type: 'KVM', tool: 'Paramiko SSH and virsh', endpoint_hint: 'qemu+ssh://root@hostname/system', credential_hint: 'SSH key or GUI password', default_port: 22 },
-    { type: 'VMware ESXi / vCenter', tool: 'VMware pyVmomi', endpoint_hint: 'https://vcenter.example.com/sdk', credential_hint: 'GUI username and password', default_port: 443 },
-    { type: 'Nutanix AHV', tool: 'Nutanix Prism Central v3 REST API', endpoint_hint: 'https://prism-central.example.com:9440', credential_hint: 'GUI username and password', default_port: 9440 },
+    { type: 'KVM', tool: 'Paramiko SSH and virsh', endpoint_hint: 'Host IP or hostname', credential_hint: 'SSH key or GUI password', default_port: 22 },
+    { type: 'VMware ESXi / vCenter', tool: 'VMware pyVmomi', endpoint_hint: 'Host IP or hostname', credential_hint: 'GUI username and password', default_port: 443 },
+    { type: 'Nutanix AHV', tool: 'Nutanix Prism Central v3 REST API', endpoint_hint: 'Host IP or hostname', credential_hint: 'GUI username and password', default_port: 9440 },
   ],
   cloud: [
     { type: 'Amazon Web Services', tool: 'AWS SDK for Python (Boto3)', endpoint_hint: 'AWS region, for example us-east-1', credential_hint: 'GUI access key and secret key', default_port: '' },
@@ -59,6 +59,9 @@ const blankConnector = {
   endpoint: '',
   port: 22,
   username: '',
+  target_network: '',
+  target_datastore: '',
+  target_vdc_name: '',
   credential_reference: '',
   password: '',
   credential_payload: {
@@ -80,8 +83,15 @@ const blankSettings = {
   company_name: 'Defined Solutions',
   default_timezone: 'Asia/Riyadh',
   retention_days: 365,
-  maintenance_window: '',
   banner_message: '',
+};
+
+const blankWave = {
+  wave_name: '',
+  planned_window: '',
+  status: 'Planned',
+  notes: '',
+  plan_ids: [],
 };
 
 const blankUser = {
@@ -94,8 +104,8 @@ const blankUser = {
 
 const blankMigrationPlan = {
   name: '',
+  vm_ids: [],
   target_connector_id: '',
-  target_datastore: '',
   notes: '',
   execution_options: {
     source_zone: '',
@@ -136,6 +146,9 @@ function connectorPayload(form) {
     endpoint: form.endpoint || null,
     port: Number(form.port) || null,
     username: form.username || null,
+    target_network: form.target_network || null,
+    target_datastore: form.target_datastore || null,
+    target_vdc_name: form.target_vdc_name || null,
     credential_reference: form.credential_reference || null,
     environment: form.environment || null,
     notes: form.notes || null,
@@ -168,6 +181,8 @@ function App() {
   const [summary, setSummary] = useState(null);
   const [vms, setVms] = useState([]);
   const [waves, setWaves] = useState([]);
+  const [waveForm, setWaveForm] = useState(blankWave);
+  const [showWaveModal, setShowWaveModal] = useState(false);
   const [connectors, setConnectors] = useState([]);
   const [hosts, setHosts] = useState([]);
   const [connectorCatalog, setConnectorCatalog] = useState({ categories: fallbackConnectorPlatforms, engines: [] });
@@ -397,7 +412,14 @@ function App() {
 
   const saveSettings = async (event) => {
     event.preventDefault();
-    await api('/settings', { method: 'PUT', body: JSON.stringify({ ...settings, retention_days: Number(settings.retention_days) }) });
+    await api('/settings', { method: 'PUT', body: JSON.stringify({ default_timezone: settings.default_timezone, retention_days: Number(settings.retention_days), banner_message: settings.banner_message || null }) });
+    await load();
+  };
+
+  const resetDashboard = async () => {
+    if (user?.role !== 'admin') return;
+    if (!window.confirm('Reset the dashboard counters baseline? Existing plans and inventory remain, but the dashboard counters restart from zero.')) return;
+    await api('/settings/reset-dashboard', { method: 'POST' });
     await load();
   };
 
@@ -597,6 +619,7 @@ function App() {
         method: 'PUT',
         body: JSON.stringify({
           ...editPlanForm,
+          vm_ids: editPlanForm.vm_ids,
           target_connector_id: Number(editPlanForm.target_connector_id),
         }),
       });
@@ -610,6 +633,25 @@ function App() {
   const changeStatus = async (vm, status) => {
     await api(`/vms/${vm.id}/status`, { method: 'PATCH', body: JSON.stringify({ status, note: 'Updated from DS Shift dashboard' }) });
     await load();
+  };
+
+  const createWave = async (event) => {
+    event.preventDefault();
+    setError('');
+    try {
+      await api('/waves', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...waveForm,
+          plan_ids: waveForm.plan_ids,
+        }),
+      });
+      setWaveForm(blankWave);
+      setShowWaveModal(false);
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
   const csv = useMemo(() => {
@@ -680,12 +722,13 @@ function App() {
         {active === 'connectors' && <ConnectorWorkspace category={connectorCategory} setCategory={setConnectorCategory} catalog={connectorCatalog} connectors={connectors} form={connectorForm} setForm={setConnectorForm} save={saveConnector} editForm={editConnectorForm} setEditForm={setEditConnectorForm} saveEdit={saveConnectorEdit} discover={discoverConnector} validate={validateConnector} edit={editConnector} remove={deleteConnector} cancelEdit={cancelConnectorEdit} editingConnectorId={editingConnectorId} discoveringConnectorId={discoveringConnectorId} result={connectorResult} />}
         {active === 'hosts' && <HostsView hosts={hosts} connectors={connectors} />}
         {active === 'plans' && <MigrationPlans plans={migrationPlans} vms={vms} connectors={connectors} preflight={executeMigrationPlan} launch={launchMigrationPlan} remove={deleteMigrationPlan} executeTask={openPlanTask} editPlan={editMigrationPlan} executingPlanId={executingPlanId} launchingPlanId={launchingPlanId} selectedPlan={selectedPlan} setSelectedPlanId={setSelectedPlanId} taskPlan={taskPlan} closeTask={() => setTaskPlanId(null)} taskExecution={taskPlan ? planExecutions[taskPlan.id] : null} user={user} />}
-        {active === 'waves' && <Waves waves={waves} />}
+        {active === 'waves' && <Waves waves={waves} plans={migrationPlans} openCreate={() => { setWaveForm(blankWave); setShowWaveModal(true); }} />}
         {active === 'reports' && <Reports csv={csv} vms={vms} />}
         {active === 'users' && user?.role === 'admin' && <UsersView currentUser={user} users={users} form={userForm} setForm={setUserForm} save={saveUser} editForm={editUserForm} setEditForm={setEditUserForm} saveEdit={saveUserEdit} edit={editUser} remove={deleteUser} editingUserId={editingUserId} cancelEdit={cancelUserEdit} setError={setError} />}
-        {active === 'settings' && <SettingsView settings={settings} setSettings={setSettings} save={saveSettings} user={user} serviceStatus={serviceStatus} serviceStatusLoading={serviceStatusLoading} />}
+        {active === 'settings' && <SettingsView settings={settings} setSettings={setSettings} save={saveSettings} resetDashboard={resetDashboard} user={user} serviceStatus={serviceStatus} serviceStatusLoading={serviceStatusLoading} />}
         {showPlanModal && <MigrationPlanModal mode="create" title="Create executable migration plan" submitLabel="Save plan" selectedVmIds={selectedVmIds} vms={vms} connectors={connectors} form={migrationPlanForm} setForm={setMigrationPlanForm} save={createMigrationPlan} close={() => setShowPlanModal(false)} />}
         {editingPlan && <MigrationPlanModal mode="edit" title={`Edit migration plan: ${editingPlan.name}`} submitLabel="Save changes" selectedVmIds={parseJsonArray(editingPlan.vm_ids_json)} sourceConnectorIdOverride={editingPlan.source_connector_id} vms={vms} connectors={connectors} form={editPlanForm} setForm={setEditPlanForm} save={saveMigrationPlanEdit} close={cancelMigrationPlanEdit} />}
+        {showWaveModal && <WaveModal plans={migrationPlans} form={waveForm} setForm={setWaveForm} save={createWave} close={() => setShowWaveModal(false)} />}
       </main>
     </div>
   );
@@ -763,17 +806,23 @@ function Inventory({ vms, connectors, selectedVmIds, setSelectedVmIds, openPlan,
 }
 
 function MigrationPlanModal({ mode = 'create', title, submitLabel, selectedVmIds, sourceConnectorIdOverride = null, vms, connectors, form, setForm, save, close }) {
-  const selectedVms = vms.filter((vm) => selectedVmIds.includes(vm.id));
+  const effectiveVmIds = mode === 'edit' ? form.vm_ids : selectedVmIds;
+  const selectedVms = vms.filter((vm) => effectiveVmIds.includes(vm.id));
   const sourceConnectorId = sourceConnectorIdOverride || selectedVms[0]?.connector_id;
   const sourceConnector = connectors.find((row) => row.id === sourceConnectorId);
   const targetConnectors = connectors.filter((row) => row.id !== sourceConnectorId);
   const targetConnector = targetConnectors.find((row) => String(row.id) === String(form.target_connector_id)) || targetConnectors[0] || null;
+  const sourceConnectorVms = vms.filter((vm) => vm.connector_id === sourceConnectorId);
   const fieldConfig = migrationPlanFieldConfig(sourceConnector?.connector_type, targetConnector?.connector_type);
   useEffect(() => {
     if (!form.target_connector_id && targetConnectors[0]) {
       setForm((current) => ({ ...current, target_connector_id: String(targetConnectors[0].id) }));
     }
   }, [form.target_connector_id, targetConnectors, setForm]);
+  const toggleVm = (vmId) => {
+    const nextIds = form.vm_ids.includes(vmId) ? form.vm_ids.filter((id) => id !== vmId) : [...form.vm_ids, vmId];
+    setForm({ ...form, vm_ids: nextIds });
+  };
   const option = (key, value) => setForm({ ...form, execution_options: { ...form.execution_options, [key]: value } });
   const setLocation = (value) => setForm({
     ...form,
@@ -791,7 +840,7 @@ function MigrationPlanModal({ mode = 'create', title, submitLabel, selectedVmIds
       target_zone: value,
     },
   });
-  return <Modal title={title} onClose={close}><FormPanel title="" onSubmit={save}><div className="tip"><strong>Selected source:</strong> {sourceConnector?.name || 'Unknown'} · {selectedVmIds.length} VM{selectedVmIds.length === 1 ? '' : 's'}<br />Preflight validates source power state, tools, credentials, storage, and network without changing infrastructure. Admin-only Launch remains protected by the Spark live-execution switch and exact plan-name confirmation.</div><Input label="Plan name" value={form.name} onChange={(value) => setForm({ ...form, name: value })} required /><Select label="Target connector" value={form.target_connector_id} options={targetConnectors.map((connector) => [connector.id, `${connector.name} (${connector.connector_type})`])} onChange={(value) => setForm({ ...form, target_connector_id: value })} />{targetConnector && <div className="tip"><strong>Execution inputs for:</strong> {sourceConnector?.connector_type || 'Unknown source'} to {targetConnector.connector_type}<br />{fieldConfig.description}</div>}{Boolean(fieldConfig.fields.length) && <div className="execution-options">{fieldConfig.fields.map((field) => renderMigrationPlanField(field, form, setForm, option, setLocation, setTargetLocation))}</div>}{!fieldConfig.fields.length && targetConnector && <div className="tip">This migration path currently does not require extra plan-level execution inputs in the UI.</div>}<TextArea label="Notes" value={form.notes} onChange={(value) => setForm({ ...form, notes: value })} /><div className="button-row"><button className="primary" disabled={!targetConnectors.length}><Save size={16} /> {submitLabel}</button><button className="secondary" type="button" onClick={close}><X size={16} /> Cancel</button></div>{mode === 'edit' && <div className="tip">Edit updates the plan definition only. It is blocked while the plan is queued or running.</div>}</FormPanel></Modal>;
+  return <Modal title={title} onClose={close}><FormPanel title="" onSubmit={save}><div className="tip"><strong>Selected source:</strong> {sourceConnector?.name || 'Unknown'} · {effectiveVmIds.length} VM{effectiveVmIds.length === 1 ? '' : 's'}<br />Preflight validates source power state, tools, credentials, storage, and network without changing infrastructure. Admin-only Launch remains protected by the Spark live-execution switch and exact plan-name confirmation.</div><Input label="Plan name" value={form.name} onChange={(value) => setForm({ ...form, name: value })} required />{mode === 'edit' && <div className="table-wrap"><table><thead><tr><th></th><th>VM</th><th>Host</th><th>OS</th><th>Status</th></tr></thead><tbody>{sourceConnectorVms.map((vm) => <tr key={vm.id}><td><input type="checkbox" checked={form.vm_ids.includes(vm.id)} onChange={() => toggleVm(vm.id)} /></td><td>{vm.vm_name}</td><td>{vm.host_name || '-'}</td><td>{vm.os_type || 'Unknown'}</td><td><Badge value={vm.current_status} /></td></tr>)}</tbody></table></div>}<Select label="Target connector" value={form.target_connector_id} options={targetConnectors.map((connector) => [connector.id, `${connector.name} (${connector.connector_type})`])} onChange={(value) => setForm({ ...form, target_connector_id: value })} />{targetConnector && <div className="tip"><strong>Execution inputs for:</strong> {sourceConnector?.connector_type || 'Unknown source'} to {targetConnector.connector_type}<br />{fieldConfig.description}</div>}{Boolean(fieldConfig.fields.length) && <div className="execution-options">{fieldConfig.fields.map((field) => renderMigrationPlanField(field, form, setForm, option, setLocation, setTargetLocation))}</div>}{!fieldConfig.fields.length && targetConnector && <div className="tip">This migration path currently does not require extra plan-level execution inputs in the UI.</div>}<TextArea label="Notes" value={form.notes} onChange={(value) => setForm({ ...form, notes: value })} /><div className="button-row"><button className="primary" disabled={!targetConnectors.length || (mode === 'edit' && !form.vm_ids.length)}><Save size={16} /> {submitLabel}</button><button className="secondary" type="button" onClick={close}><X size={16} /> Cancel</button></div>{mode === 'edit' && <div className="tip">Edit can reassign VMs from the same source connector. It is blocked while the plan is queued or running.</div>}</FormPanel></Modal>;
 }
 
 function MigrationPlans({ plans, vms, connectors, preflight, launch, remove, executeTask, editPlan, executingPlanId, launchingPlanId, selectedPlan, setSelectedPlanId, taskPlan, closeTask, taskExecution, user }) {
@@ -805,7 +854,7 @@ function MigrationPlans({ plans, vms, connectors, preflight, launch, remove, exe
     return <tr key={plan.id}><td><strong>{plan.name}</strong></td><td>{source?.name || plan.source_connector_id} → {target?.name || plan.target_connector_id}</td><td>{vmCount}</td><td><Badge value={plan.status} /></td><td>{formatDateTime(plan.executed_at)}</td><td><div className="button-row compact"><button className="mini" onClick={() => setSelectedPlanId(plan.id)}><FileText size={14} /> Details</button><button className="mini" onClick={() => executeTask(plan)}><Gauge size={14} /> Task</button><button className="mini" disabled={active} onClick={() => editPlan(plan)}><Edit3 size={14} /> Edit</button><button className="mini" disabled={active || executingPlanId === plan.id} onClick={() => preflight(plan)}><CheckCircle2 size={14} /> {executingPlanId === plan.id ? 'Checking...' : 'Preflight'}</button>{user?.role === 'admin' && <button className="mini" disabled={active || launchingPlanId === plan.id} onClick={() => launch(plan)}><Play size={14} /> {launchingPlanId === plan.id ? 'Queueing...' : 'Launch'}</button>}<button className="mini danger-button" disabled={active} onClick={() => remove(plan)}><Trash2 size={14} /> Delete</button></div></td></tr>;
   })}</tbody></table></div>{selectedPlan && <Modal title={selectedPlan.name} onClose={() => setSelectedPlanId(null)} wide><div className="plan-detail"><dl className="host-facts"><div><dt>Status</dt><dd>{selectedPlan.status}</dd></div><div><dt>Migration type</dt><dd>{selectedPlan.migration_type}</dd></div><div><dt>VMs</dt><dd>{planVms.length}</dd></div><div><dt>Spark job</dt><dd>{selectedPlan.spark_job_id || '-'}</dd></div><div><dt>Executed</dt><dd>{formatDateTime(selectedPlan.executed_at)}</dd></div></dl><div className="table-wrap"><table><thead><tr><th>VM</th><th>Source</th><th>OS</th><th>Status</th><th>Execution result</th></tr></thead><tbody>{planVms.map((vm) => {
     const result = results.find((row) => row.vm_id === vm.id);
-    return <tr key={vm.id}><td>{vm.vm_name}</td><td>{vm.source_platform}</td><td>{vm.os_type || 'Unknown'}</td><td><Badge value={vm.current_status} /></td><td>{result?.message || 'Not executed'}</td></tr>;
+    return <tr key={vm.id}><td>{vm.vm_name}</td><td>{vm.source_platform}</td><td>{vm.os_type || 'Unknown'}</td><td><Badge value={planDetailStatus(result, selectedPlan.status, vm.current_status)} /></td><td>{result?.message || 'Not executed'}</td></tr>;
   })}</tbody></table></div></div></Modal>}{taskPlan && <MigrationTaskModal plan={taskPlan} execution={taskExecution} connectors={connectors} onClose={closeTask} />}</section>;
 }
 
@@ -816,7 +865,7 @@ function ConnectorWorkspace({ category, setCategory, catalog, connectors, ...pro
       const engine = (catalog.engines || []).find((item) => item.category === key);
       const count = connectors.filter((connector) => connector.connector_category === key).length;
       return <button className="connector-engine-card" key={key} onClick={() => { const platform = categories[key][0]; setCategory(key); props.setForm({ ...blankConnector, connector_category: key, connector_type: platform.type, port: platform.default_port ?? '' }); }}><span className="connector-engine-icon"><Icon size={28} /></span><span><strong>{title}</strong><small>{description}</small><small>{count} configured connector{count === 1 ? '' : 's'} · Engine: {engine?.status || 'unknown'}</small></span></button>;
-    })}</div><div className="about"><h2>Available connector engines</h2><p>Select Host Connectors or Cloud Connectors to list existing connectors, create a new connector, validate credentials, and discover workloads.</p></div></section>;
+    })}</div><div className="about"><h2>Available connectors</h2><p>Select Host Connectors or Cloud Connectors to list existing connectors, create a new connector, validate credentials, and discover workloads.</p></div></section>;
   }
   const platforms = categories[category] || [];
   return <section className="stack"><div className="connector-section-header"><button className="secondary" onClick={() => { setCategory(''); props.cancelEdit(); }}>All connector engines</button><div><h2>{category === 'host' ? 'Host Connectors' : 'Cloud Connectors'}</h2><p>{platforms.map((platform) => platform.type).join(' · ')}</p></div></div><Connectors title={category === 'host' ? 'Host Connector' : 'Cloud Connector'} category={category} rows={connectors.filter((connector) => connector.connector_category === category)} platforms={platforms} {...props} /></section>;
@@ -840,13 +889,13 @@ function ConnectorFields({ form, setForm, category, platforms }) {
       port: selectedPlatform?.default_port ?? '',
     });
   };
-  return <><Select label="Platform" value={scopedForm.connector_type} options={types} onChange={onPlatformChange} /><div className="tip"><strong>{platform?.tool}</strong><br />Endpoint: {platform?.endpoint_hint}<br />Credential: {platform?.credential_hint}</div><Input label="Connector name" value={scopedForm.name} onChange={(v) => update({ name: v })} required /><Input label={category === 'cloud' ? 'Region / Project / Subscription' : 'Endpoint / API URL'} value={scopedForm.endpoint} onChange={(v) => update({ endpoint: v })} />{platform?.default_port !== '' && <Input label="Port" type="number" value={scopedForm.port || ''} onChange={(v) => update({ port: v })} />}{renderConnectorCredentialFields(scopedForm, update, updateCredential)}<Input label="Environment" value={scopedForm.environment || ''} onChange={(v) => update({ environment: v })} /><TextArea label="Notes" value={scopedForm.notes || ''} onChange={(v) => update({ notes: v })} /></>;
+  return <><Select label="Platform" value={scopedForm.connector_type} options={types} onChange={onPlatformChange} /><div className="tip"><strong>{platform?.tool}</strong><br />Endpoint: {platform?.endpoint_hint}<br />Credential: {platform?.credential_hint}</div><Input label="Connector name" value={scopedForm.name} onChange={(v) => update({ name: v })} required /><Input label={category === 'cloud' ? 'Region / Project / Subscription' : 'Host IP / Hostname'} value={scopedForm.endpoint} onChange={(v) => update({ endpoint: v })} />{category === 'host' && scopedForm.connector_type === 'VMware ESXi / vCenter' && <div className="execution-options"><Input label="Target vDC Name" value={scopedForm.target_vdc_name || ''} onChange={(v) => update({ target_vdc_name: v })} /><Input label="Target Datastore" value={scopedForm.target_datastore || ''} onChange={(v) => update({ target_datastore: v })} /><Input label="Target Network" value={scopedForm.target_network || ''} onChange={(v) => update({ target_network: v })} /></div>}{renderConnectorCredentialFields(scopedForm, update, updateCredential)}<Input label="Environment" value={scopedForm.environment || ''} onChange={(v) => update({ environment: v })} /><TextArea label="Notes" value={scopedForm.notes || ''} onChange={(v) => update({ notes: v })} /></>;
 }
 
 function Connectors({ title, category, rows, form, setForm, save, editForm, setEditForm, saveEdit, platforms, discover, validate, edit, remove, cancelEdit, editingConnectorId, discoveringConnectorId, result }) {
   const isEditing = editingConnectorId && editForm.connector_category === category;
   const resultSuccess = ['Validated', 'Completed'].includes(result?.status);
-  return <section className="split"><FormPanel title={`Add ${title}`} onSubmit={save}><ConnectorFields form={form} setForm={setForm} category={category} platforms={platforms} /><div className="tip">New connectors are stored by DS Shift and executed by the dedicated {category === 'host' ? 'Host' : 'Cloud'} Connector Engine.</div><button className="primary"><Save size={16} /> Add connector</button></FormPanel><div className="stack">{result && result.connector?.connector_category === category && <div className={`result ${resultSuccess ? 'success' : result.status === 'Discovering' ? '' : 'danger'}`}><strong>{result.status}</strong><span>{result.message}</span>{Boolean(result.commands?.length) && <code>{result.commands.join(' | ')}</code>}</div>}<div className="table-wrap"><table><thead><tr><th>Name</th><th>Platform</th><th>Endpoint</th><th>Credentials</th><th>Status</th><th>Actions</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td>{row.name}</td><td>{row.connector_type}</td><td>{row.endpoint || '-'}</td><td>{connectorCredentialSummary(row)}</td><td><Badge value={row.status} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini" onClick={() => validate(row)}><CheckCircle2 size={14} /> Validate</button><button className="mini" disabled={discoveringConnectorId === row.id} onClick={() => discover(row)}><Search size={14} /> {discoveringConnectorId === row.id ? 'Discovering...' : 'Discover'}</button><button className="mini danger-button" onClick={() => remove(row)}><Trash2 size={14} /> Delete</button></div></td></tr>)}</tbody></table></div></div>{isEditing && <Modal title={`Edit ${title}`} onClose={cancelEdit}><FormPanel title="" onSubmit={saveEdit}><ConnectorFields form={editForm} setForm={setEditForm} category={category} platforms={platforms} /><div className="button-row"><button className="primary"><Save size={16} /> Save changes</button><button className="secondary" type="button" onClick={cancelEdit}><X size={16} /> Cancel</button></div></FormPanel></Modal>}</section>;
+  return <section className="split"><FormPanel title={`Add ${title}`} onSubmit={save}><ConnectorFields form={form} setForm={setForm} category={category} platforms={platforms} /><div className="tip">New connectors are stored by DS Shift and executed by the dedicated {category === 'host' ? 'Host' : 'Cloud'} Connector service.</div><button className="primary"><Save size={16} /> Add connector</button></FormPanel><div className="stack">{result && result.connector?.connector_category === category && <div className={`result ${resultSuccess ? 'success' : result.status === 'Discovering' ? '' : 'danger'}`}><strong>{result.status}</strong><span>{result.message}</span>{Boolean(result.commands?.length) && <code>{result.commands.join(' | ')}</code>}</div>}<div className="table-wrap"><table><thead><tr><th>Name</th><th>Platform</th><th>Endpoint</th><th>Credentials</th><th>Status</th><th>Actions</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td>{row.name}</td><td>{row.connector_type}</td><td>{row.endpoint || '-'}</td><td>{connectorCredentialSummary(row)}</td><td><Badge value={row.status} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini" onClick={() => validate(row)}><CheckCircle2 size={14} /> Validate</button><button className="mini" disabled={discoveringConnectorId === row.id} onClick={() => discover(row)}><Search size={14} /> {discoveringConnectorId === row.id ? 'Discovering...' : 'Discover'}</button><button className="mini danger-button" onClick={() => remove(row)}><Trash2 size={14} /> Delete</button></div></td></tr>)}</tbody></table></div></div>{isEditing && <Modal title={`Edit ${title}`} onClose={cancelEdit}><FormPanel title="" onSubmit={saveEdit}><ConnectorFields form={editForm} setForm={setEditForm} category={category} platforms={platforms} /><div className="button-row"><button className="primary"><Save size={16} /> Save changes</button><button className="secondary" type="button" onClick={cancelEdit}><X size={16} /> Cancel</button></div></FormPanel></Modal>}</section>;
 }
 
 function HostsView({ hosts, connectors }) {
@@ -860,8 +909,12 @@ function HostsView({ hosts, connectors }) {
   })}</tbody></table></div>{selectedHost && <Modal title={`${selectedHost.host_name} virtual machines`} onClose={() => setSelectedHost(null)} wide><div className="host-detail"><dl className="host-facts"><div><dt>Platform</dt><dd>{selectedHost.platform}</dd></div><div><dt>Connector</dt><dd>{selectedConnector?.name || `Connector ${selectedHost.connector_id}`}</dd></div><div><dt>Endpoint</dt><dd>{selectedHost.endpoint || '-'}</dd></div><div><dt>Capacity</dt><dd>{selectedHost.cpu} CPU / {selectedHost.memory_gb} GB</dd></div><div><dt>VMs</dt><dd>{selectedHost.vm_count}</dd></div><div><dt>Status</dt><dd>{selectedHost.status}</dd></div></dl><div className="table-wrap"><table><thead><tr><th>VM</th><th>OS</th><th>CPU</th><th>Memory</th><th>Disk</th><th>IP address</th><th>Power</th></tr></thead><tbody>{selectedVms.length ? selectedVms.map((vm, index) => <tr key={`${vm.vm_name}-${index}`}><td>{vm.vm_name}</td><td>{vm.os_type || 'Unknown'}</td><td>{vm.cpu || 0}</td><td>{vm.memory_gb || 0} GB</td><td>{vm.disk_gb || 0} GB</td><td>{vm.ip_address || '-'}</td><td><Badge value={vm.power_state || vm.current_status || 'Discovered'} /></td></tr>) : <tr><td colSpan="7">No VMs reported by this host.</td></tr>}</tbody></table></div></div></Modal>}</section>;
 }
 
-function Waves({ waves }) {
-  return <section><Table rows={waves} columns={['wave_name', 'project_id', 'planned_window', 'status', 'notes']} /></section>;
+function Waves({ waves, plans, openCreate }) {
+  return <section className="stack"><div className="inventory-actions"><div><strong>{waves.length} migration wave{waves.length === 1 ? '' : 's'}</strong><span>Group migration plans into execution waves.</span></div><button className="primary" onClick={openCreate}><Plus size={16} /> Create Wave</button></div><div className="table-wrap"><table><thead><tr><th>Wave</th><th>Plans</th><th>Window</th><th>Status</th><th>Notes</th></tr></thead><tbody>{waves.length ? waves.map((wave) => {
+    const planIds = parseJsonArray(wave.plan_ids_json);
+    const labels = planIds.map((id) => plans.find((plan) => plan.id === id)?.name || `Plan ${id}`);
+    return <tr key={wave.id}><td><strong>{wave.wave_name}</strong></td><td>{labels.length ? labels.join(', ') : '-'}</td><td>{wave.planned_window || '-'}</td><td><Badge value={wave.status} /></td><td>{wave.notes || '-'}</td></tr>;
+  }) : <tr><td colSpan="5">No migration waves have been created.</td></tr>}</tbody></table></div></section>;
 }
 
 function Reports({ csv, vms }) {
@@ -903,8 +956,8 @@ function UsersView({ currentUser, users, form, setForm, save, editForm, setEditF
   return <section className="split"><FormPanel title="Create user" onSubmit={save}><UserFields form={form} setForm={setForm} setError={setError} /><button className="primary"><Save size={16} /> Create user</button></FormPanel><div className="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>{users.map((row) => <tr key={row.id}><td><div className="user-table-identity"><UserAvatar user={row} /><div><strong>{row.username}</strong>{row.id === currentUser?.id && <span>Current user</span>}</div></div></td><td><Badge value={row.role} /></td><td><Badge value={row.is_active ? 'Active' : 'Inactive'} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini danger-button" disabled={row.id === currentUser?.id} onClick={() => remove(row)}><Trash2 size={14} /> Delete</button></div></td></tr>)}</tbody></table></div>{editingUserId && <Modal title="Edit user" onClose={cancelEdit}><FormPanel title="" onSubmit={saveEdit}><UserFields form={editForm} setForm={setEditForm} editingUserId={editingUserId} setError={setError} /><div className="button-row"><button className="primary"><Save size={16} /> Save changes</button><button className="secondary" type="button" onClick={cancelEdit}><X size={16} /> Cancel</button></div></FormPanel></Modal>}</section>;
 }
 
-function SettingsView({ settings, setSettings, save, user, serviceStatus, serviceStatusLoading }) {
-  return <section className="split"><FormPanel title="Application settings" onSubmit={save}><Input label="Product name" value={settings.product_name || ''} onChange={(v) => setSettings({ ...settings, product_name: v })} /><Input label="Company name" value={settings.company_name || ''} onChange={(v) => setSettings({ ...settings, company_name: v })} /><Input label="Default timezone" value={settings.default_timezone || ''} onChange={(v) => setSettings({ ...settings, default_timezone: v })} /><Input label="Retention days" type="number" value={settings.retention_days || 365} onChange={(v) => setSettings({ ...settings, retention_days: v })} /><Input label="Maintenance window" value={settings.maintenance_window || ''} onChange={(v) => setSettings({ ...settings, maintenance_window: v })} /><TextArea label="Banner message" value={settings.banner_message || ''} onChange={(v) => setSettings({ ...settings, banner_message: v })} /><button className="primary"><Save size={16} /> Save settings</button></FormPanel><div className="stack"><ServiceStatusPanel data={serviceStatus} loading={serviceStatusLoading} /><div className="about"><h2>Local authentication</h2><dl><dt>Signed in user</dt><dd>{user?.username}</dd><dt>Role</dt><dd>{user?.role}</dd><dt>User management</dt><dd>Administrators manage accounts and profile photos from the dedicated Users page.</dd></dl></div></div></section>;
+function SettingsView({ settings, setSettings, save, resetDashboard, user, serviceStatus, serviceStatusLoading }) {
+  return <section className="split"><FormPanel title="Application settings" onSubmit={save}><Input label="Product name" value={settings.product_name || ''} onChange={() => {}} readOnly disabled /><Input label="Company name" value={settings.company_name || ''} onChange={() => {}} readOnly disabled /><Input label="Default timezone" value={settings.default_timezone || ''} onChange={(v) => setSettings({ ...settings, default_timezone: v })} /><Input label="Retention days" type="number" value={settings.retention_days || 365} onChange={(v) => setSettings({ ...settings, retention_days: v })} /><TextArea label="Banner message" value={settings.banner_message || ''} onChange={(v) => setSettings({ ...settings, banner_message: v })} /><div className="tip">Product name and company name are fixed system identity values and are not editable from Settings.</div><div className="button-row"><button className="primary"><Save size={16} /> Save settings</button>{user?.role === 'admin' && <button className="secondary" type="button" onClick={resetDashboard}><RefreshCw size={16} /> Reset dashboard counters</button>}</div></FormPanel><div className="stack"><ServiceStatusPanel data={serviceStatus} loading={serviceStatusLoading} /></div></section>;
 }
 
 function ServiceStatusPanel({ data, loading }) {
@@ -963,8 +1016,16 @@ function MigrationTaskModal({ plan, execution, connectors, onClose }) {
   return <Modal title={`Task: ${plan.name}`} onClose={onClose} wide><div className="plan-detail"><dl className="host-facts"><div><dt>Status</dt><dd>{plan.status}</dd></div><div><dt>Migration</dt><dd>{source?.name || plan.source_connector_id} → {target?.name || plan.target_connector_id}</dd></div><div><dt>Spark job</dt><dd>{plan.spark_job_id || '-'}</dd></div><div><dt>Progress</dt><dd>{progressPercent}%</dd></div><div><dt>Executed</dt><dd>{formatDateTime(plan.executed_at)}</dd></div></dl><div className="task-summary"><div className="task-progress"><div className="task-progress-bar"><span style={{ width: `${progressPercent}%` }} /></div><strong>{progressPercent}%</strong></div><p>{summaryMessage}</p></div>{!plan.spark_job_id && <div className="about"><h2>Not executed yet</h2><p>This migration plan has not been sent to the Spark Engine. Run Preflight or Launch first to generate task telemetry.</p></div>}{Boolean(taskRows.length) && <div className="table-wrap"><table><thead><tr><th>Task</th><th>Status</th><th>Progress</th><th>Detail</th><th>Updated</th></tr></thead><tbody>{taskRows.map((task, index) => <tr key={`${task.task_code || 'task'}-${index}`}><td>{task.task_name || task.task_code || 'Task'}</td><td><Badge value={task.status || 'Running'} /></td><td>{normalizeProgress(task.progress_percent)}%</td><td>{task.message || '-'}</td><td>{formatDateTime(task.updated_at)}</td></tr>)}</tbody></table></div>}{plan.spark_job_id && !taskRows.length && <div className="about"><h2>Task stream pending</h2><p>The Spark Engine job exists, but it has not published task entries yet. Refresh after a few seconds if this persists.</p></div>}{Boolean(vmResults.length) && <div className="table-wrap"><table><thead><tr><th>VM ID</th><th>Status</th><th>Detail</th></tr></thead><tbody>{vmResults.map((row, index) => <tr key={`${row.vm_id || 'result'}-${index}`}><td>{row.vm_id || '-'}</td><td><Badge value={row.ok ? 'Succeeded' : 'Failed'} /></td><td>{row.message || '-'}</td></tr>)}</tbody></table></div>}</div></Modal>;
 }
 
-function Input({ label, value, onChange, type = 'text', required = false, placeholder = '', autoComplete = 'off' }) {
-  return <label>{label}<input type={type} value={value ?? ''} required={required} placeholder={placeholder} autoComplete={autoComplete} onChange={(e) => onChange(e.target.value)} /></label>;
+function WaveModal({ plans, form, setForm, save, close }) {
+  const togglePlan = (planId) => {
+    const next = form.plan_ids.includes(planId) ? form.plan_ids.filter((id) => id !== planId) : [...form.plan_ids, planId];
+    setForm({ ...form, plan_ids: next });
+  };
+  return <Modal title="Create migration wave" onClose={close}><FormPanel title="" onSubmit={save}><Input label="Wave name" value={form.wave_name} onChange={(value) => setForm({ ...form, wave_name: value })} required /><Input label="Planned window" value={form.planned_window} onChange={(value) => setForm({ ...form, planned_window: value })} /><div className="table-wrap"><table><thead><tr><th></th><th>Plan</th><th>Migration</th><th>Status</th></tr></thead><tbody>{plans.map((plan) => <tr key={plan.id}><td><input type="checkbox" checked={form.plan_ids.includes(plan.id)} onChange={() => togglePlan(plan.id)} /></td><td>{plan.name}</td><td>{plan.migration_type}</td><td><Badge value={plan.status} /></td></tr>)}</tbody></table></div><TextArea label="Notes" value={form.notes} onChange={(value) => setForm({ ...form, notes: value })} /><div className="button-row"><button className="primary"><Save size={16} /> Create wave</button><button className="secondary" type="button" onClick={close}><X size={16} /> Cancel</button></div></FormPanel></Modal>;
+}
+
+function Input({ label, value, onChange, type = 'text', required = false, placeholder = '', autoComplete = 'off', disabled = false, readOnly = false }) {
+  return <label>{label}<input type={type} value={value ?? ''} required={required} placeholder={placeholder} autoComplete={autoComplete} disabled={disabled} readOnly={readOnly} onChange={(e) => onChange(e.target.value)} /></label>;
 }
 
 function PasswordInput({ label, value, onChange, required = false, placeholder = '' }) {
@@ -1031,6 +1092,11 @@ function connectorCredentialSummary(connector) {
   return 'Not set';
 }
 
+function planDetailStatus(result, planStatus, fallbackStatus) {
+  if (result) return result.ok ? planStatus : 'Failed';
+  return fallbackStatus || planStatus;
+}
+
 function renderConnectorCredentialFields(form, update, updateCredential) {
   if (form.connector_category === 'host') {
     return <div className="credential-grid"><Input label="Username" value={form.username || ''} onChange={(v) => update({ username: v })} /><PasswordInput label="Password" value={form.password || ''} onChange={(v) => update({ password: v })} placeholder={form.has_stored_secret ? 'Leave blank to keep the stored password' : 'Optional for SSH key-based access'} />{form.has_stored_secret && <div className="tip credential-tip">A credential is already stored for this connector. Enter a new password only if you want to replace it.</div>}</div>;
@@ -1066,13 +1132,8 @@ function migrationPlanFieldConfig(sourceType, targetType) {
   const target = targetType || '';
   if (source === 'KVM' && target === 'VMware ESXi / vCenter') {
     return {
-      description: 'Provide the target vCenter placement and network details needed for OVA import.',
-      fields: [
-        { key: 'target_datastore', label: 'Target datastore' },
-        { key: 'target_network', label: 'Target network' },
-        { key: 'target_resource_pool', label: 'Target vCenter resource pool' },
-        { key: 'target_folder', label: 'Target vCenter folder' },
-      ],
+      description: 'Target network, datastore, and vDC details are now owned by the target connector and will be validated during connector validation and plan preflight.',
+      fields: [],
     };
   }
   if (source === 'VMware ESXi / vCenter' && target === 'KVM') {
@@ -1132,8 +1193,8 @@ function migrationPlanFieldConfig(sourceType, targetType) {
 function planToForm(plan) {
   return {
     name: plan.name || '',
+    vm_ids: parseJsonArray(plan.vm_ids_json),
     target_connector_id: String(plan.target_connector_id || ''),
-    target_datastore: plan.target_datastore || '',
     notes: plan.notes || '',
     execution_options: {
       ...blankMigrationPlan.execution_options,

@@ -132,6 +132,9 @@ class Connector(BaseModel):
     endpoint: str | None = None
     port: int | None = None
     username: str | None = None
+    target_network: str | None = None
+    target_datastore: str | None = None
+    target_vdc_name: str | None = None
     credential_reference: str | None = None
     credential_payload: dict = Field(default_factory=dict)
 

@@ -6,28 +6,28 @@ import httpx
 
 from . import models
 
-HOST_ENGINE_URL = os.getenv("HOST_CONNECTOR_ENGINE_URL", "http://host-connector-engine:8101")
-CLOUD_ENGINE_URL = os.getenv("CLOUD_CONNECTOR_ENGINE_URL", "http://cloud-connector-engine:8102")
+HOST_ENGINE_URL = os.getenv("HOST_CONNECTOR_ENGINE_URL", "http://host-connector:8101")
+CLOUD_ENGINE_URL = os.getenv("CLOUD_CONNECTOR_ENGINE_URL", "http://cloud-connector:8102")
 
 CONNECTOR_PLATFORMS = {
     "host": [
         {
             "type": "KVM",
             "tool": "Paramiko SSH and virsh",
-            "endpoint_hint": "qemu+ssh://root@hostname/system",
-            "credential_hint": "ssh-key:container or env:KVM_PASSWORD",
+            "endpoint_hint": "Host IP or hostname",
+            "credential_hint": "SSH key or GUI password",
         },
         {
             "type": "VMware ESXi / vCenter",
             "tool": "VMware pyVmomi",
-            "endpoint_hint": "https://vcenter.example.com/sdk",
-            "credential_hint": "env:VCENTER_PASSWORD",
+            "endpoint_hint": "Host IP or hostname",
+            "credential_hint": "GUI username and password",
         },
         {
             "type": "Nutanix AHV",
             "tool": "Nutanix Prism Central v3 REST API",
-            "endpoint_hint": "https://prism-central.example.com:9440",
-            "credential_hint": "env:NUTANIX_PASSWORD",
+            "endpoint_hint": "Host IP or hostname",
+            "credential_hint": "GUI username and password",
         },
     ],
     "cloud": [
@@ -76,6 +76,9 @@ def connector_payload(connector: models.ConnectorProfile, credential_payload: di
         "endpoint": connector.endpoint,
         "port": connector.port,
         "username": connector.username,
+        "target_network": connector.target_network,
+        "target_datastore": connector.target_datastore,
+        "target_vdc_name": connector.target_vdc_name,
         "credential_reference": connector.credential_reference,
         "environment": connector.environment,
     }
@@ -99,8 +102,8 @@ def call_connector_engine(connector: models.ConnectorProfile, operation: str, *,
 
 def connector_engine_status() -> list[dict]:
     engines = [
-        ("host", "Host Connector Engine", HOST_ENGINE_URL),
-        ("cloud", "Cloud Connector Engine", CLOUD_ENGINE_URL),
+        ("host", "Host Connector", HOST_ENGINE_URL),
+        ("cloud", "Cloud Connector", CLOUD_ENGINE_URL),
     ]
     statuses = []
     with httpx.Client(timeout=5) as client:

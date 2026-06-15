@@ -11,7 +11,7 @@ from google.oauth2 import service_account
 
 from common import ConnectorRequest, EngineResponse, EngineResult, credential_json
 
-app = FastAPI(title="DS Shift Cloud Connector Engine", version="1.0")
+app = FastAPI(title="DS Shift Cloud Connector", version="1.0")
 
 PLATFORMS = [
     {"type": "Amazon Web Services", "tool": "AWS SDK for Python (Boto3)", "discovery": True},
@@ -27,7 +27,7 @@ ALIASES = {
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "engine": "Cloud Connector Engine", "platforms": len(PLATFORMS)}
+    return {"status": "ok", "engine": "Cloud Connector", "platforms": len(PLATFORMS)}
 
 
 @app.get("/platforms")

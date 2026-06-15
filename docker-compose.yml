@@ -31,16 +31,16 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       KVM_PASSWORD: ${KVM_PASSWORD:-}
       VCENTER_PASSWORD: ${VCENTER_PASSWORD:-}
-      HOST_CONNECTOR_ENGINE_URL: http://host-connector-engine:8101
-      CLOUD_CONNECTOR_ENGINE_URL: http://cloud-connector-engine:8102
+      HOST_CONNECTOR_ENGINE_URL: http://host-connector:8101
+      CLOUD_CONNECTOR_ENGINE_URL: http://cloud-connector:8102
       SPARK_ENGINE_URL: http://spark-engine:8200
       SERVICE_STATUS_MONITOR_URL: http://service-status-monitor:8090
     depends_on:
       database:
         condition: service_healthy
-      host-connector-engine:
+      host-connector:
         condition: service_healthy
-      cloud-connector-engine:
+      cloud-connector:
         condition: service_healthy
       spark-engine:
         condition: service_healthy
@@ -80,8 +80,8 @@ services:
     networks:
       - ds_shift
 
-  host-connector-engine:
-    image: ds-shift-host-connector-engine:latest
+  host-connector:
+    image: ds-shift-host-connector:latest
     build:
       context: ./connector-engines
       dockerfile: Dockerfile.host
@@ -102,8 +102,8 @@ services:
     networks:
       - ds_shift
 
-  cloud-connector-engine:
-    image: ds-shift-cloud-connector-engine:latest
+  cloud-connector:
+    image: ds-shift-cloud-connector:latest
     build:
       context: ./connector-engines
       dockerfile: Dockerfile.cloud

@@ -61,8 +61,8 @@ Default MVP login:
 - `database`
 - `reverse-proxy`
 - `edge-gateway` (single host-port binding in front of the proxy pool)
-- `host-connector-engine`
-- `cloud-connector-engine`
+- `host-connector`
+- `cloud-connector`
 - `spark-engine` (three replicas)
 - `service-status-monitor`
 
@@ -88,8 +88,8 @@ The seeded lab admin is `admin` with the configured `ADMIN_INITIAL_PASSWORD`.
 
 ## Discovery and Migration Engine
 
-- The Host Connector Engine supports KVM through Paramiko/`virsh`, VMware through pyVmomi, and Nutanix AHV through the Prism Central v3 API.
-- The Cloud Connector Engine supports AWS EC2 through Boto3, Google Compute Engine through the Google Cloud SDK, and Azure VMs through Azure Identity and Compute Management SDKs.
+- The Host Connector supports KVM through Paramiko/`virsh`, VMware through pyVmomi, and Nutanix AHV through the Prism Central v3 API.
+- The Cloud Connector supports AWS EC2 through Boto3, Google Compute Engine through the Google Cloud SDK, and Azure VMs through Azure Identity and Compute Management SDKs.
 - Connector metadata and discovery history remain in the main backend; validation and discovery execute in the isolated engine containers.
 - Spark Engine has executable adapters for AWS-to-AWS within one account,
   GCP-to-GCP using machine images, Azure-to-Azure within one subscription, and

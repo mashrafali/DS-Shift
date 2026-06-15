@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+from urllib.parse import urlparse
 
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
@@ -152,6 +153,9 @@ def connector_public(connector: models.ConnectorProfile) -> schemas.Connector:
         endpoint=connector.endpoint,
         port=connector.port,
         username=connector.username,
+        target_network=connector.target_network,
+        target_datastore=connector.target_datastore,
+        target_vdc_name=connector.target_vdc_name,
         credential_reference=connector.credential_reference,
         has_stored_secret=bool(connector.secret_json_encrypted),
         environment=connector.environment,
@@ -192,6 +196,135 @@ def seed_defaults(db: Session) -> None:
     db.commit()
 
 
+def parsed_json_object(value: str | None) -> dict:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def raw_dashboard_summary(db: Session) -> schemas.DashboardSummary:
+    plans = db.query(models.MigrationPlan).count()
+    vms = db.query(models.VmInventory).all()
+    status_counts = Counter(vm.current_status for vm in vms)
+    migrated = status_counts["Validation completed"] + status_counts["Cutover completed"]
+    failed = status_counts["Failed"] + status_counts["Rolled back"] + status_counts["Blocked"]
+    planned = sum(status_counts[s] for s in ["Assessed", "Ready for migration", "Replication prepared", "Cutover scheduled"])
+    progress = int((migrated / len(vms)) * 100) if vms else 0
+    return schemas.DashboardSummary(
+        total_plans=plans,
+        vms_discovered=len(vms),
+        vms_planned=planned,
+        vms_migrated=migrated,
+        vms_failed_or_blocked=failed,
+        progress_percent=progress,
+        by_status=dict(status_counts),
+    )
+
+
+def apply_dashboard_reset(summary: schemas.DashboardSummary, baseline: dict) -> schemas.DashboardSummary:
+    baseline_status = baseline.get("by_status") if isinstance(baseline.get("by_status"), dict) else {}
+    by_status = {
+        key: max(0, value - int(baseline_status.get(key, 0) or 0))
+        for key, value in summary.by_status.items()
+        if max(0, value - int(baseline_status.get(key, 0) or 0)) > 0
+    }
+    discovered = max(0, summary.vms_discovered - int(baseline.get("vms_discovered", 0) or 0))
+    migrated = max(0, summary.vms_migrated - int(baseline.get("vms_migrated", 0) or 0))
+    planned = max(0, summary.vms_planned - int(baseline.get("vms_planned", 0) or 0))
+    failed = max(0, summary.vms_failed_or_blocked - int(baseline.get("vms_failed_or_blocked", 0) or 0))
+    progress = int((migrated / discovered) * 100) if discovered else 0
+    return schemas.DashboardSummary(
+        total_plans=max(0, summary.total_plans - int(baseline.get("total_plans", 0) or 0)),
+        vms_discovered=discovered,
+        vms_planned=planned,
+        vms_migrated=migrated,
+        vms_failed_or_blocked=failed,
+        progress_percent=progress,
+        by_status=by_status,
+    )
+
+
+def normalize_host_value(raw: str | None) -> str | None:
+    value = (raw or "").strip()
+    if not value:
+        return None
+    if "://" in value:
+        parsed = urlparse(value)
+        return parsed.hostname or value
+    host_port = value.split("/", 1)[0]
+    if "@" in host_port:
+        host_port = host_port.split("@", 1)[1]
+    if ":" in host_port and host_port.rsplit(":", 1)[1].isdigit():
+        host_port = host_port.rsplit(":", 1)[0]
+    return host_port or None
+
+
+def normalize_connector_payload(payload: schemas.ConnectorCreate, connector_type: str) -> dict:
+    endpoint = payload.endpoint.strip() if payload.endpoint else ""
+    normalized = payload.model_dump(exclude={"password", "credential_payload"})
+    if payload.connector_category != "host":
+        normalized["endpoint"] = endpoint or None
+        normalized["port"] = payload.port
+        return normalized
+    host = normalize_host_value(endpoint)
+    if not host:
+        raise HTTPException(400, "Host IP or hostname is required")
+    username = (payload.username or "").strip() or None
+    if connector_type == "KVM":
+        user = username or "root"
+        normalized["endpoint"] = f"qemu+ssh://{user}@{host}/system"
+        normalized["port"] = 22
+        normalized["username"] = user
+    elif connector_type in {"VMware ESXi / vCenter", "VMware ESXi", "vCenter"}:
+        normalized["endpoint"] = f"https://{host}/sdk"
+        normalized["port"] = 443
+    elif connector_type == "Nutanix AHV":
+        normalized["endpoint"] = f"https://{host}:9440"
+        normalized["port"] = 9440
+    else:
+        normalized["endpoint"] = host
+    return normalized
+
+
+def resolve_connector_defaults(connector: models.ConnectorProfile) -> dict:
+    defaults = {}
+    if connector.target_datastore:
+        defaults["target_datastore"] = connector.target_datastore
+    if connector.target_network:
+        defaults["target_network"] = connector.target_network
+    if connector.target_vdc_name:
+        defaults["target_vdc_name"] = connector.target_vdc_name
+        defaults["target_datacenter"] = connector.target_vdc_name
+    return defaults
+
+
+def compact_execution_options(options: dict | None) -> dict:
+    if not isinstance(options, dict):
+        return {}
+    return {
+        key: value
+        for key, value in options.items()
+        if value not in (None, "", [], {})
+    }
+
+
+def validate_plan_vm_selection(vm_ids: list[int], db: Session) -> tuple[list[models.VmInventory], int]:
+    normalized_ids = sorted(set(vm_ids))
+    if not normalized_ids:
+        raise HTTPException(400, "Select at least one VM")
+    vms = db.query(models.VmInventory).filter(models.VmInventory.id.in_(normalized_ids)).all()
+    if len(vms) != len(normalized_ids):
+        raise HTTPException(404, "One or more selected VMs were not found")
+    source_ids = {vm.connector_id for vm in vms}
+    if None in source_ids or len(source_ids) != 1:
+        raise HTTPException(400, "All selected VMs must come from the same discovered source connector")
+    return vms, int(source_ids.pop())
+
+
 def current_user(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> models.LocalUser:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "Authentication required")
@@ -224,10 +357,16 @@ def startup() -> None:
         connection.execute(text("ALTER TABLE vm_inventory ADD COLUMN IF NOT EXISTS host_name VARCHAR(255)"))
         connection.execute(text("ALTER TABLE vm_inventory ADD COLUMN IF NOT EXISTS details_json TEXT NOT NULL DEFAULT '{}'"))
         connection.execute(text("ALTER TABLE connector_profiles ADD COLUMN IF NOT EXISTS secret_json_encrypted TEXT"))
+        connection.execute(text("ALTER TABLE connector_profiles ADD COLUMN IF NOT EXISTS target_network VARCHAR(160)"))
+        connection.execute(text("ALTER TABLE connector_profiles ADD COLUMN IF NOT EXISTS target_datastore VARCHAR(160)"))
+        connection.execute(text("ALTER TABLE connector_profiles ADD COLUMN IF NOT EXISTS target_vdc_name VARCHAR(160)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_vm_inventory_external_id ON vm_inventory (external_id)"))
         connection.execute(text("ALTER TABLE migration_plans ADD COLUMN IF NOT EXISTS execution_options_json TEXT NOT NULL DEFAULT '{}'"))
         connection.execute(text("ALTER TABLE migration_plans ADD COLUMN IF NOT EXISTS spark_job_id INTEGER"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_migration_plans_spark_job_id ON migration_plans (spark_job_id)"))
+        connection.execute(text("ALTER TABLE migration_waves ALTER COLUMN project_id DROP NOT NULL"))
+        connection.execute(text("ALTER TABLE migration_waves ADD COLUMN IF NOT EXISTS plan_ids_json TEXT NOT NULL DEFAULT '[]'"))
+        connection.execute(text("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS dashboard_reset_json TEXT NOT NULL DEFAULT '{}'"))
         with Session(bind=connection) as db:
             seed_defaults(db)
 
@@ -350,22 +489,10 @@ def delete_user(user_id: int, db: Session = Depends(get_db), admin: models.Local
 
 @app.get("/api/dashboard", response_model=schemas.DashboardSummary)
 def dashboard(db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
-    plans = db.query(models.MigrationPlan).count()
-    vms = db.query(models.VmInventory).all()
-    status_counts = Counter(vm.current_status for vm in vms)
-    migrated = status_counts["Validation completed"] + status_counts["Cutover completed"]
-    failed = status_counts["Failed"] + status_counts["Rolled back"] + status_counts["Blocked"]
-    planned = sum(status_counts[s] for s in ["Assessed", "Ready for migration", "Replication prepared", "Cutover scheduled"])
-    progress = int((migrated / len(vms)) * 100) if vms else 0
-    return schemas.DashboardSummary(
-        total_plans=plans,
-        vms_discovered=len(vms),
-        vms_planned=planned,
-        vms_migrated=migrated,
-        vms_failed_or_blocked=failed,
-        progress_percent=progress,
-        by_status=dict(status_counts),
-    )
+    summary = raw_dashboard_summary(db)
+    settings_row = db.query(models.AppSetting).first()
+    baseline = parsed_json_object(settings_row.dashboard_reset_json) if settings_row else {}
+    return apply_dashboard_reset(summary, baseline)
 
 
 @app.get("/api/projects", response_model=list[schemas.Project])
@@ -445,9 +572,10 @@ def create_connector(payload: schemas.ConnectorCreate, db: Session = Depends(get
         connector_type = validate_connector_platform(payload.connector_category, payload.connector_type)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    values = normalize_connector_payload(payload, connector_type)
     connector = models.ConnectorProfile(
         **{
-            **payload.model_dump(exclude={"password", "credential_payload"}),
+            **values,
             "connector_type": connector_type,
             "status": "Not validated",
             "secret_json_encrypted": encrypt_connector_secret(connector_secret_input(payload)),
@@ -468,7 +596,8 @@ def update_connector(connector_id: int, payload: schemas.ConnectorCreate, db: Se
         connector_type = validate_connector_platform(payload.connector_category, payload.connector_type)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    for key, value in {**payload.model_dump(exclude={"password", "credential_payload"}), "connector_type": connector_type, "status": "Not validated"}.items():
+    values = normalize_connector_payload(payload, connector_type)
+    for key, value in {**values, "connector_type": connector_type, "status": "Not validated"}.items():
         setattr(connector, key, value)
     replacement_secret = connector_secret_input(payload)
     if replacement_secret:
@@ -517,7 +646,7 @@ def validate_connector(connector_id: int, db: Session = Depends(get_db), _user: 
         status = connector.status
     except Exception as exc:
         connector.status = "Validation failed"
-        message = f"{connector.connector_category.title()} Connector Engine unavailable or failed: {exc}"
+        message = f"{connector.connector_category.title()} Connector unavailable or failed: {exc}"
         commands = []
         status = connector.status
     db.commit()
@@ -564,7 +693,7 @@ def discover_connector(connector_id: int, payload: schemas.DiscoveryRequest, db:
         run = models.DiscoveryRun(
             connector_id=connector.id,
             status="Failed",
-            message=f"{connector.connector_category.title()} Connector Engine unavailable or failed: {exc}",
+            message=f"{connector.connector_category.title()} Connector unavailable or failed: {exc}",
             records_json="[]",
             commands_json="[]",
         )
@@ -748,8 +877,30 @@ def list_waves(db: Session = Depends(get_db), _user: models.LocalUser = Depends(
 
 @app.post("/api/waves", response_model=schemas.Wave, status_code=201)
 def create_wave(payload: schemas.WaveCreate, db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
-    wave = models.MigrationWave(**payload.model_dump())
+    normalized_plan_ids = sorted(set(payload.plan_ids))
+    if normalized_plan_ids:
+        plans = db.query(models.MigrationPlan).filter(models.MigrationPlan.id.in_(normalized_plan_ids)).all()
+        if len(plans) != len(normalized_plan_ids):
+            raise HTTPException(404, "One or more migration plans were not found")
+    else:
+        plans = []
+    wave = models.MigrationWave(
+        project_id=payload.project_id,
+        wave_name=payload.wave_name,
+        planned_window=payload.planned_window,
+        status=payload.status,
+        notes=payload.notes,
+        plan_ids_json=json.dumps(normalized_plan_ids),
+    )
     db.add(wave)
+    db.flush()
+    if plans:
+        vm_ids = sorted({vm_id for plan in plans for vm_id in json.loads(plan.vm_ids_json or "[]")})
+        if vm_ids:
+            plan_vms = db.query(models.VmInventory).filter(models.VmInventory.id.in_(vm_ids)).all()
+            for vm in plan_vms:
+                vm.wave_id = wave.id
+                vm.migration_wave = wave.wave_name
     db.commit()
     db.refresh(wave)
     return wave
@@ -831,7 +982,7 @@ def service_status(_user: models.LocalUser = Depends(current_user)):
 
 
 @app.put("/api/settings", response_model=schemas.AppSettings)
-def update_settings(payload: schemas.SettingsBase, db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
+def update_settings(payload: schemas.SettingsUpdate, db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
     settings_row = db.query(models.AppSetting).first()
     if not settings_row:
         settings_row = models.AppSetting()
@@ -841,6 +992,19 @@ def update_settings(payload: schemas.SettingsBase, db: Session = Depends(get_db)
     db.commit()
     db.refresh(settings_row)
     return settings_row
+
+
+@app.post("/api/settings/reset-dashboard", response_model=schemas.DashboardSummary)
+def reset_dashboard_metrics(db: Session = Depends(get_db), _admin: models.LocalUser = Depends(admin_user)):
+    settings_row = db.query(models.AppSetting).first()
+    if not settings_row:
+        settings_row = models.AppSetting()
+        db.add(settings_row)
+        db.flush()
+    summary = raw_dashboard_summary(db)
+    settings_row.dashboard_reset_json = json.dumps(summary.model_dump())
+    db.commit()
+    return apply_dashboard_reset(summary, parsed_json_object(settings_row.dashboard_reset_json))
 
 
 @app.get("/api/discovery-runs", response_model=list[schemas.DiscoveryRun])
@@ -863,17 +1027,9 @@ def create_migration_plan(payload: schemas.MigrationPlanCreate, db: Session = De
     name = payload.name.strip()
     if not name:
         raise HTTPException(400, "Migration plan name is required")
-    if not payload.vm_ids:
-        raise HTTPException(400, "Select at least one VM")
     if db.query(models.MigrationPlan).filter(models.MigrationPlan.name == name).first():
         raise HTTPException(409, "Migration plan name already exists")
-    vms = db.query(models.VmInventory).filter(models.VmInventory.id.in_(set(payload.vm_ids))).all()
-    if len(vms) != len(set(payload.vm_ids)):
-        raise HTTPException(404, "One or more selected VMs were not found")
-    source_ids = {vm.connector_id for vm in vms}
-    if None in source_ids or len(source_ids) != 1:
-        raise HTTPException(400, "All selected VMs must come from the same discovered source connector")
-    source_connector_id = source_ids.pop()
+    vms, source_connector_id = validate_plan_vm_selection(payload.vm_ids, db)
     if source_connector_id == payload.target_connector_id:
         raise HTTPException(400, "Source and target connectors must be different")
     source = db.get(models.ConnectorProfile, source_connector_id)
@@ -886,9 +1042,8 @@ def create_migration_plan(payload: schemas.MigrationPlanCreate, db: Session = De
         target_connector_id=target.id,
         migration_type=f"{source.connector_type} to {target.connector_type}",
         vm_ids_json=json.dumps(sorted(set(payload.vm_ids))),
-        target_datastore=payload.target_datastore,
         notes=payload.notes,
-        execution_options_json=json.dumps(payload.execution_options),
+        execution_options_json=json.dumps(compact_execution_options(payload.execution_options)),
     )
     db.add(plan)
     db.commit()
@@ -903,19 +1058,29 @@ def update_migration_plan(plan_id: int, payload: schemas.MigrationPlanUpdate, db
         raise HTTPException(404, "Migration plan not found")
     if plan.status in {"Queued", "Running"}:
         raise HTTPException(409, "Cannot edit a migration plan while its Spark Engine job is active")
-    source = db.get(models.ConnectorProfile, plan.source_connector_id)
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "Migration plan name is required")
+    if db.query(models.MigrationPlan).filter(models.MigrationPlan.name == name, models.MigrationPlan.id != plan.id).first():
+        raise HTTPException(409, "Migration plan name already exists")
+    vms, source_connector_id = validate_plan_vm_selection(payload.vm_ids, db)
+    source = db.get(models.ConnectorProfile, source_connector_id)
     target = db.get(models.ConnectorProfile, payload.target_connector_id)
     if not source or not target:
         raise HTTPException(404, "Source or target connector not found")
     if source.id == target.id:
         raise HTTPException(400, "Target connector must differ from source connector")
-    plan.name = payload.name
+    plan.name = name
+    plan.source_connector_id = source_connector_id
     plan.target_connector_id = payload.target_connector_id
-    plan.target_datastore = payload.target_datastore
+    plan.vm_ids_json = json.dumps(sorted({vm.id for vm in vms}))
     plan.notes = payload.notes
-    plan.execution_options_json = json.dumps(payload.execution_options)
+    plan.execution_options_json = json.dumps(compact_execution_options(payload.execution_options))
     plan.migration_type = f"{source.connector_type} to {target.connector_type}"
     plan.status = "Draft"
+    plan.spark_job_id = None
+    plan.results_json = "[]"
+    plan.executed_at = None
     db.commit()
     db.refresh(plan)
     return plan
@@ -938,6 +1103,9 @@ def connector_execution_payload(connector: models.ConnectorProfile) -> dict:
         "endpoint": connector.endpoint,
         "port": connector.port,
         "username": connector.username,
+        "target_network": connector.target_network,
+        "target_datastore": connector.target_datastore,
+        "target_vdc_name": connector.target_vdc_name,
         "credential_reference": connector.credential_reference,
         "credential_payload": decrypt_connector_secret(connector),
     }
@@ -952,6 +1120,10 @@ def migration_plan_execution_payload(
     *,
     live: bool,
 ) -> dict:
+    options = {
+        **resolve_connector_defaults(target),
+        **compact_execution_options(parsed_json_object(plan.execution_options_json)),
+    }
     return {
         "plan_id": plan.id,
         "source_connector": connector_execution_payload(source),
@@ -966,10 +1138,7 @@ def migration_plan_execution_payload(
             }
             for vm in vms
         ],
-        "options": {
-            **json.loads(plan.execution_options_json or "{}"),
-            **({"target_datastore": plan.target_datastore} if plan.target_datastore else {}),
-        },
+        "options": options,
         "requested_by": requested_by,
         "live": live,
         "approval": f"EXECUTE:{plan.id}" if live else f"PREFLIGHT:{plan.id}",
@@ -984,7 +1153,7 @@ def apply_spark_job(db: Session, plan: models.MigrationPlan, job: dict) -> None:
     results = job.get("result") or []
     plan.results_json = json.dumps(results)
     plan.executed_at = datetime.utcnow()
-    plan.status = "Completed" if spark_status == "Succeeded" else "Failed"
+    plan.status = spark_status if spark_status in {"Succeeded", "Failed"} else ("Completed" if spark_status == "Succeeded" else "Failed")
     vm_ids = {row.get("vm_id") for row in results if row.get("vm_id")}
     vms = db.query(models.VmInventory).filter(models.VmInventory.id.in_(vm_ids)).all() if vm_ids else []
     result_by_vm = {row.get("vm_id"): row for row in results}
@@ -1135,7 +1304,7 @@ def create_migration_job(payload: schemas.MigrationJobCreate, db: Session = Depe
         target.credential_reference,
         decrypt_connector_secret(target).get("password"),
         payload.vm_name,
-        payload.target_datastore,
+        payload.target_datastore or target.target_datastore,
     )
     job = models.MigrationJob(
         source_connector_id=source.id,

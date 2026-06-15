@@ -14,6 +14,7 @@ from app.main import (
     app,
     create_migration_plan,
     create_connector,
+    create_wave,
     delete_connector,
     delete_user,
     decrypt_connector_secret,
@@ -118,13 +119,13 @@ def test_admin_cannot_delete_or_deactivate_self():
 def test_service_status_fallback():
     result = unavailable_statuses("monitor unavailable")
 
-    assert display_name("cloud-connector-engine") == "Cloud-Connector-Engine"
+    assert display_name("cloud-connector") == "Cloud-Connector"
     assert [row["service"] for row in result["services"]] == [
         "backend",
-        "cloud-connector-engine",
+        "cloud-connector",
         "database",
         "frontend",
-        "host-connector-engine",
+        "host-connector",
         "reverse-proxy",
         "spark-engine",
     ]
@@ -236,3 +237,42 @@ def test_discovery_inventory_and_migration_plan_execution(monkeypatch):
         assert executed.status == "Preflight ready"
         assert executed.executed_at is not None
         assert db.get(models.VmInventory, vm.id).current_status == "Ready for migration"
+
+
+def test_connector_defaults_and_wave_creation():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        source = models.ConnectorProfile(name="KVM Source", connector_category="host", connector_type="KVM", endpoint="qemu+ssh://root@kvm/system")
+        target = models.ConnectorProfile(
+            name="vCenter Target",
+            connector_category="host",
+            connector_type="VMware ESXi / vCenter",
+            endpoint="https://vcsa.test.local/sdk",
+            target_network="VM Network",
+            target_datastore="Datastore01",
+            target_vdc_name="TESTING-DC",
+        )
+        db.add_all([source, target])
+        db.flush()
+        vm1 = models.VmInventory(vm_name="vm-01", source_platform="KVM", target_platform="VMware ESXi / vCenter", cpu=2, memory_gb=4, disk_gb=50, connector_id=source.id)
+        vm2 = models.VmInventory(vm_name="vm-02", source_platform="KVM", target_platform="VMware ESXi / vCenter", cpu=2, memory_gb=4, disk_gb=50, connector_id=source.id)
+        db.add_all([vm1, vm2])
+        db.commit()
+        db.refresh(vm1)
+        db.refresh(vm2)
+
+        plan = create_migration_plan(
+            schemas.MigrationPlanCreate(name="Wave Plan", vm_ids=[vm1.id, vm2.id], target_connector_id=target.id),
+            db,
+            None,
+        )
+        payload = create_wave(
+            schemas.WaveCreate(wave_name="Wave 1", plan_ids=[plan.id]),
+            db,
+            None,
+        )
+
+        assert json.loads(payload.plan_ids_json) == [plan.id]
+        assert {db.get(models.VmInventory, vm1.id).migration_wave, db.get(models.VmInventory, vm2.id).migration_wave} == {"Wave 1"}

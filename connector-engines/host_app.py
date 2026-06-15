@@ -12,7 +12,7 @@ from pyVmomi import vim
 
 from common import ConnectorRequest, EngineResponse, EngineResult, password_value
 
-app = FastAPI(title="DS Shift Host Connector Engine", version="1.0")
+app = FastAPI(title="DS Shift Host Connector", version="1.0")
 
 PLATFORMS = [
     {"type": "KVM", "tool": "Paramiko SSH and virsh", "discovery": True},
@@ -23,7 +23,7 @@ PLATFORMS = [
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "engine": "Host Connector Engine", "platforms": len(PLATFORMS)}
+    return {"status": "ok", "engine": "Host Connector", "platforms": len(PLATFORMS)}
 
 
 @app.get("/platforms")

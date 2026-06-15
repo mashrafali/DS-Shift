@@ -11,10 +11,10 @@ PORT = int(os.getenv("STATUS_MONITOR_PORT", "8090"))
 HIDDEN_SERVICES = {"edge-gateway", "service-status-monitor"}
 SERVICE_ORDER = [
     "backend",
-    "cloud-connector-engine",
+    "cloud-connector",
     "database",
     "frontend",
-    "host-connector-engine",
+    "host-connector",
     "reverse-proxy",
     "spark-engine",
 ]

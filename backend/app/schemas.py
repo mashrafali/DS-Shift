@@ -54,6 +54,9 @@ class ConnectorBase(BaseModel):
     endpoint: Optional[str] = None
     port: Optional[int] = None
     username: Optional[str] = None
+    target_network: Optional[str] = None
+    target_datastore: Optional[str] = None
+    target_vdc_name: Optional[str] = None
     environment: Optional[str] = None
     status: str = "Not validated"
     notes: Optional[str] = None
@@ -82,7 +85,7 @@ class ConnectorValidationResult(BaseModel):
 
 
 class WaveBase(BaseModel):
-    project_id: int
+    project_id: Optional[int] = None
     wave_name: str
     planned_window: Optional[str] = None
     status: str = "Planned"
@@ -90,12 +93,13 @@ class WaveBase(BaseModel):
 
 
 class WaveCreate(WaveBase):
-    pass
+    plan_ids: list[int] = Field(default_factory=list)
 
 
 class Wave(WaveBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
+    plan_ids_json: str
     created_at: datetime
     updated_at: datetime
 
@@ -202,6 +206,12 @@ class SettingsBase(BaseModel):
     banner_message: Optional[str] = None
 
 
+class SettingsUpdate(BaseModel):
+    default_timezone: str = "Asia/Riyadh"
+    retention_days: int = 365
+    banner_message: Optional[str] = None
+
+
 class AppSettings(SettingsBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -275,15 +285,14 @@ class MigrationPlanCreate(BaseModel):
     name: str
     vm_ids: list[int]
     target_connector_id: int
-    target_datastore: Optional[str] = None
     notes: Optional[str] = None
     execution_options: dict = Field(default_factory=dict)
 
 
 class MigrationPlanUpdate(BaseModel):
     name: str
+    vm_ids: list[int]
     target_connector_id: int
-    target_datastore: Optional[str] = None
     notes: Optional[str] = None
     execution_options: dict = Field(default_factory=dict)
 

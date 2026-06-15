@@ -191,6 +191,12 @@ def govc_environment(connector, options: dict) -> dict:
             "GOVC_INSECURE": "1" if options.get("insecure", True) else "0",
         }
     )
+    enriched_options = {
+        **({"target_datacenter": connector.target_vdc_name} if getattr(connector, "target_vdc_name", None) else {}),
+        **({"target_datastore": connector.target_datastore} if getattr(connector, "target_datastore", None) else {}),
+        **({"target_network": connector.target_network} if getattr(connector, "target_network", None) else {}),
+        **options,
+    }
     mappings = {
         "target_datacenter": "GOVC_DATACENTER",
         "target_datastore": "GOVC_DATASTORE",
@@ -199,8 +205,8 @@ def govc_environment(connector, options: dict) -> dict:
         "target_folder": "GOVC_FOLDER",
     }
     for option, variable in mappings.items():
-        if options.get(option):
-            env[variable] = str(options[option])
+        if enriched_options.get(option):
+            env[variable] = str(enriched_options[option])
     return env
 
 
@@ -236,6 +242,9 @@ def find_vcenter_vm(connector, workload):
 
 
 def preflight_kvm_to_vcenter(request) -> list[dict]:
+    target_datastore = request.options.get("target_datastore") or request.target_connector.target_datastore
+    target_network = request.options.get("target_network") or request.target_connector.target_network
+    target_vdc_name = request.options.get("target_datacenter") or request.options.get("target_vdc_name") or request.target_connector.target_vdc_name
     checks = [
         {"check": "qemu_img", "ok": bool(shutil.which("qemu-img")), "message": shutil.which("qemu-img") or "qemu-img is not installed"},
         {"check": "govc", "ok": bool(shutil.which("govc")), "message": shutil.which("govc") or "govc is not installed"},
@@ -244,12 +253,21 @@ def preflight_kvm_to_vcenter(request) -> list[dict]:
         env = govc_environment(request.target_connector, request.options)
         about = json.loads(run(["govc", "about", "-json"], env=env, timeout=30))
         checks.append({"check": "target_vcenter", "ok": True, "message": about.get("About", {}).get("FullName", "vCenter reachable")})
-        run(["govc", "datastore.info", request.options["target_datastore"]], env=env, timeout=30)
-        checks.append({"check": "target_datastore", "ok": True, "message": request.options["target_datastore"]})
-        network = run(["govc", "find", "-type", "n", "-name", request.options["target_network"]], env=env, timeout=30).strip()
+        if not target_datastore:
+            raise RuntimeError("Target datastore is not configured on the target connector")
+        run(["govc", "datastore.info", target_datastore], env=env, timeout=30)
+        checks.append({"check": "target_datastore", "ok": True, "message": target_datastore})
+        if not target_network:
+            raise RuntimeError("Target network is not configured on the target connector")
+        network = run(["govc", "find", "-type", "n", "-name", target_network], env=env, timeout=30).strip()
         if not network:
-            raise RuntimeError(f"Target network {request.options['target_network']} was not found")
-        checks.append({"check": "target_network", "ok": True, "message": request.options["target_network"]})
+            raise RuntimeError(f"Target network {target_network} was not found")
+        checks.append({"check": "target_network", "ok": True, "message": target_network})
+        if target_vdc_name:
+            datacenter = run(["govc", "find", "-type", "d", "-name", target_vdc_name], env=env, timeout=30).strip()
+            if not datacenter:
+                raise RuntimeError(f"Target vDC name {target_vdc_name} was not found")
+            checks.append({"check": "target_vdc_name", "ok": True, "message": target_vdc_name})
     except Exception as exc:
         checks.append({"check": "target_vcenter", "ok": False, "message": str(exc)})
     try:

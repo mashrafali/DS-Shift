@@ -40,7 +40,7 @@ DS Shift uses a service-oriented application architecture deployed with Docker C
 - Synchronizes discovered workloads into VM inventory.
 - Creates and monitors durable Spark Engine execution jobs.
 
-`host-connector-engine`
+`host-connector`
 
 - Three stateless connector replicas.
 - Validates and discovers KVM/libvirt with Paramiko and `virsh`.
@@ -48,7 +48,7 @@ DS Shift uses a service-oriented application architecture deployed with Docker C
 - Validates and discovers Nutanix AHV with the Prism Central v3 REST API.
 - Receives only host-platform credentials and the connector SSH key mount.
 
-`cloud-connector-engine`
+`cloud-connector`
 
 - Three stateless connector replicas.
 - Validates and discovers AWS EC2 with Boto3.
