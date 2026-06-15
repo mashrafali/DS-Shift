@@ -40,14 +40,14 @@ function loadStoredToken() {
 
 const fallbackConnectorPlatforms = {
   host: [
-    { type: 'KVM', tool: 'Paramiko SSH and virsh', endpoint_hint: 'qemu+ssh://root@hostname/system', credential_hint: 'ssh-key:container or env:KVM_PASSWORD' },
-    { type: 'VMware ESXi / vCenter', tool: 'VMware pyVmomi', endpoint_hint: 'https://vcenter.example.com/sdk', credential_hint: 'env:VCENTER_PASSWORD' },
-    { type: 'Nutanix AHV', tool: 'Nutanix Prism Central v3 REST API', endpoint_hint: 'https://prism-central.example.com:9440', credential_hint: 'env:NUTANIX_PASSWORD' },
+    { type: 'KVM', tool: 'Paramiko SSH and virsh', endpoint_hint: 'qemu+ssh://root@hostname/system', credential_hint: 'SSH key or GUI password', default_port: 22 },
+    { type: 'VMware ESXi / vCenter', tool: 'VMware pyVmomi', endpoint_hint: 'https://vcenter.example.com/sdk', credential_hint: 'GUI username and password', default_port: 443 },
+    { type: 'Nutanix AHV', tool: 'Nutanix Prism Central v3 REST API', endpoint_hint: 'https://prism-central.example.com:9440', credential_hint: 'GUI username and password', default_port: 9440 },
   ],
   cloud: [
-    { type: 'Amazon Web Services', tool: 'AWS SDK for Python (Boto3)', endpoint_hint: 'AWS region, for example us-east-1', credential_hint: 'env:AWS_CONNECTOR_CREDENTIALS' },
-    { type: 'Google Cloud Platform', tool: 'Google Cloud Compute Python SDK', endpoint_hint: 'Google Cloud project ID', credential_hint: 'env:GCP_CONNECTOR_CREDENTIALS' },
-    { type: 'Microsoft Azure', tool: 'Azure Identity and Compute Management SDKs', endpoint_hint: 'Azure subscription ID', credential_hint: 'env:AZURE_CONNECTOR_CREDENTIALS' },
+    { type: 'Amazon Web Services', tool: 'AWS SDK for Python (Boto3)', endpoint_hint: 'AWS region, for example us-east-1', credential_hint: 'GUI access key and secret key', default_port: '' },
+    { type: 'Google Cloud Platform', tool: 'Google Cloud Compute Python SDK', endpoint_hint: 'Google Cloud project ID', credential_hint: 'GUI service account JSON', default_port: '' },
+    { type: 'Microsoft Azure', tool: 'Azure Identity and Compute Management SDKs', endpoint_hint: 'Azure subscription ID', credential_hint: 'GUI tenant, client, and secret values', default_port: '' },
   ],
 };
 const statuses = ['Discovered', 'Assessed', 'Ready for migration', 'Replication prepared', 'Migration in progress', 'Cutover scheduled', 'Cutover completed', 'Validation completed', 'Failed', 'Rolled back', 'Blocked'];
@@ -57,9 +57,19 @@ const blankConnector = {
   connector_category: 'host',
   connector_type: 'KVM',
   endpoint: '',
-  port: 443,
+  port: 22,
   username: '',
   credential_reference: '',
+  password: '',
+  credential_payload: {
+    access_key_id: '',
+    secret_access_key: '',
+    session_token: '',
+    service_account_json: '',
+    tenant_id: '',
+    client_id: '',
+    client_secret: '',
+  },
   environment: 'Lab',
   status: 'Not validated',
   notes: '',
@@ -104,6 +114,52 @@ const blankMigrationPlan = {
     target_folder: '',
   },
 };
+
+function connectorFormFromRow(connector) {
+  return {
+    ...blankConnector,
+    ...connector,
+    port: connector.port || '',
+    password: '',
+    credential_payload: {
+      ...blankConnector.credential_payload,
+    },
+  };
+}
+
+function connectorPayload(form) {
+  const connectorType = form.connector_type;
+  const payload = {
+    name: form.name,
+    connector_category: form.connector_category,
+    connector_type: connectorType,
+    endpoint: form.endpoint || null,
+    port: Number(form.port) || null,
+    username: form.username || null,
+    credential_reference: form.credential_reference || null,
+    environment: form.environment || null,
+    notes: form.notes || null,
+    status: form.status || 'Not validated',
+    credential_payload: {},
+  };
+  if (form.password) payload.password = form.password;
+  if (connectorType === 'Amazon Web Services') {
+    payload.credential_payload = compactObject({
+      access_key_id: form.credential_payload.access_key_id,
+      secret_access_key: form.credential_payload.secret_access_key,
+      session_token: form.credential_payload.session_token,
+    });
+  } else if (connectorType === 'Google Cloud Platform') {
+    payload.credential_payload = parseServiceAccountJson(form.credential_payload.service_account_json);
+  } else if (connectorType === 'Microsoft Azure') {
+    payload.credential_payload = compactObject({
+      tenant_id: form.credential_payload.tenant_id,
+      client_id: form.credential_payload.client_id,
+      client_secret: form.credential_payload.client_secret,
+    });
+  }
+  return payload;
+}
 
 function App() {
   const [token, setToken] = useState(loadStoredToken);
@@ -284,24 +340,32 @@ function App() {
 
   const saveConnector = async (event) => {
     event.preventDefault();
-    const payload = { ...connectorForm, port: Number(connectorForm.port) || null };
-    await api('/connectors', { method: 'POST', body: JSON.stringify(payload) });
-    setConnectorForm(blankConnector);
-    await load();
+    try {
+      const payload = connectorPayload(connectorForm);
+      await api('/connectors', { method: 'POST', body: JSON.stringify(payload) });
+      setConnectorForm(blankConnector);
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
   const saveConnectorEdit = async (event) => {
     event.preventDefault();
-    const payload = { ...editConnectorForm, port: Number(editConnectorForm.port) || null };
-    await api(`/connectors/${editingConnectorId}`, { method: 'PUT', body: JSON.stringify(payload) });
-    setEditingConnectorId(null);
-    setEditConnectorForm(blankConnector);
-    await load();
+    try {
+      const payload = connectorPayload(editConnectorForm);
+      await api(`/connectors/${editingConnectorId}`, { method: 'PUT', body: JSON.stringify(payload) });
+      setEditingConnectorId(null);
+      setEditConnectorForm(blankConnector);
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
   const editConnector = (connector) => {
     const connectorType = connector.connector_type === 'AWS' ? 'Amazon Web Services' : connector.connector_type === 'Azure' ? 'Microsoft Azure' : connector.connector_type;
-    setEditConnectorForm({ ...connector, connector_type: connectorType, port: connector.port || '' });
+    setEditConnectorForm(connectorFormFromRow({ ...connector, connector_type: connectorType }));
     setEditingConnectorId(connector.id);
     setConnectorResult(null);
   };
@@ -751,7 +815,7 @@ function ConnectorWorkspace({ category, setCategory, catalog, connectors, ...pro
     return <section className="connector-home"><div className="connector-engine-grid">{[['host', ServerCog, 'Host Connectors', 'On-premises and private virtualization platforms'], ['cloud', Cloud, 'Cloud Connectors', 'Public cloud compute platforms']].map(([key, Icon, title, description]) => {
       const engine = (catalog.engines || []).find((item) => item.category === key);
       const count = connectors.filter((connector) => connector.connector_category === key).length;
-      return <button className="connector-engine-card" key={key} onClick={() => { setCategory(key); props.setForm({ ...blankConnector, connector_category: key, connector_type: categories[key][0].type }); }}><span className="connector-engine-icon"><Icon size={28} /></span><span><strong>{title}</strong><small>{description}</small><small>{count} configured connector{count === 1 ? '' : 's'} · Engine: {engine?.status || 'unknown'}</small></span></button>;
+      return <button className="connector-engine-card" key={key} onClick={() => { const platform = categories[key][0]; setCategory(key); props.setForm({ ...blankConnector, connector_category: key, connector_type: platform.type, port: platform.default_port ?? '' }); }}><span className="connector-engine-icon"><Icon size={28} /></span><span><strong>{title}</strong><small>{description}</small><small>{count} configured connector{count === 1 ? '' : 's'} · Engine: {engine?.status || 'unknown'}</small></span></button>;
     })}</div><div className="about"><h2>Available connector engines</h2><p>Select Host Connectors or Cloud Connectors to list existing connectors, create a new connector, validate credentials, and discover workloads.</p></div></section>;
   }
   const platforms = categories[category] || [];
@@ -760,16 +824,29 @@ function ConnectorWorkspace({ category, setCategory, catalog, connectors, ...pro
 
 function ConnectorFields({ form, setForm, category, platforms }) {
   const types = platforms.map((platform) => platform.type);
-  const scopedForm = form.connector_category === category ? form : { ...blankConnector, connector_category: category, connector_type: types[0] };
+  const scopedForm = form.connector_category === category ? form : { ...blankConnector, connector_category: category, connector_type: types[0], port: platforms[0]?.default_port ?? '' };
   const update = (patch) => setForm({ ...scopedForm, ...patch, connector_category: category });
   const platform = platforms.find((item) => item.type === scopedForm.connector_type) || platforms[0];
-  return <><Select label="Platform" value={scopedForm.connector_type} options={types} onChange={(v) => update({ connector_type: v, endpoint: '', credential_reference: '' })} /><div className="tip"><strong>{platform?.tool}</strong><br />Endpoint: {platform?.endpoint_hint}<br />Credential: {platform?.credential_hint}</div><Input label="Connector name" value={scopedForm.name} onChange={(v) => update({ name: v })} required /><Input label={category === 'cloud' ? 'Region / Project / Subscription' : 'Endpoint / API URL'} value={scopedForm.endpoint} onChange={(v) => update({ endpoint: v })} /><Input label="Port" type="number" value={scopedForm.port || ''} onChange={(v) => update({ port: v })} /><Input label="Username" value={scopedForm.username || ''} onChange={(v) => update({ username: v })} /><Input label="Credential reference" value={scopedForm.credential_reference || ''} onChange={(v) => update({ credential_reference: v })} /><Input label="Environment" value={scopedForm.environment || ''} onChange={(v) => update({ environment: v })} /><TextArea label="Notes" value={scopedForm.notes || ''} onChange={(v) => update({ notes: v })} /></>;
+  const updateCredential = (key, value) => update({ credential_payload: { ...scopedForm.credential_payload, [key]: value } });
+  const onPlatformChange = (value) => {
+    const selectedPlatform = platforms.find((item) => item.type === value);
+    update({
+      connector_type: value,
+      endpoint: '',
+      username: '',
+      password: '',
+      credential_reference: '',
+      credential_payload: { ...blankConnector.credential_payload },
+      port: selectedPlatform?.default_port ?? '',
+    });
+  };
+  return <><Select label="Platform" value={scopedForm.connector_type} options={types} onChange={onPlatformChange} /><div className="tip"><strong>{platform?.tool}</strong><br />Endpoint: {platform?.endpoint_hint}<br />Credential: {platform?.credential_hint}</div><Input label="Connector name" value={scopedForm.name} onChange={(v) => update({ name: v })} required /><Input label={category === 'cloud' ? 'Region / Project / Subscription' : 'Endpoint / API URL'} value={scopedForm.endpoint} onChange={(v) => update({ endpoint: v })} />{platform?.default_port !== '' && <Input label="Port" type="number" value={scopedForm.port || ''} onChange={(v) => update({ port: v })} />}{renderConnectorCredentialFields(scopedForm, update, updateCredential)}<Input label="Environment" value={scopedForm.environment || ''} onChange={(v) => update({ environment: v })} /><TextArea label="Notes" value={scopedForm.notes || ''} onChange={(v) => update({ notes: v })} /></>;
 }
 
 function Connectors({ title, category, rows, form, setForm, save, editForm, setEditForm, saveEdit, platforms, discover, validate, edit, remove, cancelEdit, editingConnectorId, discoveringConnectorId, result }) {
   const isEditing = editingConnectorId && editForm.connector_category === category;
   const resultSuccess = ['Validated', 'Completed'].includes(result?.status);
-  return <section className="split"><FormPanel title={`Add ${title}`} onSubmit={save}><ConnectorFields form={form} setForm={setForm} category={category} platforms={platforms} /><div className="tip">New connectors are stored by DS Shift and executed by the dedicated {category === 'host' ? 'Host' : 'Cloud'} Connector Engine.</div><button className="primary"><Save size={16} /> Add connector</button></FormPanel><div className="stack">{result && result.connector?.connector_category === category && <div className={`result ${resultSuccess ? 'success' : result.status === 'Discovering' ? '' : 'danger'}`}><strong>{result.status}</strong><span>{result.message}</span>{Boolean(result.commands?.length) && <code>{result.commands.join(' | ')}</code>}</div>}<div className="table-wrap"><table><thead><tr><th>Name</th><th>Platform</th><th>Endpoint</th><th>Credential</th><th>Status</th><th>Actions</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td>{row.name}</td><td>{row.connector_type}</td><td>{row.endpoint || '-'}</td><td>{row.credential_reference || '-'}</td><td><Badge value={row.status} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini" onClick={() => validate(row)}><CheckCircle2 size={14} /> Validate</button><button className="mini" disabled={discoveringConnectorId === row.id} onClick={() => discover(row)}><Search size={14} /> {discoveringConnectorId === row.id ? 'Discovering...' : 'Discover'}</button><button className="mini danger-button" onClick={() => remove(row)}><Trash2 size={14} /> Delete</button></div></td></tr>)}</tbody></table></div></div>{isEditing && <Modal title={`Edit ${title}`} onClose={cancelEdit}><FormPanel title="" onSubmit={saveEdit}><ConnectorFields form={editForm} setForm={setEditForm} category={category} platforms={platforms} /><div className="button-row"><button className="primary"><Save size={16} /> Save changes</button><button className="secondary" type="button" onClick={cancelEdit}><X size={16} /> Cancel</button></div></FormPanel></Modal>}</section>;
+  return <section className="split"><FormPanel title={`Add ${title}`} onSubmit={save}><ConnectorFields form={form} setForm={setForm} category={category} platforms={platforms} /><div className="tip">New connectors are stored by DS Shift and executed by the dedicated {category === 'host' ? 'Host' : 'Cloud'} Connector Engine.</div><button className="primary"><Save size={16} /> Add connector</button></FormPanel><div className="stack">{result && result.connector?.connector_category === category && <div className={`result ${resultSuccess ? 'success' : result.status === 'Discovering' ? '' : 'danger'}`}><strong>{result.status}</strong><span>{result.message}</span>{Boolean(result.commands?.length) && <code>{result.commands.join(' | ')}</code>}</div>}<div className="table-wrap"><table><thead><tr><th>Name</th><th>Platform</th><th>Endpoint</th><th>Credentials</th><th>Status</th><th>Actions</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td>{row.name}</td><td>{row.connector_type}</td><td>{row.endpoint || '-'}</td><td>{connectorCredentialSummary(row)}</td><td><Badge value={row.status} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini" onClick={() => validate(row)}><CheckCircle2 size={14} /> Validate</button><button className="mini" disabled={discoveringConnectorId === row.id} onClick={() => discover(row)}><Search size={14} /> {discoveringConnectorId === row.id ? 'Discovering...' : 'Discover'}</button><button className="mini danger-button" onClick={() => remove(row)}><Trash2 size={14} /> Delete</button></div></td></tr>)}</tbody></table></div></div>{isEditing && <Modal title={`Edit ${title}`} onClose={cancelEdit}><FormPanel title="" onSubmit={saveEdit}><ConnectorFields form={editForm} setForm={setEditForm} category={category} platforms={platforms} /><div className="button-row"><button className="primary"><Save size={16} /> Save changes</button><button className="secondary" type="button" onClick={cancelEdit}><X size={16} /> Cancel</button></div></FormPanel></Modal>}</section>;
 }
 
 function HostsView({ hosts, connectors }) {
@@ -886,8 +963,13 @@ function MigrationTaskModal({ plan, execution, connectors, onClose }) {
   return <Modal title={`Task: ${plan.name}`} onClose={onClose} wide><div className="plan-detail"><dl className="host-facts"><div><dt>Status</dt><dd>{plan.status}</dd></div><div><dt>Migration</dt><dd>{source?.name || plan.source_connector_id} → {target?.name || plan.target_connector_id}</dd></div><div><dt>Spark job</dt><dd>{plan.spark_job_id || '-'}</dd></div><div><dt>Progress</dt><dd>{progressPercent}%</dd></div><div><dt>Executed</dt><dd>{formatDateTime(plan.executed_at)}</dd></div></dl><div className="task-summary"><div className="task-progress"><div className="task-progress-bar"><span style={{ width: `${progressPercent}%` }} /></div><strong>{progressPercent}%</strong></div><p>{summaryMessage}</p></div>{!plan.spark_job_id && <div className="about"><h2>Not executed yet</h2><p>This migration plan has not been sent to the Spark Engine. Run Preflight or Launch first to generate task telemetry.</p></div>}{Boolean(taskRows.length) && <div className="table-wrap"><table><thead><tr><th>Task</th><th>Status</th><th>Progress</th><th>Detail</th><th>Updated</th></tr></thead><tbody>{taskRows.map((task, index) => <tr key={`${task.task_code || 'task'}-${index}`}><td>{task.task_name || task.task_code || 'Task'}</td><td><Badge value={task.status || 'Running'} /></td><td>{normalizeProgress(task.progress_percent)}%</td><td>{task.message || '-'}</td><td>{formatDateTime(task.updated_at)}</td></tr>)}</tbody></table></div>}{plan.spark_job_id && !taskRows.length && <div className="about"><h2>Task stream pending</h2><p>The Spark Engine job exists, but it has not published task entries yet. Refresh after a few seconds if this persists.</p></div>}{Boolean(vmResults.length) && <div className="table-wrap"><table><thead><tr><th>VM ID</th><th>Status</th><th>Detail</th></tr></thead><tbody>{vmResults.map((row, index) => <tr key={`${row.vm_id || 'result'}-${index}`}><td>{row.vm_id || '-'}</td><td><Badge value={row.ok ? 'Succeeded' : 'Failed'} /></td><td>{row.message || '-'}</td></tr>)}</tbody></table></div>}</div></Modal>;
 }
 
-function Input({ label, value, onChange, type = 'text', required = false }) {
-  return <label>{label}<input type={type} value={value ?? ''} required={required} onChange={(e) => onChange(e.target.value)} /></label>;
+function Input({ label, value, onChange, type = 'text', required = false, placeholder = '', autoComplete = 'off' }) {
+  return <label>{label}<input type={type} value={value ?? ''} required={required} placeholder={placeholder} autoComplete={autoComplete} onChange={(e) => onChange(e.target.value)} /></label>;
+}
+
+function PasswordInput({ label, value, onChange, required = false, placeholder = '' }) {
+  const [visible, setVisible] = useState(false);
+  return <label>{label}<div className="secret-input"><input type={visible ? 'text' : 'password'} value={value ?? ''} required={required} placeholder={placeholder} autoComplete="new-password" onChange={(e) => onChange(e.target.value)} /><button type="button" className="secondary secret-toggle" onClick={() => setVisible((current) => !current)}>{visible ? 'Hide' : 'Show'}</button></div></label>;
 }
 
 function TextArea({ label, value, onChange }) {
@@ -931,6 +1013,38 @@ function parseExecutionOptions(value) {
   } catch {
     return {};
   }
+}
+
+function compactObject(value) {
+  return Object.fromEntries(Object.entries(value || {}).filter(([, entry]) => entry !== '' && entry !== null && entry !== undefined));
+}
+
+function parseServiceAccountJson(value) {
+  const trimmed = (value || '').trim();
+  if (!trimmed) return {};
+  return JSON.parse(trimmed);
+}
+
+function connectorCredentialSummary(connector) {
+  if (connector.has_stored_secret) return 'Stored in DS Shift';
+  if (connector.credential_reference) return connector.credential_reference;
+  return 'Not set';
+}
+
+function renderConnectorCredentialFields(form, update, updateCredential) {
+  if (form.connector_category === 'host') {
+    return <div className="credential-grid"><Input label="Username" value={form.username || ''} onChange={(v) => update({ username: v })} /><PasswordInput label="Password" value={form.password || ''} onChange={(v) => update({ password: v })} placeholder={form.has_stored_secret ? 'Leave blank to keep the stored password' : 'Optional for SSH key-based access'} />{form.has_stored_secret && <div className="tip credential-tip">A credential is already stored for this connector. Enter a new password only if you want to replace it.</div>}</div>;
+  }
+  if (form.connector_type === 'Amazon Web Services') {
+    return <div className="credential-grid"><Input label="Access key ID" value={form.credential_payload.access_key_id || ''} onChange={(v) => updateCredential('access_key_id', v)} /><PasswordInput label="Secret access key" value={form.credential_payload.secret_access_key || ''} onChange={(v) => updateCredential('secret_access_key', v)} placeholder={form.has_stored_secret ? 'Leave blank to keep the stored secret key' : ''} /><PasswordInput label="Session token" value={form.credential_payload.session_token || ''} onChange={(v) => updateCredential('session_token', v)} placeholder="Optional temporary session token" />{form.has_stored_secret && <div className="tip credential-tip">Stored cloud credentials stay in place until you replace them here.</div>}</div>;
+  }
+  if (form.connector_type === 'Google Cloud Platform') {
+    return <><TextArea label="Service account JSON" value={form.credential_payload.service_account_json || ''} onChange={(v) => updateCredential('service_account_json', v)} />{form.has_stored_secret && <div className="tip">A service-account credential is already stored. Paste a new JSON document only if you want to replace it.</div>}</>;
+  }
+  if (form.connector_type === 'Microsoft Azure') {
+    return <div className="credential-grid"><Input label="Tenant ID" value={form.credential_payload.tenant_id || ''} onChange={(v) => updateCredential('tenant_id', v)} /><Input label="Client ID" value={form.credential_payload.client_id || ''} onChange={(v) => updateCredential('client_id', v)} /><PasswordInput label="Client secret" value={form.credential_payload.client_secret || ''} onChange={(v) => updateCredential('client_secret', v)} placeholder={form.has_stored_secret ? 'Leave blank to keep the stored client secret' : ''} />{form.has_stored_secret && <div className="tip credential-tip">Stored cloud credentials stay in place until you replace them here.</div>}</div>;
+  }
+  return null;
 }
 
 function renderMigrationPlanField(field, form, setForm, option, setLocation, setTargetLocation) {

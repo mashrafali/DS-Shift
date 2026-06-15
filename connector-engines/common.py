@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 
@@ -12,6 +13,7 @@ class ConnectorRequest(BaseModel):
     port: int | None = None
     username: str | None = None
     credential_reference: str | None = None
+    credential_payload: dict = Field(default_factory=dict)
     environment: str | None = None
 
 
@@ -36,3 +38,18 @@ def credential_from_env(reference: str | None) -> str | None:
     if not reference or not reference.startswith("env:"):
         return None
     return os.getenv(reference.split(":", 1)[1])
+
+
+def password_value(request: ConnectorRequest) -> str | None:
+    if request.credential_payload.get("password"):
+        return str(request.credential_payload["password"])
+    return credential_from_env(request.credential_reference)
+
+
+def credential_json(request: ConnectorRequest) -> dict:
+    if request.credential_payload:
+        return request.credential_payload
+    value = credential_from_env(request.credential_reference)
+    if not value:
+        raise ValueError("An available connector credential is required")
+    return json.loads(value)

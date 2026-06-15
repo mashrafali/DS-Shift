@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from pyVim.connect import Disconnect, SmartConnect
 from pyVmomi import vim
 
-from common import ConnectorRequest, EngineResponse, EngineResult, credential_from_env
+from common import ConnectorRequest, EngineResponse, EngineResult, password_value
 
 app = FastAPI(title="DS Shift Host Connector Engine", version="1.0")
 
@@ -67,7 +67,7 @@ def _ssh_client(request: ConnectorRequest) -> paramiko.SSHClient:
     host, port, user = _ssh_parts(request)
     if not host:
         raise ValueError("Connector host could not be parsed")
-    password = credential_from_env(request.credential_reference)
+    password = password_value(request)
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     client.connect(
@@ -162,7 +162,7 @@ def discover_kvm(request: ConnectorRequest) -> EngineResult:
 
 def _vc_connect(request: ConnectorRequest):
     parsed = urlparse(request.endpoint if "://" in (request.endpoint or "") else f"https://{request.endpoint}")
-    password = credential_from_env(request.credential_reference)
+    password = password_value(request)
     if not parsed.hostname or not request.username or not password:
         raise ValueError("vCenter requires endpoint, username, and an available env: password reference")
     return SmartConnect(
@@ -286,7 +286,7 @@ def _inventory_path(obj) -> str:
 def _nutanix_client(request: ConnectorRequest) -> tuple[httpx.Client, str]:
     if not request.endpoint or not request.username:
         raise ValueError("Nutanix AHV requires a Prism Central endpoint and username")
-    password = credential_from_env(request.credential_reference)
+    password = password_value(request)
     if not password:
         raise ValueError("Nutanix AHV requires an available env: password reference")
     base = request.endpoint.rstrip("/")

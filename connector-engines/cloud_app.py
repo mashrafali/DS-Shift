@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from google.cloud import compute_v1
 from google.oauth2 import service_account
 
-from common import ConnectorRequest, EngineResponse, EngineResult, credential_from_env
+from common import ConnectorRequest, EngineResponse, EngineResult, credential_json
 
 app = FastAPI(title="DS Shift Cloud Connector Engine", version="1.0")
 
@@ -57,13 +57,10 @@ def _dispatch(request: ConnectorRequest, discovery: bool) -> EngineResult:
 
 
 def _secret_json(request: ConnectorRequest) -> dict:
-    value = credential_from_env(request.credential_reference)
-    if not value:
-        raise ValueError("An available env: credential reference containing JSON is required")
     try:
-        return json.loads(value)
+        return credential_json(request)
     except json.JSONDecodeError as exc:
-        raise ValueError("Credential environment value must contain valid JSON") from exc
+        raise ValueError("Connector credential payload must contain valid JSON-compatible values") from exc
 
 
 def _aws_client(request: ConnectorRequest):

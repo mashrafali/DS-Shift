@@ -133,6 +133,7 @@ class Connector(BaseModel):
     port: int | None = None
     username: str | None = None
     credential_reference: str | None = None
+    credential_payload: dict = Field(default_factory=dict)
 
 
 class Workload(BaseModel):
@@ -413,6 +414,8 @@ def execute_job(job: dict) -> None:
 
 
 def secret_json(connector: Connector) -> dict:
+    if connector.credential_payload:
+        return connector.credential_payload
     reference = connector.credential_reference or ""
     if not reference.startswith("env:"):
         raise RuntimeError(f"{connector.name} must use an env: credential reference")
@@ -626,10 +629,11 @@ def ssh_parts(connector: Connector) -> tuple[str, int, str]:
 
 def execute_kvm(request: JobRequest) -> list[dict]:
     host, port, username = ssh_parts(request.source_connector)
-    password = None
-    reference = request.source_connector.credential_reference or ""
-    if reference.startswith("env:"):
-        password = os.getenv(reference.split(":", 1)[1])
+    password = request.source_connector.credential_payload.get("password")
+    if password is None:
+        reference = request.source_connector.credential_reference or ""
+        if reference.startswith("env:"):
+            password = os.getenv(reference.split(":", 1)[1])
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     client.connect(hostname=host, port=port, username=username, password=password, look_for_keys=not bool(password), allow_agent=not bool(password))

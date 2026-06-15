@@ -52,6 +52,7 @@ class ConnectorProfile(TimestampMixin, Base):
     port: Mapped[int | None] = mapped_column(Integer, nullable=True)
     username: Mapped[str | None] = mapped_column(String(160), nullable=True)
     credential_reference: Mapped[str | None] = mapped_column(String(180), nullable=True)
+    secret_json_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     environment: Mapped[str | None] = mapped_column(String(80), nullable=True)
     status: Mapped[str] = mapped_column(String(60), default="Not validated")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)

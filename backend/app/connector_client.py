@@ -70,8 +70,8 @@ def validate_connector_platform(category: str, connector_type: str) -> str:
     return normalized
 
 
-def connector_payload(connector: models.ConnectorProfile) -> dict:
-    return {
+def connector_payload(connector: models.ConnectorProfile, credential_payload: dict | None = None) -> dict:
+    payload = {
         "connector_type": normalize_connector_type(connector.connector_type),
         "endpoint": connector.endpoint,
         "port": connector.port,
@@ -79,9 +79,12 @@ def connector_payload(connector: models.ConnectorProfile) -> dict:
         "credential_reference": connector.credential_reference,
         "environment": connector.environment,
     }
+    if credential_payload:
+        payload["credential_payload"] = credential_payload
+    return payload
 
 
-def call_connector_engine(connector: models.ConnectorProfile, operation: str) -> dict:
+def call_connector_engine(connector: models.ConnectorProfile, operation: str, *, credential_payload: dict | None = None) -> dict:
     if connector.connector_category == "host":
         base_url = HOST_ENGINE_URL
     elif connector.connector_category == "cloud":
@@ -89,7 +92,7 @@ def call_connector_engine(connector: models.ConnectorProfile, operation: str) ->
     else:
         raise ValueError(f"Unsupported connector category: {connector.connector_category}")
     with httpx.Client(timeout=120) as client:
-        response = client.post(f"{base_url}/{operation}", json=connector_payload(connector))
+        response = client.post(f"{base_url}/{operation}", json=connector_payload(connector, credential_payload))
         response.raise_for_status()
         return response.json()
 

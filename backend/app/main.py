@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 
+from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
@@ -104,6 +105,63 @@ def validate_user_role(role: str) -> str:
     return role
 
 
+def connector_secret_key() -> bytes:
+    configured = os.getenv("CONNECTOR_SECRET_KEY")
+    seed = configured or os.getenv("POSTGRES_PASSWORD") or settings.database_url
+    return base64.urlsafe_b64encode(hashlib.sha256(seed.encode()).digest())
+
+
+def connector_secret_cipher() -> Fernet:
+    return Fernet(connector_secret_key())
+
+
+def encrypt_connector_secret(payload: dict | None) -> str | None:
+    if not payload:
+        return None
+    compact = {key: value for key, value in payload.items() if value not in (None, "", [], {})}
+    if not compact:
+        return None
+    return connector_secret_cipher().encrypt(json.dumps(compact, separators=(",", ":")).encode()).decode()
+
+
+def decrypt_connector_secret(connector: models.ConnectorProfile) -> dict:
+    if not connector.secret_json_encrypted:
+        return {}
+    try:
+        raw = connector_secret_cipher().decrypt(connector.secret_json_encrypted.encode()).decode()
+        payload = json.loads(raw)
+    except (InvalidToken, json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(500, f"Stored connector credentials for {connector.name} could not be decrypted") from exc
+    return payload if isinstance(payload, dict) else {}
+
+
+def connector_secret_input(payload: schemas.ConnectorCreate) -> dict:
+    secret = payload.credential_payload if isinstance(payload.credential_payload, dict) else {}
+    normalized = {key: value for key, value in secret.items() if value not in (None, "", [], {})}
+    if payload.password:
+        normalized["password"] = payload.password
+    return normalized
+
+
+def connector_public(connector: models.ConnectorProfile) -> schemas.Connector:
+    return schemas.Connector(
+        id=connector.id,
+        name=connector.name,
+        connector_category=connector.connector_category,
+        connector_type=connector.connector_type,
+        endpoint=connector.endpoint,
+        port=connector.port,
+        username=connector.username,
+        credential_reference=connector.credential_reference,
+        has_stored_secret=bool(connector.secret_json_encrypted),
+        environment=connector.environment,
+        status=connector.status,
+        notes=connector.notes,
+        created_at=connector.created_at,
+        updated_at=connector.updated_at,
+    )
+
+
 def user_public(user: models.LocalUser) -> schemas.UserPublic:
     return schemas.UserPublic(
         id=user.id,
@@ -165,6 +223,7 @@ def startup() -> None:
         connection.execute(text("ALTER TABLE vm_inventory ADD COLUMN IF NOT EXISTS external_id VARCHAR(255)"))
         connection.execute(text("ALTER TABLE vm_inventory ADD COLUMN IF NOT EXISTS host_name VARCHAR(255)"))
         connection.execute(text("ALTER TABLE vm_inventory ADD COLUMN IF NOT EXISTS details_json TEXT NOT NULL DEFAULT '{}'"))
+        connection.execute(text("ALTER TABLE connector_profiles ADD COLUMN IF NOT EXISTS secret_json_encrypted TEXT"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_vm_inventory_external_id ON vm_inventory (external_id)"))
         connection.execute(text("ALTER TABLE migration_plans ADD COLUMN IF NOT EXISTS execution_options_json TEXT NOT NULL DEFAULT '{}'"))
         connection.execute(text("ALTER TABLE migration_plans ADD COLUMN IF NOT EXISTS spark_job_id INTEGER"))
@@ -372,7 +431,7 @@ def list_connectors(category: str | None = None, db: Session = Depends(get_db), 
     query = db.query(models.ConnectorProfile)
     if category:
         query = query.filter(models.ConnectorProfile.connector_category == category)
-    return query.order_by(models.ConnectorProfile.created_at.desc()).all()
+    return [connector_public(connector) for connector in query.order_by(models.ConnectorProfile.created_at.desc()).all()]
 
 
 @app.get("/api/connector-platforms")
@@ -386,11 +445,18 @@ def create_connector(payload: schemas.ConnectorCreate, db: Session = Depends(get
         connector_type = validate_connector_platform(payload.connector_category, payload.connector_type)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    connector = models.ConnectorProfile(**{**payload.model_dump(), "connector_type": connector_type, "status": "Not validated"})
+    connector = models.ConnectorProfile(
+        **{
+            **payload.model_dump(exclude={"password", "credential_payload"}),
+            "connector_type": connector_type,
+            "status": "Not validated",
+            "secret_json_encrypted": encrypt_connector_secret(connector_secret_input(payload)),
+        }
+    )
     db.add(connector)
     db.commit()
     db.refresh(connector)
-    return connector
+    return connector_public(connector)
 
 
 @app.put("/api/connectors/{connector_id}", response_model=schemas.Connector)
@@ -402,11 +468,16 @@ def update_connector(connector_id: int, payload: schemas.ConnectorCreate, db: Se
         connector_type = validate_connector_platform(payload.connector_category, payload.connector_type)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    for key, value in {**payload.model_dump(), "connector_type": connector_type, "status": "Not validated"}.items():
+    for key, value in {**payload.model_dump(exclude={"password", "credential_payload"}), "connector_type": connector_type, "status": "Not validated"}.items():
         setattr(connector, key, value)
+    replacement_secret = connector_secret_input(payload)
+    if replacement_secret:
+        connector.secret_json_encrypted = encrypt_connector_secret(replacement_secret)
+    elif payload.credential_reference:
+        connector.secret_json_encrypted = None
     db.commit()
     db.refresh(connector)
-    return connector
+    return connector_public(connector)
 
 
 @app.delete("/api/connectors/{connector_id}", status_code=204)
@@ -439,7 +510,7 @@ def validate_connector(connector_id: int, db: Session = Depends(get_db), _user: 
     if not connector:
         raise HTTPException(404, "Connector not found")
     try:
-        payload = call_connector_engine(connector, "validate")
+        payload = call_connector_engine(connector, "validate", credential_payload=decrypt_connector_secret(connector))
         connector.status = "Validated" if payload.get("ok") else "Validation failed"
         message = payload.get("message", "Connector engine returned no message")
         commands = payload.get("commands", [])
@@ -451,7 +522,7 @@ def validate_connector(connector_id: int, db: Session = Depends(get_db), _user: 
         status = connector.status
     db.commit()
     db.refresh(connector)
-    return schemas.ConnectorValidationResult(connector=schemas.Connector.model_validate(connector), status=status, message=message, commands=commands)
+    return schemas.ConnectorValidationResult(connector=connector_public(connector), status=status, message=message, commands=commands)
 
 
 @app.post("/api/connectors/{connector_id}/discover", response_model=schemas.DiscoveryRun)
@@ -460,7 +531,7 @@ def discover_connector(connector_id: int, payload: schemas.DiscoveryRequest, db:
     if not connector:
         raise HTTPException(404, "Connector not found")
     try:
-        result = call_connector_engine(connector, "discover")
+        result = call_connector_engine(connector, "discover", credential_payload=decrypt_connector_secret(connector))
         imported = 0
         records = result.get("records", [])
         hosts = result.get("hosts", [])
@@ -868,6 +939,7 @@ def connector_execution_payload(connector: models.ConnectorProfile) -> dict:
         "port": connector.port,
         "username": connector.username,
         "credential_reference": connector.credential_reference,
+        "credential_payload": decrypt_connector_secret(connector),
     }
 
 
@@ -1057,9 +1129,11 @@ def create_migration_job(payload: schemas.MigrationJobCreate, db: Session = Depe
         source.endpoint,
         source.username,
         source.credential_reference,
+        decrypt_connector_secret(source).get("password"),
         target.endpoint,
         target.username,
         target.credential_reference,
+        decrypt_connector_secret(target).get("password"),
         payload.vm_name,
         payload.target_datastore,
     )

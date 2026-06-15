@@ -27,6 +27,12 @@ def credential_value(reference: str | None) -> str | None:
     return os.getenv(reference.split(":", 1)[1])
 
 
+def connector_password(connector) -> str | None:
+    if getattr(connector, "credential_payload", None) and connector.credential_payload.get("password"):
+        return str(connector.credential_payload["password"])
+    return credential_value(connector.credential_reference)
+
+
 def ssh_parts(connector) -> tuple[str, int, str]:
     parsed = urlparse(connector.endpoint or "")
     if parsed.scheme.startswith("qemu+ssh"):
@@ -41,7 +47,7 @@ def ssh_client(connector):
     host, port, username = ssh_parts(connector)
     if not host:
         raise RuntimeError(f"{connector.name} does not contain a usable host")
-    password = credential_value(connector.credential_reference)
+    password = connector_password(connector)
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     client.connect(
@@ -172,7 +178,7 @@ def ovf_descriptor(vm_name: str, cpu: int, memory_bytes: int, disks: list[dict],
 
 
 def govc_environment(connector, options: dict) -> dict:
-    password = credential_value(connector.credential_reference)
+    password = connector_password(connector)
     if not connector.endpoint or not connector.username or not password:
         raise RuntimeError("vCenter connector requires endpoint, username, and an available env: password reference")
     parsed = urlparse(connector.endpoint if "://" in connector.endpoint else f"https://{connector.endpoint}")
@@ -199,7 +205,7 @@ def govc_environment(connector, options: dict) -> dict:
 
 
 def find_vcenter_vm(connector, workload):
-    password = credential_value(connector.credential_reference)
+    password = connector_password(connector)
     parsed = urlparse(connector.endpoint if "://" in (connector.endpoint or "") else f"https://{connector.endpoint}")
     if not parsed.hostname or not connector.username or not password:
         raise RuntimeError("vCenter connector credentials are unavailable")
@@ -263,7 +269,7 @@ def preflight_kvm_to_vcenter(request) -> list[dict]:
 def preflight_vcenter_to_kvm(request) -> list[dict]:
     checks = [{"check": "virt_v2v", "ok": bool(shutil.which("virt-v2v")), "message": shutil.which("virt-v2v") or "virt-v2v is not installed"}]
     try:
-        password = credential_value(request.source_connector.credential_reference)
+        password = connector_password(request.source_connector)
         if not password:
             raise RuntimeError("vCenter password is unavailable")
         with tempfile.TemporaryDirectory(prefix="ds-shift-v2v-preflight-") as stage:
@@ -410,7 +416,7 @@ def vpx_uri(connector, workload, options: dict) -> str:
 
 def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
     results = []
-    password = credential_value(request.source_connector.credential_reference)
+    password = connector_password(request.source_connector)
     if not password:
         raise RuntimeError("vCenter password is unavailable")
     with ssh_client(request.target_connector) as client:

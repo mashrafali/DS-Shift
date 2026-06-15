@@ -54,19 +54,22 @@ class ConnectorBase(BaseModel):
     endpoint: Optional[str] = None
     port: Optional[int] = None
     username: Optional[str] = None
-    credential_reference: Optional[str] = None
     environment: Optional[str] = None
     status: str = "Not validated"
     notes: Optional[str] = None
 
 
 class ConnectorCreate(ConnectorBase):
-    pass
+    credential_reference: Optional[str] = None
+    password: Optional[str] = None
+    credential_payload: dict = Field(default_factory=dict)
 
 
 class Connector(ConnectorBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
+    credential_reference: Optional[str] = None
+    has_stored_secret: bool = False
     created_at: datetime
     updated_at: datetime
 

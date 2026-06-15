@@ -31,6 +31,12 @@ def _credential_from_env(reference: str | None) -> str | None:
     return None
 
 
+def _password_value(reference: str | None, credential_payload: dict | None = None) -> str | None:
+    if credential_payload and credential_payload.get("password"):
+        return str(credential_payload["password"])
+    return _credential_from_env(reference)
+
+
 def _ssh_parts(endpoint: str | None, username: str | None) -> tuple[str, int, str]:
     if not endpoint:
         raise ValueError("Connector endpoint is required")
@@ -49,9 +55,9 @@ def _ssh_parts(endpoint: str | None, username: str | None) -> tuple[str, int, st
     return host, port, user
 
 
-def _ssh_client(endpoint: str | None, username: str | None, credential_reference: str | None) -> paramiko.SSHClient:
+def _ssh_client(endpoint: str | None, username: str | None, credential_reference: str | None, credential_payload: dict | None = None) -> paramiko.SSHClient:
     host, port, user = _ssh_parts(endpoint, username)
-    password = _credential_from_env(credential_reference)
+    password = _password_value(credential_reference, credential_payload)
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     client.connect(
@@ -74,10 +80,10 @@ def _ssh_exec(client: paramiko.SSHClient, command: str, timeout: int = 30) -> tu
     return code, stdout.read().decode(errors="replace"), stderr.read().decode(errors="replace")
 
 
-def validate_kvm(endpoint: str | None, username: str | None, credential_reference: str | None = None) -> EngineResult:
+def validate_kvm(endpoint: str | None, username: str | None, credential_reference: str | None = None, credential_payload: dict | None = None) -> EngineResult:
     commands = ["SSH connect", "virsh list --all --name"]
     try:
-        with _ssh_client(endpoint, username, credential_reference) as client:
+        with _ssh_client(endpoint, username, credential_reference, credential_payload) as client:
             code, out, err = _ssh_exec(client, "virsh list --all --name", timeout=15)
             if code != 0:
                 return EngineResult(False, "KVM validation failed. SSH works, but virsh access failed.", [], commands, err + out)
@@ -86,10 +92,10 @@ def validate_kvm(endpoint: str | None, username: str | None, credential_referenc
         return EngineResult(False, f"KVM validation failed: {exc}", [], commands)
 
 
-def discover_kvm(endpoint: str | None, username: str | None, credential_reference: str | None = None) -> EngineResult:
+def discover_kvm(endpoint: str | None, username: str | None, credential_reference: str | None = None, credential_payload: dict | None = None) -> EngineResult:
     commands = ["virsh list --all --name"]
     try:
-        client = _ssh_client(endpoint, username, credential_reference)
+        client = _ssh_client(endpoint, username, credential_reference, credential_payload)
     except Exception as exc:
         return EngineResult(False, f"KVM discovery failed. SSH access is not available: {exc}", [], commands)
     records: list[dict] = []
@@ -136,19 +142,19 @@ def _vc_host(endpoint: str | None) -> str | None:
     return parsed.hostname
 
 
-def _vc_connect(endpoint: str | None, username: str | None, credential_reference: str | None):
+def _vc_connect(endpoint: str | None, username: str | None, credential_reference: str | None, credential_payload: dict | None = None):
     host = _vc_host(endpoint)
-    password = _credential_from_env(credential_reference)
+    password = _password_value(credential_reference, credential_payload)
     if not host or not username or not password:
         raise ValueError("vCenter validation requires endpoint, username, and an env: credential reference available in the backend container")
     context = ssl._create_unverified_context()
     return SmartConnect(host=host, user=username, pwd=password, sslContext=context, connectionPoolTimeout=20)
 
 
-def validate_vcenter(endpoint: str | None, username: str | None, credential_reference: str | None) -> EngineResult:
+def validate_vcenter(endpoint: str | None, username: str | None, credential_reference: str | None, credential_payload: dict | None = None) -> EngineResult:
     commands = ["pyvmomi SmartConnect", "Retrieve ServiceContent.About"]
     try:
-        service_instance = _vc_connect(endpoint, username, credential_reference)
+        service_instance = _vc_connect(endpoint, username, credential_reference, credential_payload)
         try:
             about = service_instance.RetrieveContent().about
             return EngineResult(True, f"vCenter connector validated. Connected to {about.fullName}.", [], commands)
@@ -158,10 +164,10 @@ def validate_vcenter(endpoint: str | None, username: str | None, credential_refe
         return EngineResult(False, f"vCenter validation failed: {exc}", [], commands)
 
 
-def discover_vcenter(endpoint: str | None, username: str | None, credential_reference: str | None) -> EngineResult:
+def discover_vcenter(endpoint: str | None, username: str | None, credential_reference: str | None, credential_payload: dict | None = None) -> EngineResult:
     commands = ["pyvmomi SmartConnect", "ContainerView VirtualMachine"]
     try:
-        service_instance = _vc_connect(endpoint, username, credential_reference)
+        service_instance = _vc_connect(endpoint, username, credential_reference, credential_payload)
     except Exception as exc:
         return EngineResult(False, f"vCenter discovery failed: {exc}", [], commands)
     records: list[dict] = []
@@ -204,9 +210,11 @@ def build_kvm_to_esxi_preflight(
     source_endpoint: str | None,
     source_username: str | None,
     source_credential_reference: str | None,
+    source_credential_payload: dict | None,
     target_endpoint: str | None,
     target_username: str | None,
     target_credential_reference: str | None,
+    target_credential_payload: dict | None,
     vm_name: str,
     target_datastore: str | None,
 ) -> EngineResult:
@@ -228,8 +236,8 @@ def build_kvm_to_esxi_preflight(
         {"step": "Validate target VM inventory", "command": f"pyvmomi/govc vm lookup for {vm_name}"},
     ]
 
-    source_check = validate_kvm(source_endpoint, source_username, source_credential_reference)
-    target_check = validate_vcenter(target_endpoint, target_username, target_credential_reference)
+    source_check = validate_kvm(source_endpoint, source_username, source_credential_reference, source_credential_payload)
+    target_check = validate_vcenter(target_endpoint, target_username, target_credential_reference, target_credential_payload)
     records = [
         {"check": "source_kvm", "ok": source_check.ok, "message": source_check.message},
         {"check": "target_vcenter", "ok": target_check.ok, "message": target_check.message},
@@ -237,7 +245,7 @@ def build_kvm_to_esxi_preflight(
 
     if source_check.ok:
         try:
-            with _ssh_client(source_endpoint, source_username, source_credential_reference) as client:
+            with _ssh_client(source_endpoint, source_username, source_credential_reference, source_credential_payload) as client:
                 code, state, err = _ssh_exec(client, f"virsh domstate {vm_name!r}", timeout=15)
                 records.append({"check": "source_vm_state", "ok": code == 0, "message": state.strip() if code == 0 else err.strip()})
                 code, disks, err = _ssh_exec(client, f"virsh domblklist {vm_name!r}", timeout=15)

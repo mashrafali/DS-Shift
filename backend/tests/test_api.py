@@ -13,8 +13,11 @@ from app.database import Base
 from app.main import (
     app,
     create_migration_plan,
+    create_connector,
     delete_connector,
     delete_user,
+    decrypt_connector_secret,
+    connector_public,
     execute_migration_plan,
     hash_password,
     launch_migration_plan,
@@ -65,6 +68,29 @@ def test_connector_platform_validation_and_aliases():
 
     with pytest.raises(ValueError, match="Unsupported cloud connector type"):
         validate_connector_platform("cloud", "Other Cloud")
+
+
+def test_connector_secret_storage_and_public_shape():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        payload = schemas.ConnectorCreate(
+            name="vCenter Lab",
+            connector_category="host",
+            connector_type="VMware ESXi / vCenter",
+            endpoint="https://vcsa.test.local/sdk",
+            username="administrator@vsphere.local",
+            password="P@ssw0rd",
+        )
+        created = create_connector(payload, db, None)
+        stored = db.query(models.ConnectorProfile).one()
+
+        assert created.has_stored_secret is True
+        assert created.credential_reference is None
+        assert created.username == "administrator@vsphere.local"
+        assert decrypt_connector_secret(stored)["password"] == "P@ssw0rd"
+        assert connector_public(stored).has_stored_secret is True
 
 
 def test_admin_cannot_delete_or_deactivate_self():
