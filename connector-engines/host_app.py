@@ -127,11 +127,17 @@ def discover_kvm(request: ConnectorRequest) -> EngineResult:
         if code:
             return EngineResult(False, f"KVM discovery failed: {error.strip()}", [], commands)
         for name in [line.strip() for line in listed.splitlines() if line.strip()]:
-            command = f"virsh dominfo {name!r}; echo __BLK__; virsh domblklist --details {name!r}; echo __ADDR__; virsh domifaddr {name!r} || true"
+            command = (
+                f"virsh dominfo {name!r}; "
+                f"echo __XML__; virsh dumpxml {name!r}; "
+                f"echo __BLK__; virsh domblklist --details {name!r}; "
+                f"echo __ADDR__; virsh domifaddr {name!r} || true"
+            )
             commands.append(command)
             code, text, _ = _ssh_exec(client, command)
             if code:
                 continue
+            os_type = _kvm_os_name(text)
             block_text = _section(text, "__BLK__", "__ADDR__")
             disks = []
             for line in block_text.splitlines():
@@ -146,7 +152,7 @@ def discover_kvm(request: ConnectorRequest) -> EngineResult:
                     "cpu": _match_int(text, r"CPU\(s\):\s+(\d+)") or 0,
                     "memory_gb": round((_match_int(text, r"Max memory:\s+(\d+) KiB") or 0) / 1024 / 1024),
                     "disk_gb": 0,
-                    "os_type": "Unknown",
+                    "os_type": os_type,
                     "ip_address": _match_text(_section(text, "__ADDR__", None), r"ipv4\s+([0-9.]+)/"),
                     "current_status": "Discovered",
                     "power_state": _match_text(text, r"State:\s+(.+)") or "unknown",
@@ -377,6 +383,40 @@ def _match_int(text: str, pattern: str) -> int | None:
 def _match_text(text: str, pattern: str) -> str | None:
     match = re.search(pattern, text)
     return match.group(1).strip() if match else None
+
+
+def _kvm_os_name(text: str) -> str:
+    xml_text = _section(text, "__XML__", "__BLK__")
+    libosinfo_id = _match_text(xml_text, r"<libosinfo:os id=\"([^\"]+)\"")
+    if libosinfo_id:
+        parts = libosinfo_id.rstrip("/").split("/")
+        if len(parts) >= 2:
+            vendor = parts[-2]
+            version = parts[-1]
+            vendor_label = {
+                "rhel": "Red Hat Enterprise Linux",
+                "ubuntu": "Ubuntu",
+                "centos-stream": "CentOS Stream",
+                "centos": "CentOS",
+                "rocky": "Rocky Linux",
+                "almalinux": "AlmaLinux",
+                "debian": "Debian",
+                "fedora": "Fedora",
+                "opensuse": "openSUSE",
+                "sles": "SUSE Linux Enterprise Server",
+                "sle": "SUSE Linux Enterprise",
+                "win": "Windows",
+                "windows": "Windows",
+            }.get(vendor, vendor.replace("-", " ").title())
+            return f"{vendor_label} {version}"
+        return libosinfo_id
+    title = _match_text(xml_text, r"<title>([^<]+)</title>")
+    if title:
+        return title
+    description = _match_text(xml_text, r"<description>([^<]+)</description>")
+    if description:
+        return description
+    return _match_text(text, r"OS Type:\s+(.+)") or "Unknown"
 
 
 def _section(text: str, start: str, end: str | None) -> str:

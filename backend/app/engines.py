@@ -104,7 +104,13 @@ def discover_kvm(endpoint: str | None, username: str | None, credential_referenc
         if code != 0:
             return EngineResult(False, "KVM discovery failed. virsh access is not available.", [], commands, err + listed)
         for name in [line.strip() for line in listed.splitlines() if line.strip()]:
-            command = f"virsh dominfo {name!r}; echo __BLK__; virsh domblklist {name!r}; echo __IF__; virsh domiflist {name!r}; echo __ADDR__; virsh domifaddr {name!r} || true"
+            command = (
+                f"virsh dominfo {name!r}; "
+                f"echo __XML__; virsh dumpxml {name!r}; "
+                f"echo __BLK__; virsh domblklist {name!r}; "
+                f"echo __IF__; virsh domiflist {name!r}; "
+                f"echo __ADDR__; virsh domifaddr {name!r} || true"
+            )
             code, text, detail_err = _ssh_exec(client, command, timeout=30)
             commands.append(command)
             if code != 0:
@@ -112,6 +118,7 @@ def discover_kvm(endpoint: str | None, username: str | None, credential_referenc
             cpu = _match_int(text, r"CPU\(s\):\s+(\d+)") or 0
             mem_kib = _match_int(text, r"Max memory:\s+(\d+) KiB") or _match_int(text, r"Used memory:\s+(\d+) KiB") or 0
             state = _match_text(text, r"State:\s+(.+)") or "unknown"
+            os_type = _kvm_os_name(text)
             disks = _parse_kvm_disks(_section(text, "__BLK__", "__IF__"))
             ip_address = _match_text(_section(text, "__ADDR__", None), r"ipv4\s+([0-9.]+)/")
             records.append(
@@ -121,7 +128,7 @@ def discover_kvm(endpoint: str | None, username: str | None, credential_referenc
                     "cpu": cpu,
                     "memory_gb": round(mem_kib / 1024 / 1024),
                     "disk_gb": sum(disk.get("size_gb", 0) for disk in disks),
-                    "os_type": "Unknown",
+                    "os_type": os_type,
                     "ip_address": ip_address,
                     "current_status": "Discovered",
                     "power_state": state,
@@ -280,6 +287,34 @@ def _match_int(text: str, pattern: str) -> int | None:
 def _match_text(text: str, pattern: str) -> str | None:
     match = re.search(pattern, text)
     return match.group(1).strip() if match else None
+
+
+def _kvm_os_name(text: str) -> str:
+    xml_text = _section(text, "__XML__", "__BLK__")
+    libosinfo_id = _match_text(xml_text, r"<libosinfo:os id=\"([^\"]+)\"")
+    if libosinfo_id:
+        parts = libosinfo_id.rstrip("/").split("/")
+        if len(parts) >= 2:
+            vendor = parts[-2]
+            version = parts[-1]
+            vendor_label = {
+                "rhel": "Red Hat Enterprise Linux",
+                "ubuntu": "Ubuntu",
+                "centos-stream": "CentOS Stream",
+                "centos": "CentOS",
+                "rocky": "Rocky Linux",
+                "almalinux": "AlmaLinux",
+                "debian": "Debian",
+                "fedora": "Fedora",
+                "opensuse": "openSUSE",
+                "sles": "SUSE Linux Enterprise Server",
+                "sle": "SUSE Linux Enterprise",
+                "win": "Windows",
+                "windows": "Windows",
+            }.get(vendor, vendor.replace("-", " ").title())
+            return f"{vendor_label} {version}"
+        return libosinfo_id
+    return _match_text(text, r"OS Type:\s+(.+)") or "Unknown"
 
 
 def _section(text: str, start: str, end: str | None) -> str:
