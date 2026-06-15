@@ -325,6 +325,91 @@ def validate_plan_vm_selection(vm_ids: list[int], db: Session) -> tuple[list[mod
     return vms, int(source_ids.pop())
 
 
+def plan_ids_for_wave(wave: models.MigrationWave) -> list[int]:
+    try:
+        parsed = json.loads(wave.plan_ids_json or "[]")
+    except json.JSONDecodeError:
+        return []
+    return sorted({int(plan_id) for plan_id in parsed if isinstance(plan_id, int) or str(plan_id).isdigit()})
+
+
+def plans_for_wave(db: Session, plan_ids: list[int]) -> list[models.MigrationPlan]:
+    if not plan_ids:
+        return []
+    plans = db.query(models.MigrationPlan).filter(models.MigrationPlan.id.in_(plan_ids)).all()
+    if len(plans) != len(plan_ids):
+        raise HTTPException(404, "One or more migration plans were not found")
+    plan_by_id = {plan.id: plan for plan in plans}
+    return [plan_by_id[plan_id] for plan_id in plan_ids]
+
+
+def ensure_wave_plan_ids_available(db: Session, plan_ids: list[int], *, excluding_wave_id: int | None = None) -> None:
+    if not plan_ids:
+        return
+    conflicting: list[str] = []
+    for wave in db.query(models.MigrationWave).all():
+        if excluding_wave_id and wave.id == excluding_wave_id:
+            continue
+        overlap = sorted(set(plan_ids) & set(plan_ids_for_wave(wave)))
+        if overlap:
+            conflicting.append(f'{wave.wave_name} ({", ".join(str(plan_id) for plan_id in overlap)})')
+    if conflicting:
+        raise HTTPException(409, f"Migration plan already belongs to another wave: {'; '.join(conflicting)}")
+
+
+def sync_wave_vm_membership(db: Session, wave: models.MigrationWave, plans: list[models.MigrationPlan]) -> None:
+    vm_ids = sorted({vm_id for plan in plans for vm_id in json.loads(plan.vm_ids_json or "[]")})
+    current_vms = db.query(models.VmInventory).filter(models.VmInventory.wave_id == wave.id).all()
+    current_vm_ids = {vm.id for vm in current_vms}
+    desired_vm_ids = set(vm_ids)
+    for vm in current_vms:
+        if vm.id not in desired_vm_ids:
+            vm.wave_id = None
+            vm.migration_wave = None
+    if desired_vm_ids:
+        desired_vms = db.query(models.VmInventory).filter(models.VmInventory.id.in_(desired_vm_ids)).all()
+        for vm in desired_vms:
+            vm.wave_id = wave.id
+            vm.migration_wave = wave.wave_name
+        if len(desired_vms) != len(desired_vm_ids):
+            missing_vm_ids = sorted(desired_vm_ids - {vm.id for vm in desired_vms})
+            raise HTTPException(409, f"Wave references VMs that no longer exist: {missing_vm_ids}")
+    elif current_vm_ids:
+        for vm in current_vms:
+            vm.wave_id = None
+            vm.migration_wave = None
+
+
+def validate_live_migration_plan(plan: models.MigrationPlan, db: Session) -> tuple[models.ConnectorProfile, models.ConnectorProfile, list[models.VmInventory]]:
+    if plan.status in {"Queued", "Running"}:
+        raise HTTPException(409, f'Migration plan "{plan.name}" already has an active Spark Engine job')
+    source = db.get(models.ConnectorProfile, plan.source_connector_id)
+    target = db.get(models.ConnectorProfile, plan.target_connector_id)
+    if not source or not target:
+        raise HTTPException(404, f'Source or target connector not found for migration plan "{plan.name}"')
+    vm_ids = json.loads(plan.vm_ids_json or "[]")
+    if not vm_ids:
+        raise HTTPException(409, f'Migration plan "{plan.name}" has no assigned VMs')
+    vms = db.query(models.VmInventory).filter(models.VmInventory.id.in_(vm_ids)).all()
+    if len(vms) != len(vm_ids):
+        raise HTTPException(409, f'One or more VMs for migration plan "{plan.name}" no longer exist')
+    return source, target, vms
+
+
+def queue_live_migration_plan(plan: models.MigrationPlan, db: Session, admin: models.LocalUser) -> dict:
+    source, target, vms = validate_live_migration_plan(plan, db)
+    request = migration_plan_execution_payload(plan, source, target, vms, admin.username, live=True)
+    try:
+        job = create_spark_job(request)
+    except ValueError as exc:
+        raise HTTPException(409, f"Spark Engine rejected execution: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(503, f"Spark Engine unavailable: {exc}") from exc
+    plan.spark_job_id = job["id"]
+    plan.status = job["status"]
+    return job
+
+
 def current_user(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> models.LocalUser:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "Authentication required")
@@ -878,16 +963,15 @@ def list_waves(db: Session = Depends(get_db), _user: models.LocalUser = Depends(
 
 @app.post("/api/waves", response_model=schemas.Wave, status_code=201)
 def create_wave(payload: schemas.WaveCreate, db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
+    wave_name = payload.wave_name.strip()
+    if not wave_name:
+        raise HTTPException(400, "Migration wave name is required")
     normalized_plan_ids = sorted(set(payload.plan_ids))
-    if normalized_plan_ids:
-        plans = db.query(models.MigrationPlan).filter(models.MigrationPlan.id.in_(normalized_plan_ids)).all()
-        if len(plans) != len(normalized_plan_ids):
-            raise HTTPException(404, "One or more migration plans were not found")
-    else:
-        plans = []
+    ensure_wave_plan_ids_available(db, normalized_plan_ids)
+    plans = plans_for_wave(db, normalized_plan_ids)
     wave = models.MigrationWave(
         project_id=payload.project_id,
-        wave_name=payload.wave_name,
+        wave_name=wave_name,
         planned_window=payload.planned_window,
         status=payload.status,
         notes=payload.notes,
@@ -895,16 +979,74 @@ def create_wave(payload: schemas.WaveCreate, db: Session = Depends(get_db), _use
     )
     db.add(wave)
     db.flush()
-    if plans:
-        vm_ids = sorted({vm_id for plan in plans for vm_id in json.loads(plan.vm_ids_json or "[]")})
-        if vm_ids:
-            plan_vms = db.query(models.VmInventory).filter(models.VmInventory.id.in_(vm_ids)).all()
-            for vm in plan_vms:
-                vm.wave_id = wave.id
-                vm.migration_wave = wave.wave_name
+    sync_wave_vm_membership(db, wave, plans)
     db.commit()
     db.refresh(wave)
     return wave
+
+
+@app.put("/api/waves/{wave_id}", response_model=schemas.Wave)
+def update_wave(wave_id: int, payload: schemas.WaveUpdate, db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
+    wave = db.get(models.MigrationWave, wave_id)
+    if not wave:
+        raise HTTPException(404, "Migration wave not found")
+    wave_name = payload.wave_name.strip()
+    if not wave_name:
+        raise HTTPException(400, "Migration wave name is required")
+    normalized_plan_ids = sorted(set(payload.plan_ids))
+    ensure_wave_plan_ids_available(db, normalized_plan_ids, excluding_wave_id=wave.id)
+    plans = plans_for_wave(db, normalized_plan_ids)
+    wave.project_id = payload.project_id
+    wave.wave_name = wave_name
+    wave.planned_window = payload.planned_window
+    wave.status = payload.status
+    wave.notes = payload.notes
+    wave.plan_ids_json = json.dumps(normalized_plan_ids)
+    sync_wave_vm_membership(db, wave, plans)
+    db.commit()
+    db.refresh(wave)
+    return wave
+
+
+@app.delete("/api/waves/{wave_id}", status_code=204)
+def delete_wave(wave_id: int, db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
+    wave = db.get(models.MigrationWave, wave_id)
+    if not wave:
+        raise HTTPException(404, "Migration wave not found")
+    vms = db.query(models.VmInventory).filter(models.VmInventory.wave_id == wave.id).all()
+    for vm in vms:
+        vm.wave_id = None
+        vm.migration_wave = None
+    db.delete(wave)
+    db.commit()
+
+
+@app.post("/api/waves/{wave_id}/execute")
+def execute_wave(
+    wave_id: int,
+    payload: schemas.WaveExecution,
+    db: Session = Depends(get_db),
+    admin: models.LocalUser = Depends(admin_user),
+):
+    wave = db.get(models.MigrationWave, wave_id)
+    if not wave:
+        raise HTTPException(404, "Migration wave not found")
+    if payload.confirmation != wave.wave_name:
+        raise HTTPException(400, "Type the exact migration wave name to approve live execution")
+    plan_ids = plan_ids_for_wave(wave)
+    if not plan_ids:
+        raise HTTPException(409, "Migration wave has no migration plans to execute")
+    plans = plans_for_wave(db, plan_ids)
+    for plan in plans:
+        validate_live_migration_plan(plan, db)
+    jobs = []
+    for plan in plans:
+        job = queue_live_migration_plan(plan, db, admin)
+        jobs.append({"plan": schemas.MigrationPlan.model_validate(plan), "job": job})
+    wave.status = "Queued"
+    db.commit()
+    db.refresh(wave)
+    return {"wave": schemas.Wave.model_validate(wave), "jobs": jobs}
 
 
 @app.get("/api/vms", response_model=list[schemas.Vm])
@@ -1176,25 +1318,7 @@ def launch_migration_plan(
         raise HTTPException(404, "Migration plan not found")
     if payload.confirmation != plan.name:
         raise HTTPException(400, "Type the exact migration plan name to approve live execution")
-    if plan.status in {"Queued", "Running"}:
-        raise HTTPException(409, "Migration plan already has an active Spark Engine job")
-    source = db.get(models.ConnectorProfile, plan.source_connector_id)
-    target = db.get(models.ConnectorProfile, plan.target_connector_id)
-    if not source or not target:
-        raise HTTPException(404, "Source or target connector not found")
-    vm_ids = json.loads(plan.vm_ids_json)
-    vms = db.query(models.VmInventory).filter(models.VmInventory.id.in_(vm_ids)).all()
-    if len(vms) != len(vm_ids):
-        raise HTTPException(409, "One or more migration plan VMs no longer exist")
-    request = migration_plan_execution_payload(plan, source, target, vms, admin.username, live=True)
-    try:
-        job = create_spark_job(request)
-    except ValueError as exc:
-        raise HTTPException(409, f"Spark Engine rejected execution: {exc}") from exc
-    except Exception as exc:
-        raise HTTPException(503, f"Spark Engine unavailable: {exc}") from exc
-    plan.spark_job_id = job["id"]
-    plan.status = job["status"]
+    job = queue_live_migration_plan(plan, db, admin)
     db.commit()
     db.refresh(plan)
     return {"plan": schemas.MigrationPlan.model_validate(plan), "job": job}

@@ -96,12 +96,20 @@ class WaveCreate(WaveBase):
     plan_ids: list[int] = Field(default_factory=list)
 
 
+class WaveUpdate(WaveBase):
+    plan_ids: list[int] = Field(default_factory=list)
+
+
 class Wave(WaveBase):
     model_config = ConfigDict(from_attributes=True)
     id: int
     plan_ids_json: str
     created_at: datetime
     updated_at: datetime
+
+
+class WaveExecution(BaseModel):
+    confirmation: str
 
 
 class VmBase(BaseModel):

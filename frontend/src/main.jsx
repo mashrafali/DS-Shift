@@ -183,6 +183,8 @@ function App() {
   const [waves, setWaves] = useState([]);
   const [waveForm, setWaveForm] = useState(blankWave);
   const [showWaveModal, setShowWaveModal] = useState(false);
+  const [editingWaveId, setEditingWaveId] = useState(null);
+  const [executingWaveId, setExecutingWaveId] = useState(null);
   const [connectors, setConnectors] = useState([]);
   const [hosts, setHosts] = useState([]);
   const [connectorCatalog, setConnectorCatalog] = useState({ categories: fallbackConnectorPlatforms, engines: [] });
@@ -654,6 +656,70 @@ function App() {
     }
   };
 
+  const editWave = (wave) => {
+    setEditingWaveId(wave.id);
+    setWaveForm(waveToForm(wave));
+    setShowWaveModal(true);
+  };
+
+  const cancelWaveEdit = () => {
+    setEditingWaveId(null);
+    setWaveForm(blankWave);
+    setShowWaveModal(false);
+  };
+
+  const saveWave = async (event) => {
+    event.preventDefault();
+    if (editingWaveId) {
+      setError('');
+      try {
+        await api(`/waves/${editingWaveId}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            ...waveForm,
+            plan_ids: waveForm.plan_ids,
+          }),
+        });
+        cancelWaveEdit();
+        await load();
+      } catch (err) {
+        setError(err.message);
+      }
+      return;
+    }
+    await createWave(event);
+  };
+
+  const deleteWave = async (wave) => {
+    if (!window.confirm(`Delete migration wave "${wave.wave_name}"?`)) return;
+    setError('');
+    try {
+      await api(`/waves/${wave.id}`, { method: 'DELETE' });
+      if (editingWaveId === wave.id) cancelWaveEdit();
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const executeWave = async (wave) => {
+    const confirmation = window.prompt(`Executing a migration wave will launch all associated migration plans.\n\nType the exact wave name to execute:\n${wave.wave_name}`);
+    if (confirmation === null) return;
+    setError('');
+    setExecutingWaveId(wave.id);
+    try {
+      await api(`/waves/${wave.id}/execute`, {
+        method: 'POST',
+        body: JSON.stringify({ confirmation }),
+      });
+      await load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setExecutingWaveId(null);
+    }
+  };
+
   const csv = useMemo(() => {
     const rows = [['VM Name', 'Source', 'Target', 'CPU', 'Memory GB', 'Disk GB', 'Criticality', 'Status']];
     vms.forEach((vm) => rows.push([vm.vm_name, vm.source_platform, vm.target_platform, vm.cpu, vm.memory_gb, vm.disk_gb, vm.criticality, vm.current_status]));
@@ -722,13 +788,13 @@ function App() {
         {active === 'connectors' && <ConnectorWorkspace category={connectorCategory} setCategory={setConnectorCategory} catalog={connectorCatalog} connectors={connectors} form={connectorForm} setForm={setConnectorForm} save={saveConnector} editForm={editConnectorForm} setEditForm={setEditConnectorForm} saveEdit={saveConnectorEdit} discover={discoverConnector} validate={validateConnector} edit={editConnector} remove={deleteConnector} cancelEdit={cancelConnectorEdit} editingConnectorId={editingConnectorId} discoveringConnectorId={discoveringConnectorId} result={connectorResult} />}
         {active === 'hosts' && <HostsView hosts={hosts} connectors={connectors} />}
         {active === 'plans' && <MigrationPlans plans={migrationPlans} vms={vms} connectors={connectors} preflight={executeMigrationPlan} launch={launchMigrationPlan} remove={deleteMigrationPlan} executeTask={openPlanTask} editPlan={editMigrationPlan} executingPlanId={executingPlanId} launchingPlanId={launchingPlanId} selectedPlan={selectedPlan} setSelectedPlanId={setSelectedPlanId} taskPlan={taskPlan} closeTask={() => setTaskPlanId(null)} taskExecution={taskPlan ? planExecutions[taskPlan.id] : null} user={user} />}
-        {active === 'waves' && <Waves waves={waves} plans={migrationPlans} openCreate={() => { setWaveForm(blankWave); setShowWaveModal(true); }} />}
+        {active === 'waves' && <Waves waves={waves} plans={migrationPlans} user={user} editingWaveId={editingWaveId} executingWaveId={executingWaveId} openCreate={() => { setEditingWaveId(null); setWaveForm(blankWave); setShowWaveModal(true); }} editWave={editWave} deleteWave={deleteWave} executeWave={executeWave} />}
         {active === 'reports' && <Reports csv={csv} vms={vms} />}
         {active === 'users' && user?.role === 'admin' && <UsersView currentUser={user} users={users} form={userForm} setForm={setUserForm} save={saveUser} editForm={editUserForm} setEditForm={setEditUserForm} saveEdit={saveUserEdit} edit={editUser} remove={deleteUser} editingUserId={editingUserId} cancelEdit={cancelUserEdit} setError={setError} />}
         {active === 'settings' && <SettingsView settings={settings} setSettings={setSettings} save={saveSettings} resetDashboard={resetDashboard} user={user} serviceStatus={serviceStatus} serviceStatusLoading={serviceStatusLoading} />}
         {showPlanModal && <MigrationPlanModal mode="create" title="Create executable migration plan" submitLabel="Save plan" selectedVmIds={selectedVmIds} vms={vms} connectors={connectors} form={migrationPlanForm} setForm={setMigrationPlanForm} save={createMigrationPlan} close={() => setShowPlanModal(false)} />}
         {editingPlan && <MigrationPlanModal mode="edit" title={`Edit migration plan: ${editingPlan.name}`} submitLabel="Save changes" selectedVmIds={parseJsonArray(editingPlan.vm_ids_json)} sourceConnectorIdOverride={editingPlan.source_connector_id} vms={vms} connectors={connectors} form={editPlanForm} setForm={setEditPlanForm} save={saveMigrationPlanEdit} close={cancelMigrationPlanEdit} />}
-        {showWaveModal && <WaveModal plans={migrationPlans} form={waveForm} setForm={setWaveForm} save={createWave} close={() => setShowWaveModal(false)} />}
+        {showWaveModal && <WaveModal mode={editingWaveId ? 'edit' : 'create'} plans={migrationPlans} form={waveForm} setForm={setWaveForm} save={saveWave} close={editingWaveId ? cancelWaveEdit : () => setShowWaveModal(false)} />}
       </main>
     </div>
   );
@@ -909,12 +975,12 @@ function HostsView({ hosts, connectors }) {
   })}</tbody></table></div>{selectedHost && <Modal title={`${selectedHost.host_name} virtual machines`} onClose={() => setSelectedHost(null)} wide><div className="host-detail"><dl className="host-facts"><div><dt>Platform</dt><dd>{selectedHost.platform}</dd></div><div><dt>Connector</dt><dd>{selectedConnector?.name || `Connector ${selectedHost.connector_id}`}</dd></div><div><dt>Endpoint</dt><dd>{selectedHost.endpoint || '-'}</dd></div><div><dt>Capacity</dt><dd>{selectedHost.cpu} CPU / {selectedHost.memory_gb} GB</dd></div><div><dt>VMs</dt><dd>{selectedHost.vm_count}</dd></div><div><dt>Status</dt><dd>{selectedHost.status}</dd></div></dl><div className="table-wrap"><table><thead><tr><th>VM</th><th>OS</th><th>CPU</th><th>Memory</th><th>Disk</th><th>IP address</th><th>Power</th></tr></thead><tbody>{selectedVms.length ? selectedVms.map((vm, index) => <tr key={`${vm.vm_name}-${index}`}><td>{vm.vm_name}</td><td>{vm.os_type || 'Unknown'}</td><td>{vm.cpu || 0}</td><td>{vm.memory_gb || 0} GB</td><td>{vm.disk_gb || 0} GB</td><td>{vm.ip_address || '-'}</td><td><Badge value={vm.power_state || vm.current_status || 'Discovered'} /></td></tr>) : <tr><td colSpan="7">No VMs reported by this host.</td></tr>}</tbody></table></div></div></Modal>}</section>;
 }
 
-function Waves({ waves, plans, openCreate }) {
-  return <section className="stack"><div className="inventory-actions"><div><strong>{waves.length} migration wave{waves.length === 1 ? '' : 's'}</strong><span>Group migration plans into execution waves.</span></div><button className="primary" onClick={openCreate}><Plus size={16} /> Create Wave</button></div><div className="table-wrap"><table><thead><tr><th>Wave</th><th>Plans</th><th>Window</th><th>Status</th><th>Notes</th></tr></thead><tbody>{waves.length ? waves.map((wave) => {
+function Waves({ waves, plans, user, editingWaveId, executingWaveId, openCreate, editWave, deleteWave, executeWave }) {
+  return <section className="stack"><div className="inventory-actions"><div><strong>{waves.length} migration wave{waves.length === 1 ? '' : 's'}</strong><span>Group migration plans into execution waves.</span></div><button className="primary" onClick={openCreate}><Plus size={16} /> Create Wave</button></div><div className="table-wrap"><table><thead><tr><th>Wave</th><th>Plans</th><th>Window</th><th>Status</th><th>Notes</th><th>Actions</th></tr></thead><tbody>{waves.length ? waves.map((wave) => {
     const planIds = parseJsonArray(wave.plan_ids_json);
     const labels = planIds.map((id) => plans.find((plan) => plan.id === id)?.name || `Plan ${id}`);
-    return <tr key={wave.id}><td><strong>{wave.wave_name}</strong></td><td>{labels.length ? labels.join(', ') : '-'}</td><td>{wave.planned_window || '-'}</td><td><Badge value={wave.status} /></td><td>{wave.notes || '-'}</td></tr>;
-  }) : <tr><td colSpan="5">No migration waves have been created.</td></tr>}</tbody></table></div></section>;
+    return <tr key={wave.id}><td><strong>{wave.wave_name}</strong></td><td>{labels.length ? labels.join(', ') : '-'}</td><td>{wave.planned_window || '-'}</td><td><Badge value={wave.status} /></td><td>{wave.notes || '-'}</td><td><div className="button-row compact"><button className="mini" onClick={() => editWave(wave)} disabled={executingWaveId === wave.id}><Edit3 size={14} /> Edit</button><button className="mini danger-button" onClick={() => deleteWave(wave)} disabled={executingWaveId === wave.id}><Trash2 size={14} /> Delete</button>{user?.role === 'admin' && <button className="mini" onClick={() => executeWave(wave)} disabled={executingWaveId === wave.id}>{executingWaveId === wave.id ? <RefreshCw size={14} className="spin" /> : <Play size={14} />} {executingWaveId === wave.id ? 'Executing' : 'Execute Wave'}</button>}</div></td></tr>;
+  }) : <tr><td colSpan="6">No migration waves have been created.</td></tr>}</tbody></table></div>{editingWaveId && <div className="tip">Editing wave assignments updates the member VMs linked to that wave.</div>}</section>;
 }
 
 function Reports({ csv, vms }) {
@@ -1016,12 +1082,14 @@ function MigrationTaskModal({ plan, execution, connectors, onClose }) {
   return <Modal title={`Task: ${plan.name}`} onClose={onClose} wide><div className="plan-detail"><dl className="host-facts"><div><dt>Status</dt><dd>{plan.status}</dd></div><div><dt>Migration</dt><dd>{source?.name || plan.source_connector_id} → {target?.name || plan.target_connector_id}</dd></div><div><dt>Spark job</dt><dd>{plan.spark_job_id || '-'}</dd></div><div><dt>Progress</dt><dd>{progressPercent}%</dd></div><div><dt>Executed</dt><dd>{formatDateTime(plan.executed_at)}</dd></div></dl><div className="task-summary"><div className="task-progress"><div className="task-progress-bar"><span style={{ width: `${progressPercent}%` }} /></div><strong>{progressPercent}%</strong></div><p>{summaryMessage}</p></div>{!plan.spark_job_id && <div className="about"><h2>Not executed yet</h2><p>This migration plan has not been sent to the Spark Engine. Run Preflight or Launch first to generate task telemetry.</p></div>}{Boolean(taskRows.length) && <div className="table-wrap"><table><thead><tr><th>Task</th><th>Status</th><th>Progress</th><th>Detail</th><th>Updated</th></tr></thead><tbody>{taskRows.map((task, index) => <tr key={`${task.task_code || 'task'}-${index}`}><td>{task.task_name || task.task_code || 'Task'}</td><td><Badge value={task.status || 'Running'} /></td><td>{normalizeProgress(task.progress_percent)}%</td><td>{task.message || '-'}</td><td>{formatDateTime(task.updated_at)}</td></tr>)}</tbody></table></div>}{plan.spark_job_id && !taskRows.length && <div className="about"><h2>Task stream pending</h2><p>The Spark Engine job exists, but it has not published task entries yet. Refresh after a few seconds if this persists.</p></div>}{Boolean(vmResults.length) && <div className="table-wrap"><table><thead><tr><th>VM ID</th><th>Status</th><th>Detail</th></tr></thead><tbody>{vmResults.map((row, index) => <tr key={`${row.vm_id || 'result'}-${index}`}><td>{row.vm_id || '-'}</td><td><Badge value={row.ok ? 'Succeeded' : 'Failed'} /></td><td>{row.message || '-'}</td></tr>)}</tbody></table></div>}</div></Modal>;
 }
 
-function WaveModal({ plans, form, setForm, save, close }) {
+function WaveModal({ mode, plans, form, setForm, save, close }) {
   const togglePlan = (planId) => {
     const next = form.plan_ids.includes(planId) ? form.plan_ids.filter((id) => id !== planId) : [...form.plan_ids, planId];
     setForm({ ...form, plan_ids: next });
   };
-  return <Modal title="Create migration wave" onClose={close}><FormPanel title="" onSubmit={save}><Input label="Wave name" value={form.wave_name} onChange={(value) => setForm({ ...form, wave_name: value })} required /><Input label="Planned window" value={form.planned_window} onChange={(value) => setForm({ ...form, planned_window: value })} /><div className="table-wrap"><table><thead><tr><th></th><th>Plan</th><th>Migration</th><th>Status</th></tr></thead><tbody>{plans.map((plan) => <tr key={plan.id}><td><input type="checkbox" checked={form.plan_ids.includes(plan.id)} onChange={() => togglePlan(plan.id)} /></td><td>{plan.name}</td><td>{plan.migration_type}</td><td><Badge value={plan.status} /></td></tr>)}</tbody></table></div><TextArea label="Notes" value={form.notes} onChange={(value) => setForm({ ...form, notes: value })} /><div className="button-row"><button className="primary"><Save size={16} /> Create wave</button><button className="secondary" type="button" onClick={close}><X size={16} /> Cancel</button></div></FormPanel></Modal>;
+  const title = mode === 'edit' ? 'Edit migration wave' : 'Create migration wave';
+  const actionLabel = mode === 'edit' ? 'Save changes' : 'Create wave';
+  return <Modal title={title} onClose={close}><FormPanel title="" onSubmit={save}><Input label="Wave name" value={form.wave_name} onChange={(value) => setForm({ ...form, wave_name: value })} required /><Input label="Planned window" value={form.planned_window} onChange={(value) => setForm({ ...form, planned_window: value })} /><div className="table-wrap"><table><thead><tr><th></th><th>Plan</th><th>Migration</th><th>Status</th></tr></thead><tbody>{plans.map((plan) => <tr key={plan.id}><td><input type="checkbox" checked={form.plan_ids.includes(plan.id)} onChange={() => togglePlan(plan.id)} /></td><td>{plan.name}</td><td>{plan.migration_type}</td><td><Badge value={plan.status} /></td></tr>)}</tbody></table></div><TextArea label="Notes" value={form.notes} onChange={(value) => setForm({ ...form, notes: value })} /><div className="button-row"><button className="primary"><Save size={16} /> {actionLabel}</button><button className="secondary" type="button" onClick={close}><X size={16} /> Cancel</button></div></FormPanel></Modal>;
 }
 
 function Input({ label, value, onChange, type = 'text', required = false, placeholder = '', autoComplete = 'off', disabled = false, readOnly = false }) {
@@ -1200,6 +1268,16 @@ function planToForm(plan) {
       ...blankMigrationPlan.execution_options,
       ...parseExecutionOptions(plan.execution_options_json),
     },
+  };
+}
+
+function waveToForm(wave) {
+  return {
+    wave_name: wave.wave_name || '',
+    planned_window: wave.planned_window || '',
+    status: wave.status || 'Planned',
+    notes: wave.notes || '',
+    plan_ids: parseJsonArray(wave.plan_ids_json),
   };
 }
 

@@ -136,6 +136,7 @@ h2 { margin: 0 0 16px; font-size: 18px; }
 .secondary { min-height: 40px; padding: 0 14px; background: #e8eef5; color: #18334d; font-weight: 700; }
 .mini { min-height: 30px; padding: 0 10px; background: #e6f7f5; color: #0d5260; font-weight: 750; }
 .danger-button { background: #fdebea; color: #9b1c1c; }
+.spin { animation: spin 1s linear infinite; }
 button:disabled { cursor: not-allowed; opacity: 0.45; }
 .alert, .notice, .tip {
   border-radius: 6px;
@@ -184,6 +185,11 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   color: #053e53;
   background: linear-gradient(135deg, #d9f9f6, #d8ebff);
   border-radius: 9px;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 .connector-section-header { display: flex; align-items: center; gap: 16px; }
 .connector-section-header h2 { margin: 0 0 4px; }

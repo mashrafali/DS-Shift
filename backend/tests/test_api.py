@@ -15,17 +15,20 @@ from app.main import (
     create_migration_plan,
     create_connector,
     create_wave,
+    delete_wave,
     delete_connector,
     delete_user,
     decrypt_connector_secret,
     connector_public,
     execute_migration_plan,
+    execute_wave,
     hash_password,
     launch_migration_plan,
     seed_defaults,
     sync_discovered_hosts,
     sync_discovered_vms,
     update_user,
+    update_wave,
     validate_profile_photo,
 )
 from app.service_status import display_name, unavailable_statuses
@@ -332,3 +335,67 @@ def test_connector_defaults_and_wave_creation():
 
         assert json.loads(payload.plan_ids_json) == [plan.id]
         assert {db.get(models.VmInventory, vm1.id).migration_wave, db.get(models.VmInventory, vm2.id).migration_wave} == {"Wave 1"}
+
+
+def test_wave_update_delete_and_execute(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        source = models.ConnectorProfile(name="KVM Source", connector_category="host", connector_type="KVM", endpoint="qemu+ssh://root@kvm/system")
+        target = models.ConnectorProfile(name="vCenter Target", connector_category="host", connector_type="VMware ESXi / vCenter", endpoint="https://vcsa.test.local/sdk")
+        db.add_all([source, target])
+        db.flush()
+        vm1 = models.VmInventory(vm_name="vm-01", source_platform="KVM", target_platform="VMware ESXi / vCenter", cpu=2, memory_gb=4, disk_gb=50, connector_id=source.id)
+        vm2 = models.VmInventory(vm_name="vm-02", source_platform="KVM", target_platform="VMware ESXi / vCenter", cpu=2, memory_gb=4, disk_gb=50, connector_id=source.id)
+        db.add_all([vm1, vm2])
+        db.flush()
+        plan1 = create_migration_plan(
+            schemas.MigrationPlanCreate(name="Wave Plan 1", vm_ids=[vm1.id], target_connector_id=target.id),
+            db,
+            None,
+        )
+        plan2 = create_migration_plan(
+            schemas.MigrationPlanCreate(name="Wave Plan 2", vm_ids=[vm2.id], target_connector_id=target.id),
+            db,
+            None,
+        )
+        wave = create_wave(
+            schemas.WaveCreate(wave_name="Wave A", planned_window="Tonight", plan_ids=[plan1.id]),
+            db,
+            None,
+        )
+
+        assert db.get(models.VmInventory, vm1.id).wave_id == wave.id
+        assert db.get(models.VmInventory, vm1.id).migration_wave == "Wave A"
+        assert db.get(models.VmInventory, vm2.id).wave_id is None
+
+        updated = update_wave(
+            wave.id,
+            schemas.WaveUpdate(wave_name="Wave B", planned_window="Tomorrow", notes="Updated", plan_ids=[plan2.id]),
+            db,
+            None,
+        )
+        assert updated.wave_name == "Wave B"
+        assert json.loads(updated.plan_ids_json) == [plan2.id]
+        assert db.get(models.VmInventory, vm1.id).wave_id is None
+        assert db.get(models.VmInventory, vm2.id).wave_id == wave.id
+        assert db.get(models.VmInventory, vm2.id).migration_wave == "Wave B"
+
+        job_ids = iter([101, 102])
+
+        monkeypatch.setattr(
+            "app.main.create_spark_job",
+            lambda payload: {"id": next(job_ids), "plan_id": payload["plan_id"], "status": "Queued", "adapter": "test"},
+        )
+        admin = models.LocalUser(username="admin", password_hash="unused", role="admin", is_active="true")
+        execution = execute_wave(wave.id, schemas.WaveExecution(confirmation="Wave B"), db, admin)
+        assert execution["wave"].status == "Queued"
+        assert [row["plan"].id for row in execution["jobs"]] == [plan2.id]
+        assert execution["jobs"][0]["job"]["id"] == 101
+        assert db.get(models.MigrationPlan, plan2.id).spark_job_id == 101
+
+        delete_wave(wave.id, db, None)
+        assert db.query(models.MigrationWave).count() == 0
+        assert db.get(models.VmInventory, vm2.id).wave_id is None
+        assert db.get(models.VmInventory, vm2.id).migration_wave is None
