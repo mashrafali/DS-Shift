@@ -277,6 +277,14 @@ class MigrationPlanCreate(BaseModel):
     execution_options: dict = Field(default_factory=dict)
 
 
+class MigrationPlanUpdate(BaseModel):
+    name: str
+    target_connector_id: int
+    target_datastore: Optional[str] = None
+    notes: Optional[str] = None
+    execution_options: dict = Field(default_factory=dict)
+
+
 class MigrationLaunch(BaseModel):
     confirmation: str
 

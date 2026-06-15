@@ -124,7 +124,11 @@ function App() {
   const [selectedVmIds, setSelectedVmIds] = useState([]);
   const [migrationPlanForm, setMigrationPlanForm] = useState(blankMigrationPlan);
   const [showPlanModal, setShowPlanModal] = useState(false);
-  const [selectedPlan, setSelectedPlan] = useState(null);
+  const [selectedPlanId, setSelectedPlanId] = useState(null);
+  const [taskPlanId, setTaskPlanId] = useState(null);
+  const [editingPlanId, setEditingPlanId] = useState(null);
+  const [editPlanForm, setEditPlanForm] = useState(blankMigrationPlan);
+  const [planExecutions, setPlanExecutions] = useState({});
   const [executingPlanId, setExecutingPlanId] = useState(null);
   const [launchingPlanId, setLaunchingPlanId] = useState(null);
   const [connectorForm, setConnectorForm] = useState(blankConnector);
@@ -158,6 +162,14 @@ function App() {
     if (response.status === 204) return null;
     return response.json();
   };
+
+  const syncPlanExecution = (execution) => {
+    if (!execution?.plan?.id) return execution;
+    setPlanExecutions((current) => ({ ...current, [execution.plan.id]: execution }));
+    return execution;
+  };
+
+  const loadPlanExecution = async (planId) => syncPlanExecution(await api(`/migration-plans/${planId}/execution`));
 
   const load = async () => {
     if (!token) return;
@@ -193,12 +205,22 @@ function App() {
   useEffect(() => { load(); }, [token]);
 
   useEffect(() => {
+    const currentPlanIds = new Set(migrationPlans.map((plan) => plan.id));
+    if (selectedPlanId && !currentPlanIds.has(selectedPlanId)) setSelectedPlanId(null);
+    if (taskPlanId && !currentPlanIds.has(taskPlanId)) setTaskPlanId(null);
+    if (editingPlanId && !currentPlanIds.has(editingPlanId)) {
+      setEditingPlanId(null);
+      setEditPlanForm(blankMigrationPlan);
+    }
+  }, [migrationPlans, selectedPlanId, taskPlanId, editingPlanId]);
+
+  useEffect(() => {
     if (!token) return undefined;
     const activePlans = migrationPlans.filter((plan) => plan.spark_job_id && ['Queued', 'Running'].includes(plan.status));
     if (!activePlans.length) return undefined;
     const timer = window.setInterval(async () => {
       try {
-        await Promise.all(activePlans.map((plan) => api(`/migration-plans/${plan.id}/execution`)));
+        await Promise.all(activePlans.map((plan) => loadPlanExecution(plan.id)));
         await load();
       } catch (err) {
         setError(err.message);
@@ -428,7 +450,7 @@ function App() {
     setExecutingPlanId(plan.id);
     try {
       const updated = await api(`/migration-plans/${plan.id}/execute`, { method: 'POST' });
-      setSelectedPlan(updated);
+      setSelectedPlanId(updated.id);
       await load();
     } catch (err) {
       setError(err.message);
@@ -447,7 +469,9 @@ function App() {
         method: 'POST',
         body: JSON.stringify({ confirmation }),
       });
-      setSelectedPlan(response.plan);
+      syncPlanExecution(response);
+      setSelectedPlanId(response.plan.id);
+      setTaskPlanId(response.plan.id);
       await load();
     } catch (err) {
       setError(err.message);
@@ -461,7 +485,58 @@ function App() {
     setError('');
     try {
       await api(`/migration-plans/${plan.id}`, { method: 'DELETE' });
-      if (selectedPlan?.id === plan.id) setSelectedPlan(null);
+      setPlanExecutions((current) => {
+        const next = { ...current };
+        delete next[plan.id];
+        return next;
+      });
+      if (selectedPlanId === plan.id) setSelectedPlanId(null);
+      if (taskPlanId === plan.id) setTaskPlanId(null);
+      if (editingPlanId === plan.id) {
+        setEditingPlanId(null);
+        setEditPlanForm(blankMigrationPlan);
+      }
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const openPlanTask = async (plan) => {
+    setError('');
+    setTaskPlanId(plan.id);
+    if (!plan.spark_job_id) return;
+    try {
+      await loadPlanExecution(plan.id);
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const editMigrationPlan = (plan) => {
+    setEditingPlanId(plan.id);
+    setEditPlanForm(planToForm(plan));
+  };
+
+  const cancelMigrationPlanEdit = () => {
+    setEditingPlanId(null);
+    setEditPlanForm(blankMigrationPlan);
+  };
+
+  const saveMigrationPlanEdit = async (event) => {
+    event.preventDefault();
+    if (!editingPlanId) return;
+    setError('');
+    try {
+      await api(`/migration-plans/${editingPlanId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          ...editPlanForm,
+          target_connector_id: Number(editPlanForm.target_connector_id),
+        }),
+      });
+      cancelMigrationPlanEdit();
       await load();
     } catch (err) {
       setError(err.message);
@@ -480,6 +555,10 @@ function App() {
   }, [vms]);
 
   if (!token) return <Login form={loginForm} setForm={setLoginForm} submit={login} error={error} />;
+
+  const selectedPlan = migrationPlans.find((plan) => plan.id === selectedPlanId) || null;
+  const taskPlan = migrationPlans.find((plan) => plan.id === taskPlanId) || null;
+  const editingPlan = migrationPlans.find((plan) => plan.id === editingPlanId) || null;
 
   const nav = [
     ['dashboard', Gauge, 'Dashboard'],
@@ -536,12 +615,13 @@ function App() {
         {active === 'inventory' && <Inventory vms={vms} connectors={connectors} selectedVmIds={selectedVmIds} setSelectedVmIds={setSelectedVmIds} openPlan={() => { setMigrationPlanForm(blankMigrationPlan); setShowPlanModal(true); }} changeStatus={changeStatus} />}
         {active === 'connectors' && <ConnectorWorkspace category={connectorCategory} setCategory={setConnectorCategory} catalog={connectorCatalog} connectors={connectors} form={connectorForm} setForm={setConnectorForm} save={saveConnector} editForm={editConnectorForm} setEditForm={setEditConnectorForm} saveEdit={saveConnectorEdit} discover={discoverConnector} validate={validateConnector} edit={editConnector} remove={deleteConnector} cancelEdit={cancelConnectorEdit} editingConnectorId={editingConnectorId} discoveringConnectorId={discoveringConnectorId} result={connectorResult} />}
         {active === 'hosts' && <HostsView hosts={hosts} connectors={connectors} />}
-        {active === 'plans' && <MigrationPlans plans={migrationPlans} vms={vms} connectors={connectors} preflight={executeMigrationPlan} launch={launchMigrationPlan} remove={deleteMigrationPlan} executingPlanId={executingPlanId} launchingPlanId={launchingPlanId} selectedPlan={selectedPlan} setSelectedPlan={setSelectedPlan} user={user} />}
+        {active === 'plans' && <MigrationPlans plans={migrationPlans} vms={vms} connectors={connectors} preflight={executeMigrationPlan} launch={launchMigrationPlan} remove={deleteMigrationPlan} executeTask={openPlanTask} editPlan={editMigrationPlan} executingPlanId={executingPlanId} launchingPlanId={launchingPlanId} selectedPlan={selectedPlan} setSelectedPlanId={setSelectedPlanId} taskPlan={taskPlan} closeTask={() => setTaskPlanId(null)} taskExecution={taskPlan ? planExecutions[taskPlan.id] : null} user={user} />}
         {active === 'waves' && <Waves waves={waves} />}
         {active === 'reports' && <Reports csv={csv} vms={vms} />}
         {active === 'users' && user?.role === 'admin' && <UsersView currentUser={user} users={users} form={userForm} setForm={setUserForm} save={saveUser} editForm={editUserForm} setEditForm={setEditUserForm} saveEdit={saveUserEdit} edit={editUser} remove={deleteUser} editingUserId={editingUserId} cancelEdit={cancelUserEdit} setError={setError} />}
         {active === 'settings' && <SettingsView settings={settings} setSettings={setSettings} save={saveSettings} user={user} serviceStatus={serviceStatus} serviceStatusLoading={serviceStatusLoading} />}
-        {showPlanModal && <MigrationPlanModal selectedVmIds={selectedVmIds} vms={vms} connectors={connectors} form={migrationPlanForm} setForm={setMigrationPlanForm} save={createMigrationPlan} close={() => setShowPlanModal(false)} />}
+        {showPlanModal && <MigrationPlanModal mode="create" title="Create executable migration plan" submitLabel="Save plan" selectedVmIds={selectedVmIds} vms={vms} connectors={connectors} form={migrationPlanForm} setForm={setMigrationPlanForm} save={createMigrationPlan} close={() => setShowPlanModal(false)} />}
+        {editingPlan && <MigrationPlanModal mode="edit" title={`Edit migration plan: ${editingPlan.name}`} submitLabel="Save changes" selectedVmIds={parseJsonArray(editingPlan.vm_ids_json)} sourceConnectorIdOverride={editingPlan.source_connector_id} vms={vms} connectors={connectors} form={editPlanForm} setForm={setEditPlanForm} save={saveMigrationPlanEdit} close={cancelMigrationPlanEdit} />}
       </main>
     </div>
   );
@@ -618,14 +698,16 @@ function Inventory({ vms, connectors, selectedVmIds, setSelectedVmIds, openPlan,
   })}{!filteredVms.length && <tr><td colSpan="10">No VMs match “{searchTerm}”.</td></tr>}</tbody></table></div></section>;
 }
 
-function MigrationPlanModal({ selectedVmIds, vms, connectors, form, setForm, save, close }) {
+function MigrationPlanModal({ mode = 'create', title, submitLabel, selectedVmIds, sourceConnectorIdOverride = null, vms, connectors, form, setForm, save, close }) {
   const selectedVms = vms.filter((vm) => selectedVmIds.includes(vm.id));
-  const sourceConnectorId = selectedVms[0]?.connector_id;
+  const sourceConnectorId = sourceConnectorIdOverride || selectedVms[0]?.connector_id;
   const sourceConnector = connectors.find((row) => row.id === sourceConnectorId);
   const targetConnectors = connectors.filter((row) => row.id !== sourceConnectorId);
   useEffect(() => {
-    if (!form.target_connector_id && targetConnectors[0]) setForm({ ...form, target_connector_id: String(targetConnectors[0].id) });
-  }, [form.target_connector_id, sourceConnectorId]);
+    if (!form.target_connector_id && targetConnectors[0]) {
+      setForm((current) => ({ ...current, target_connector_id: String(targetConnectors[0].id) }));
+    }
+  }, [form.target_connector_id, targetConnectors, setForm]);
   const option = (key, value) => setForm({ ...form, execution_options: { ...form.execution_options, [key]: value } });
   const setLocation = (value) => setForm({
     ...form,
@@ -643,10 +725,10 @@ function MigrationPlanModal({ selectedVmIds, vms, connectors, form, setForm, sav
       target_zone: value,
     },
   });
-  return <Modal title="Create executable migration plan" onClose={close}><FormPanel title="" onSubmit={save}><div className="tip"><strong>Selected source:</strong> {sourceConnector?.name || 'Unknown'} · {selectedVmIds.length} VM{selectedVmIds.length === 1 ? '' : 's'}<br />Preflight validates source power state, tools, credentials, storage, and network without changing infrastructure. Admin-only Launch remains protected by the Spark live-execution switch and exact plan-name confirmation.</div><Input label="Plan name" value={form.name} onChange={(value) => setForm({ ...form, name: value })} required /><Select label="Target connector" value={form.target_connector_id} options={targetConnectors.map((connector) => [connector.id, `${connector.name} (${connector.connector_type})`])} onChange={(value) => setForm({ ...form, target_connector_id: value })} /><Input label="Target datastore (KVM to vCenter)" value={form.target_datastore} onChange={(value) => setForm({ ...form, target_datastore: value })} /><div className="execution-options"><Input label="Source datacenter (vCenter to KVM)" value={form.execution_options.source_datacenter} onChange={(value) => option('source_datacenter', value)} /><Input label="Source ESXi / compute resource" value={form.execution_options.source_compute_resource} onChange={(value) => option('source_compute_resource', value)} /><Input label="Target network / bridge" value={form.execution_options.target_network} onChange={(value) => option('target_network', value)} /><Input label="Target KVM storage pool" value={form.execution_options.target_storage_pool} onChange={(value) => option('target_storage_pool', value)} /><Input label="Target vCenter resource pool" value={form.execution_options.target_resource_pool} onChange={(value) => option('target_resource_pool', value)} /><Input label="Target vCenter folder" value={form.execution_options.target_folder} onChange={(value) => option('target_folder', value)} /><Input label="Source region / zone" value={form.execution_options.source_region || form.execution_options.source_zone} onChange={setLocation} /><Input label="Target region / zone" value={form.execution_options.target_region || form.execution_options.target_zone} onChange={setTargetLocation} /><Input label="Target resource group (Azure)" value={form.execution_options.target_resource_group} onChange={(value) => option('target_resource_group', value)} /><Input label="Target subnet ID" value={form.execution_options.target_subnet_id} onChange={(value) => option('target_subnet_id', value)} /><Input label="Target location (Azure)" value={form.execution_options.target_location} onChange={(value) => option('target_location', value)} /><Input label="Target instance type / VM size" value={form.execution_options.target_instance_type} onChange={(value) => option('target_instance_type', value)} /></div><TextArea label="Notes" value={form.notes} onChange={(value) => setForm({ ...form, notes: value })} /><div className="button-row"><button className="primary" disabled={!targetConnectors.length}><Save size={16} /> Save plan</button><button className="secondary" type="button" onClick={close}><X size={16} /> Cancel</button></div></FormPanel></Modal>;
+  return <Modal title={title} onClose={close}><FormPanel title="" onSubmit={save}><div className="tip"><strong>Selected source:</strong> {sourceConnector?.name || 'Unknown'} · {selectedVmIds.length} VM{selectedVmIds.length === 1 ? '' : 's'}<br />Preflight validates source power state, tools, credentials, storage, and network without changing infrastructure. Admin-only Launch remains protected by the Spark live-execution switch and exact plan-name confirmation.</div><Input label="Plan name" value={form.name} onChange={(value) => setForm({ ...form, name: value })} required /><Select label="Target connector" value={form.target_connector_id} options={targetConnectors.map((connector) => [connector.id, `${connector.name} (${connector.connector_type})`])} onChange={(value) => setForm({ ...form, target_connector_id: value })} /><Input label="Target datastore (KVM to vCenter)" value={form.target_datastore} onChange={(value) => setForm({ ...form, target_datastore: value })} /><div className="execution-options"><Input label="Source datacenter (vCenter to KVM)" value={form.execution_options.source_datacenter} onChange={(value) => option('source_datacenter', value)} /><Input label="Source ESXi / compute resource" value={form.execution_options.source_compute_resource} onChange={(value) => option('source_compute_resource', value)} /><Input label="Target network / bridge" value={form.execution_options.target_network} onChange={(value) => option('target_network', value)} /><Input label="Target KVM storage pool" value={form.execution_options.target_storage_pool} onChange={(value) => option('target_storage_pool', value)} /><Input label="Target vCenter resource pool" value={form.execution_options.target_resource_pool} onChange={(value) => option('target_resource_pool', value)} /><Input label="Target vCenter folder" value={form.execution_options.target_folder} onChange={(value) => option('target_folder', value)} /><Input label="Source region / zone" value={form.execution_options.source_region || form.execution_options.source_zone} onChange={setLocation} /><Input label="Target region / zone" value={form.execution_options.target_region || form.execution_options.target_zone} onChange={setTargetLocation} /><Input label="Target resource group (Azure)" value={form.execution_options.target_resource_group} onChange={(value) => option('target_resource_group', value)} /><Input label="Target subnet ID" value={form.execution_options.target_subnet_id} onChange={(value) => option('target_subnet_id', value)} /><Input label="Target location (Azure)" value={form.execution_options.target_location} onChange={(value) => option('target_location', value)} /><Input label="Target instance type / VM size" value={form.execution_options.target_instance_type} onChange={(value) => option('target_instance_type', value)} /></div><TextArea label="Notes" value={form.notes} onChange={(value) => setForm({ ...form, notes: value })} /><div className="button-row"><button className="primary" disabled={!targetConnectors.length}><Save size={16} /> {submitLabel}</button><button className="secondary" type="button" onClick={close}><X size={16} /> Cancel</button></div>{mode === 'edit' && <div className="tip">Edit updates the plan definition only. It is blocked while the plan is queued or running.</div>}</FormPanel></Modal>;
 }
 
-function MigrationPlans({ plans, vms, connectors, preflight, launch, remove, executingPlanId, launchingPlanId, selectedPlan, setSelectedPlan, user }) {
+function MigrationPlans({ plans, vms, connectors, preflight, launch, remove, executeTask, editPlan, executingPlanId, launchingPlanId, selectedPlan, setSelectedPlanId, taskPlan, closeTask, taskExecution, user }) {
   const planVms = selectedPlan ? vms.filter((vm) => parseJsonArray(selectedPlan.vm_ids_json).includes(vm.id)) : [];
   const results = parseJsonArray(selectedPlan?.results_json);
   return <section className="stack"><div className="about plan-about"><h2>Executable migration plans</h2><p>Preflight checks readiness without changing infrastructure. Admin-only Launch queues live execution through the Spark Engine worker pool when the source-target adapter and required options are available.</p></div><div className="table-wrap"><table><thead><tr><th>Plan</th><th>Migration</th><th>VMs</th><th>Status</th><th>Executed</th><th>Actions</th></tr></thead><tbody>{plans.map((plan) => {
@@ -654,11 +736,11 @@ function MigrationPlans({ plans, vms, connectors, preflight, launch, remove, exe
     const target = connectors.find((row) => row.id === plan.target_connector_id);
     const vmCount = parseJsonArray(plan.vm_ids_json).length;
     const active = ['Queued', 'Running'].includes(plan.status);
-    return <tr key={plan.id}><td><strong>{plan.name}</strong></td><td>{source?.name || plan.source_connector_id} → {target?.name || plan.target_connector_id}</td><td>{vmCount}</td><td><Badge value={plan.status} /></td><td>{formatDateTime(plan.executed_at)}</td><td><div className="button-row compact"><button className="mini" onClick={() => setSelectedPlan(plan)}><FileText size={14} /> Details</button><button className="mini" disabled={active || executingPlanId === plan.id} onClick={() => preflight(plan)}><CheckCircle2 size={14} /> {executingPlanId === plan.id ? 'Checking...' : 'Preflight'}</button>{user?.role === 'admin' && <button className="mini" disabled={active || launchingPlanId === plan.id} onClick={() => launch(plan)}><Play size={14} /> {launchingPlanId === plan.id ? 'Queueing...' : 'Launch'}</button>}<button className="mini danger-button" disabled={active} onClick={() => remove(plan)}><Trash2 size={14} /> Delete</button></div></td></tr>;
-  })}</tbody></table></div>{selectedPlan && <Modal title={selectedPlan.name} onClose={() => setSelectedPlan(null)} wide><div className="plan-detail"><dl className="host-facts"><div><dt>Status</dt><dd>{selectedPlan.status}</dd></div><div><dt>Migration type</dt><dd>{selectedPlan.migration_type}</dd></div><div><dt>VMs</dt><dd>{planVms.length}</dd></div><div><dt>Spark job</dt><dd>{selectedPlan.spark_job_id || '-'}</dd></div><div><dt>Executed</dt><dd>{formatDateTime(selectedPlan.executed_at)}</dd></div></dl><div className="table-wrap"><table><thead><tr><th>VM</th><th>Source</th><th>OS</th><th>Status</th><th>Execution result</th></tr></thead><tbody>{planVms.map((vm) => {
+    return <tr key={plan.id}><td><strong>{plan.name}</strong></td><td>{source?.name || plan.source_connector_id} → {target?.name || plan.target_connector_id}</td><td>{vmCount}</td><td><Badge value={plan.status} /></td><td>{formatDateTime(plan.executed_at)}</td><td><div className="button-row compact"><button className="mini" onClick={() => setSelectedPlanId(plan.id)}><FileText size={14} /> Details</button><button className="mini" onClick={() => executeTask(plan)}><Gauge size={14} /> Task</button><button className="mini" disabled={active} onClick={() => editPlan(plan)}><Edit3 size={14} /> Edit</button><button className="mini" disabled={active || executingPlanId === plan.id} onClick={() => preflight(plan)}><CheckCircle2 size={14} /> {executingPlanId === plan.id ? 'Checking...' : 'Preflight'}</button>{user?.role === 'admin' && <button className="mini" disabled={active || launchingPlanId === plan.id} onClick={() => launch(plan)}><Play size={14} /> {launchingPlanId === plan.id ? 'Queueing...' : 'Launch'}</button>}<button className="mini danger-button" disabled={active} onClick={() => remove(plan)}><Trash2 size={14} /> Delete</button></div></td></tr>;
+  })}</tbody></table></div>{selectedPlan && <Modal title={selectedPlan.name} onClose={() => setSelectedPlanId(null)} wide><div className="plan-detail"><dl className="host-facts"><div><dt>Status</dt><dd>{selectedPlan.status}</dd></div><div><dt>Migration type</dt><dd>{selectedPlan.migration_type}</dd></div><div><dt>VMs</dt><dd>{planVms.length}</dd></div><div><dt>Spark job</dt><dd>{selectedPlan.spark_job_id || '-'}</dd></div><div><dt>Executed</dt><dd>{formatDateTime(selectedPlan.executed_at)}</dd></div></dl><div className="table-wrap"><table><thead><tr><th>VM</th><th>Source</th><th>OS</th><th>Status</th><th>Execution result</th></tr></thead><tbody>{planVms.map((vm) => {
     const result = results.find((row) => row.vm_id === vm.id);
     return <tr key={vm.id}><td>{vm.vm_name}</td><td>{vm.source_platform}</td><td>{vm.os_type || 'Unknown'}</td><td><Badge value={vm.current_status} /></td><td>{result?.message || 'Not executed'}</td></tr>;
-  })}</tbody></table></div></div></Modal>}</section>;
+  })}</tbody></table></div></div></Modal>}{taskPlan && <MigrationTaskModal plan={taskPlan} execution={taskExecution} connectors={connectors} onClose={closeTask} />}</section>;
 }
 
 function ConnectorWorkspace({ category, setCategory, catalog, connectors, ...props }) {
@@ -790,6 +872,18 @@ function Modal({ title, onClose, children, wide = false }) {
   return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}><div className={`modal-panel${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}><div className="modal-header"><h2>{title}</h2><button className="icon-button" type="button" onClick={onClose} title="Close"><X size={18} /></button></div>{children}</div></div>;
 }
 
+function MigrationTaskModal({ plan, execution, connectors, onClose }) {
+  const source = connectors.find((row) => row.id === plan.source_connector_id);
+  const target = connectors.find((row) => row.id === plan.target_connector_id);
+  const storedResults = parseJsonArray(plan.results_json);
+  const job = execution?.job || null;
+  const taskRows = job?.tasks?.length ? job.tasks : storedResults.filter((row) => row.kind === 'task');
+  const vmResults = job?.vm_results?.length ? job.vm_results : storedResults.filter((row) => row.vm_id);
+  const progressPercent = normalizeProgress(job?.progress_percent ?? taskRows.reduce((current, row) => Math.max(current, Number(row.progress_percent) || 0), 0));
+  const summaryMessage = job?.message || vmResults.find((row) => row.message)?.message || 'Not executed yet';
+  return <Modal title={`Task: ${plan.name}`} onClose={onClose} wide><div className="plan-detail"><dl className="host-facts"><div><dt>Status</dt><dd>{plan.status}</dd></div><div><dt>Migration</dt><dd>{source?.name || plan.source_connector_id} → {target?.name || plan.target_connector_id}</dd></div><div><dt>Spark job</dt><dd>{plan.spark_job_id || '-'}</dd></div><div><dt>Progress</dt><dd>{progressPercent}%</dd></div><div><dt>Executed</dt><dd>{formatDateTime(plan.executed_at)}</dd></div></dl><div className="task-summary"><div className="task-progress"><div className="task-progress-bar"><span style={{ width: `${progressPercent}%` }} /></div><strong>{progressPercent}%</strong></div><p>{summaryMessage}</p></div>{!plan.spark_job_id && <div className="about"><h2>Not executed yet</h2><p>This migration plan has not been sent to the Spark Engine. Run Preflight or Launch first to generate task telemetry.</p></div>}{Boolean(taskRows.length) && <div className="table-wrap"><table><thead><tr><th>Task</th><th>Status</th><th>Progress</th><th>Detail</th><th>Updated</th></tr></thead><tbody>{taskRows.map((task, index) => <tr key={`${task.task_code || 'task'}-${index}`}><td>{task.task_name || task.task_code || 'Task'}</td><td><Badge value={task.status || 'Running'} /></td><td>{normalizeProgress(task.progress_percent)}%</td><td>{task.message || '-'}</td><td>{formatDateTime(task.updated_at)}</td></tr>)}</tbody></table></div>}{plan.spark_job_id && !taskRows.length && <div className="about"><h2>Task stream pending</h2><p>The Spark Engine job exists, but it has not published task entries yet. Refresh after a few seconds if this persists.</p></div>}{Boolean(vmResults.length) && <div className="table-wrap"><table><thead><tr><th>VM ID</th><th>Status</th><th>Detail</th></tr></thead><tbody>{vmResults.map((row, index) => <tr key={`${row.vm_id || 'result'}-${index}`}><td>{row.vm_id || '-'}</td><td><Badge value={row.ok ? 'Succeeded' : 'Failed'} /></td><td>{row.message || '-'}</td></tr>)}</tbody></table></div>}</div></Modal>;
+}
+
 function Input({ label, value, onChange, type = 'text', required = false }) {
   return <label>{label}<input type={type} value={value ?? ''} required={required} onChange={(e) => onChange(e.target.value)} /></label>;
 }
@@ -819,6 +913,35 @@ function parseJsonArray(value) {
   } catch {
     return [];
   }
+}
+
+function normalizeProgress(value) {
+  const numeric = Number(value);
+  if (Number.isNaN(numeric)) return 0;
+  return Math.min(100, Math.max(0, Math.round(numeric)));
+}
+
+function parseExecutionOptions(value) {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function planToForm(plan) {
+  return {
+    name: plan.name || '',
+    target_connector_id: String(plan.target_connector_id || ''),
+    target_datastore: plan.target_datastore || '',
+    notes: plan.notes || '',
+    execution_options: {
+      ...blankMigrationPlan.execution_options,
+      ...parseExecutionOptions(plan.execution_options_json),
+    },
+  };
 }
 
 createRoot(document.getElementById('root')).render(<App />);

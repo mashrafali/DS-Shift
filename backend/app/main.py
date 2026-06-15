@@ -825,6 +825,31 @@ def create_migration_plan(payload: schemas.MigrationPlanCreate, db: Session = De
     return plan
 
 
+@app.put("/api/migration-plans/{plan_id}", response_model=schemas.MigrationPlan)
+def update_migration_plan(plan_id: int, payload: schemas.MigrationPlanUpdate, db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
+    plan = db.get(models.MigrationPlan, plan_id)
+    if not plan:
+        raise HTTPException(404, "Migration plan not found")
+    if plan.status in {"Queued", "Running"}:
+        raise HTTPException(409, "Cannot edit a migration plan while its Spark Engine job is active")
+    source = db.get(models.ConnectorProfile, plan.source_connector_id)
+    target = db.get(models.ConnectorProfile, payload.target_connector_id)
+    if not source or not target:
+        raise HTTPException(404, "Source or target connector not found")
+    if source.id == target.id:
+        raise HTTPException(400, "Target connector must differ from source connector")
+    plan.name = payload.name
+    plan.target_connector_id = payload.target_connector_id
+    plan.target_datastore = payload.target_datastore
+    plan.notes = payload.notes
+    plan.execution_options_json = json.dumps(payload.execution_options)
+    plan.migration_type = f"{source.connector_type} to {target.connector_type}"
+    plan.status = "Draft"
+    db.commit()
+    db.refresh(plan)
+    return plan
+
+
 @app.get("/api/spark/capabilities")
 def get_spark_capabilities(_user: models.LocalUser = Depends(current_user)):
     try:

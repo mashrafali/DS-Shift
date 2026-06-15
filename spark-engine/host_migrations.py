@@ -301,7 +301,7 @@ def preflight_vcenter_to_kvm(request) -> list[dict]:
     return checks
 
 
-def execute_kvm_to_vcenter(request) -> list[dict]:
+def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
     results = []
     env = govc_environment(request.target_connector, request.options)
     with ssh_client(request.source_connector) as client:
@@ -309,6 +309,8 @@ def execute_kvm_to_vcenter(request) -> list[dict]:
         try:
             for workload in request.workloads:
                 target_name = safe_name(request.options.get("target_name") or f"{workload.vm_name}-migrated")
+                if reporter:
+                    reporter.task(f"{workload.id}-inspect", f"{workload.vm_name}: inspect source VM", "Running", 15, f"Inspecting KVM source VM {workload.vm_name}")
                 state, _ = ssh_exec(client, f"virsh domstate {shlex.quote(workload.vm_name)}")
                 if state.strip().lower() not in {"shut off", "shutoff"}:
                     raise RuntimeError(f"{workload.vm_name} must be shut off before disk conversion")
@@ -316,18 +318,54 @@ def execute_kvm_to_vcenter(request) -> list[dict]:
                 metadata = parse_domain_xml(xml_text)
                 if not metadata["disks"]:
                     raise RuntimeError(f"{workload.vm_name} has no file-backed disks")
+                if reporter:
+                    reporter.task(f"{workload.id}-inspect", f"{workload.vm_name}: inspect source VM", "Succeeded", 25, f"Found {len(metadata['disks'])} file-backed source disk(s)")
                 with tempfile.TemporaryDirectory(prefix="ds-shift-kvm-vc-") as stage:
                     stage_path = Path(stage)
                     ovf_disks = []
                     for index, disk in enumerate(metadata["disks"], start=1):
                         source_path = stage_path / f"source-{index}{Path(disk['path']).suffix or '.img'}"
                         target_path = stage_path / f"{target_name}-disk{index}.vmdk"
+                        if reporter:
+                            reporter.task(
+                                f"{workload.id}-stage-{index}",
+                                f"{workload.vm_name}: stage source disk {index}",
+                                "Running",
+                                35,
+                                f"Copying {disk['path']} into Spark staging",
+                            )
                         sftp.get(disk["path"], str(source_path))
+                        if reporter:
+                            reporter.task(
+                                f"{workload.id}-stage-{index}",
+                                f"{workload.vm_name}: stage source disk {index}",
+                                "Succeeded",
+                                45,
+                                f"Copied source disk {index} into Spark staging",
+                            )
                         info = json.loads(run(["qemu-img", "info", "--output=json", str(source_path)]))
+                        if reporter:
+                            reporter.task(
+                                f"{workload.id}-convert-{index}",
+                                f"{workload.vm_name}: convert disk {index}",
+                                "Running",
+                                60,
+                                f"Converting source disk {index} to stream-optimized VMDK",
+                            )
                         run(["qemu-img", "convert", "-p", "-O", "vmdk", "-o", "subformat=streamOptimized", str(source_path), str(target_path)])
                         ovf_disks.append({"name": target_path.name, "size": target_path.stat().st_size, "capacity": info["virtual-size"]})
                         source_path.unlink()
+                        if reporter:
+                            reporter.task(
+                                f"{workload.id}-convert-{index}",
+                                f"{workload.vm_name}: convert disk {index}",
+                                "Succeeded",
+                                70,
+                                f"Converted source disk {index} to {target_path.name}",
+                            )
                     ovf_path = stage_path / f"{target_name}.ovf"
+                    if reporter:
+                        reporter.task(f"{workload.id}-package", f"{workload.vm_name}: package OVA", "Running", 75, f"Building OVF and OVA package for {target_name}")
                     ovf_path.write_text(
                         ovf_descriptor(target_name, metadata["cpu"], metadata["memory_bytes"], ovf_disks, metadata["interfaces"]),
                         encoding="utf-8",
@@ -337,11 +375,17 @@ def execute_kvm_to_vcenter(request) -> list[dict]:
                         archive.add(ovf_path, arcname=ovf_path.name)
                         for disk in ovf_disks:
                             archive.add(stage_path / disk["name"], arcname=disk["name"])
+                    if reporter:
+                        reporter.task(f"{workload.id}-package", f"{workload.vm_name}: package OVA", "Succeeded", 82, f"Prepared OVA package {ova_path.name}")
                     command = ["govc", "import.ova", "-name", target_name]
                     if request.options.get("power_on"):
                         command.append("-powerOn")
                     command.append(str(ova_path))
+                    if reporter:
+                        reporter.task(f"{workload.id}-import", f"{workload.vm_name}: import into vCenter", "Running", 92, f"Importing {ova_path.name} into vCenter as {target_name}")
                     output = run(command, env=env, timeout=int(request.options.get("timeout", 14400)))
+                    if reporter:
+                        reporter.task(f"{workload.id}-import", f"{workload.vm_name}: import into vCenter", "Succeeded", 98, f"Imported {target_name} into vCenter")
                 results.append({"ok": True, "vm_id": workload.id, "vm_name": workload.vm_name, "target_name": target_name, "message": output.strip() or "OVA imported into vCenter"})
         finally:
             sftp.close()
@@ -364,7 +408,7 @@ def vpx_uri(connector, workload, options: dict) -> str:
     return f"vpx://{user}@{parsed.hostname}:{parsed.port or connector.port or 443}/{encoded_path}?no_verify=1"
 
 
-def execute_vcenter_to_kvm(request) -> list[dict]:
+def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
     results = []
     password = credential_value(request.source_connector.credential_reference)
     if not password:
@@ -377,16 +421,22 @@ def execute_vcenter_to_kvm(request) -> list[dict]:
         sftp = client.open_sftp()
         try:
             for workload in request.workloads:
+                if reporter:
+                    reporter.task(f"{workload.id}-inspect", f"{workload.vm_name}: inspect source VM", "Running", 15, f"Inspecting vCenter source VM {workload.vm_name}")
                 vm_info = find_vcenter_vm(request.source_connector, workload)
                 if vm_info["power_state"].lower() != "poweredoff":
                     raise RuntimeError(f"{workload.vm_name} must be powered off before virt-v2v conversion")
                 target_name = safe_name(request.options.get("target_name") or f"{workload.vm_name}-migrated")
                 ssh_exec(client, f"! virsh dominfo {shlex.quote(target_name)} >/dev/null 2>&1", timeout=20)
+                if reporter:
+                    reporter.task(f"{workload.id}-inspect", f"{workload.vm_name}: inspect source VM", "Succeeded", 25, f"Verified powered-off source and free target name {target_name}")
                 with tempfile.TemporaryDirectory(prefix="ds-shift-vc-kvm-") as stage:
                     stage_path = Path(stage)
                     password_path = stage_path / "vcenter-password"
                     password_path.write_text(password, encoding="utf-8")
                     password_path.chmod(0o600)
+                    if reporter:
+                        reporter.task(f"{workload.id}-convert", f"{workload.vm_name}: convert with virt-v2v", "Running", 55, f"Converting {workload.vm_name} with virt-v2v")
                     command = [
                         "virt-v2v",
                         "-ic", vpx_uri(request.source_connector, workload, request.options),
@@ -401,11 +451,15 @@ def execute_vcenter_to_kvm(request) -> list[dict]:
                     if request.options.get("target_network"):
                         command.extend(["--network", request.options["target_network"]])
                     output = run(command, timeout=int(request.options.get("timeout", 14400)))
+                    if reporter:
+                        reporter.task(f"{workload.id}-convert", f"{workload.vm_name}: convert with virt-v2v", "Succeeded", 70, f"virt-v2v created local conversion artifacts for {target_name}")
                     xml_path = stage_path / f"{target_name}.xml"
                     if not xml_path.exists():
                         raise RuntimeError("virt-v2v did not generate target libvirt XML")
                     root = ET.parse(xml_path)
                     local_disks = []
+                    if reporter:
+                        reporter.task(f"{workload.id}-transfer", f"{workload.vm_name}: transfer converted disks", "Running", 82, f"Uploading converted disks into storage pool {request.options['target_storage_pool']}")
                     for disk in root.findall("./devices/disk[@device='disk']"):
                         source = disk.find("source")
                         if source is None or not source.get("file"):
@@ -418,12 +472,18 @@ def execute_vcenter_to_kvm(request) -> list[dict]:
                     root.write(xml_path, encoding="unicode")
                     remote_xml = f"/tmp/ds-shift-{target_name}.xml"
                     sftp.put(str(xml_path), remote_xml)
+                    if reporter:
+                        reporter.task(f"{workload.id}-transfer", f"{workload.vm_name}: transfer converted disks", "Succeeded", 88, f"Uploaded converted disks and target XML for {target_name}")
                     try:
+                        if reporter:
+                            reporter.task(f"{workload.id}-define", f"{workload.vm_name}: define target VM", "Running", 94, f"Defining libvirt domain {target_name}")
                         ssh_exec(client, f"virsh define {shlex.quote(remote_xml)}", timeout=30)
                         if request.options.get("autostart"):
                             ssh_exec(client, f"virsh autostart {shlex.quote(target_name)}", timeout=30)
                         if request.options.get("power_on"):
                             ssh_exec(client, f"virsh start {shlex.quote(target_name)}", timeout=60)
+                        if reporter:
+                            reporter.task(f"{workload.id}-define", f"{workload.vm_name}: define target VM", "Succeeded", 98, f"Defined libvirt domain {target_name}")
                     except Exception:
                         for remote_disk in local_disks:
                             try:

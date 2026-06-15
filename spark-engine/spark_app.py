@@ -154,8 +154,76 @@ class JobRequest(BaseModel):
     approval: str
 
 
+class JobProgressReporter:
+    def __init__(self, job_id: int):
+        self.job_id = job_id
+
+    def task(
+        self,
+        key: str,
+        title: str,
+        status: str,
+        progress: int,
+        message: str,
+        *,
+        details: dict | None = None,
+    ) -> list[dict]:
+        with engine.begin() as connection:
+            entries = _job_entries(connection, self.job_id)
+            now = datetime.utcnow().isoformat()
+            existing = next((entry for entry in entries if entry.get("kind") == "task" and entry.get("key") == key), None)
+            if existing:
+                existing.update({"title": title, "status": status, "progress": progress, "message": message})
+                if details is not None:
+                    existing["details"] = details
+            else:
+                existing = {
+                    "kind": "task",
+                    "key": key,
+                    "title": title,
+                    "status": status,
+                    "progress": progress,
+                    "message": message,
+                    "started_at": now,
+                }
+                if details is not None:
+                    existing["details"] = details
+                entries.append(existing)
+            if status in {"Succeeded", "Failed"}:
+                existing["completed_at"] = now
+            connection.execute(
+                update(jobs)
+                .where(jobs.c.id == self.job_id)
+                .values(result_json=json.dumps(entries), message=message)
+            )
+            return entries
+
+    def finalize(self, vm_results: list[dict]) -> list[dict]:
+        with engine.begin() as connection:
+            entries = _job_entries(connection, self.job_id)
+            non_vm_entries = [entry for entry in entries if entry.get("kind") != "vm_result"]
+            merged = non_vm_entries + [{**row, "kind": row.get("kind", "vm_result")} for row in vm_results]
+            connection.execute(
+                update(jobs)
+                .where(jobs.c.id == self.job_id)
+                .values(result_json=json.dumps(merged))
+            )
+            return merged
+
+
 def adapter_for(source: str, target: str) -> dict | None:
     return next((row for row in CAPABILITIES if row["source"] == source and row["target"] == target), None)
+
+
+def _job_entries(connection, job_id: int) -> list[dict]:
+    payload = connection.execute(select(jobs.c.result_json).where(jobs.c.id == job_id)).scalar_one()
+    if not payload:
+        return []
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
 def row_dict(row) -> dict:
@@ -165,6 +233,12 @@ def row_dict(row) -> dict:
             result[key] = result[key].isoformat()
     if result.get("result_json"):
         result["result"] = json.loads(result["result_json"])
+    else:
+        result["result"] = []
+    tasks = [entry for entry in result["result"] if isinstance(entry, dict) and entry.get("kind") == "task"]
+    result["tasks"] = tasks
+    result["vm_results"] = [entry for entry in result["result"] if isinstance(entry, dict) and entry.get("kind") != "task"]
+    result["progress_percent"] = max((int(task.get("progress", 0)) for task in tasks), default=0)
     result.pop("request_json", None)
     result.pop("result_json", None)
     return result
@@ -304,7 +378,9 @@ def claim_job() -> dict | None:
 
 def execute_job(job: dict) -> None:
     request = JobRequest.model_validate_json(job["request_json"])
+    reporter = JobProgressReporter(job["id"])
     try:
+        reporter.task("prepare", "Prepare execution", "Running", 5, f"Starting {job['adapter']} for {len(request.workloads)} workload(s)")
         if job["adapter"] == "aws-ec2-copy":
             result = execute_aws(request)
         elif job["adapter"] == "gcp-machine-image":
@@ -314,22 +390,25 @@ def execute_job(job: dict) -> None:
         elif job["adapter"] == "kvm-libvirt-migrate":
             result = execute_kvm(request)
         elif job["adapter"] == "kvm-vcenter-ova":
-            result = execute_kvm_to_vcenter(request)
+            result = execute_kvm_to_vcenter(request, reporter=reporter)
         elif job["adapter"] == "vcenter-kvm-virt-v2v":
-            result = execute_vcenter_to_kvm(request)
+            result = execute_vcenter_to_kvm(request, reporter=reporter)
         else:
             raise RuntimeError(f"Unknown Spark adapter: {job['adapter']}")
-        status = "Succeeded"
         message = f"Spark Engine completed {len(result)} workload migration(s)"
+        reporter.task("complete", "Finalize execution", "Succeeded", 100, message)
+        merged_result = reporter.finalize(result)
+        status = "Succeeded"
     except Exception as exc:
-        result = [{"ok": False, "message": str(exc)}]
+        reporter.task("failed", "Execution failed", "Failed", 100, str(exc))
+        merged_result = reporter.finalize([{"kind": "vm_result", "ok": False, "message": str(exc)}])
         status = "Failed"
         message = str(exc)
     with engine.begin() as connection:
         connection.execute(
             update(jobs)
             .where(jobs.c.id == job["id"])
-            .values(status=status, result_json=json.dumps(result), message=message, completed_at=datetime.utcnow())
+            .values(status=status, result_json=json.dumps(merged_result), message=message, completed_at=datetime.utcnow())
         )
 
 
