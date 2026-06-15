@@ -703,6 +703,8 @@ function MigrationPlanModal({ mode = 'create', title, submitLabel, selectedVmIds
   const sourceConnectorId = sourceConnectorIdOverride || selectedVms[0]?.connector_id;
   const sourceConnector = connectors.find((row) => row.id === sourceConnectorId);
   const targetConnectors = connectors.filter((row) => row.id !== sourceConnectorId);
+  const targetConnector = targetConnectors.find((row) => String(row.id) === String(form.target_connector_id)) || targetConnectors[0] || null;
+  const fieldConfig = migrationPlanFieldConfig(sourceConnector?.connector_type, targetConnector?.connector_type);
   useEffect(() => {
     if (!form.target_connector_id && targetConnectors[0]) {
       setForm((current) => ({ ...current, target_connector_id: String(targetConnectors[0].id) }));
@@ -725,7 +727,7 @@ function MigrationPlanModal({ mode = 'create', title, submitLabel, selectedVmIds
       target_zone: value,
     },
   });
-  return <Modal title={title} onClose={close}><FormPanel title="" onSubmit={save}><div className="tip"><strong>Selected source:</strong> {sourceConnector?.name || 'Unknown'} · {selectedVmIds.length} VM{selectedVmIds.length === 1 ? '' : 's'}<br />Preflight validates source power state, tools, credentials, storage, and network without changing infrastructure. Admin-only Launch remains protected by the Spark live-execution switch and exact plan-name confirmation.</div><Input label="Plan name" value={form.name} onChange={(value) => setForm({ ...form, name: value })} required /><Select label="Target connector" value={form.target_connector_id} options={targetConnectors.map((connector) => [connector.id, `${connector.name} (${connector.connector_type})`])} onChange={(value) => setForm({ ...form, target_connector_id: value })} /><Input label="Target datastore (KVM to vCenter)" value={form.target_datastore} onChange={(value) => setForm({ ...form, target_datastore: value })} /><div className="execution-options"><Input label="Source datacenter (vCenter to KVM)" value={form.execution_options.source_datacenter} onChange={(value) => option('source_datacenter', value)} /><Input label="Source ESXi / compute resource" value={form.execution_options.source_compute_resource} onChange={(value) => option('source_compute_resource', value)} /><Input label="Target network / bridge" value={form.execution_options.target_network} onChange={(value) => option('target_network', value)} /><Input label="Target KVM storage pool" value={form.execution_options.target_storage_pool} onChange={(value) => option('target_storage_pool', value)} /><Input label="Target vCenter resource pool" value={form.execution_options.target_resource_pool} onChange={(value) => option('target_resource_pool', value)} /><Input label="Target vCenter folder" value={form.execution_options.target_folder} onChange={(value) => option('target_folder', value)} /><Input label="Source region / zone" value={form.execution_options.source_region || form.execution_options.source_zone} onChange={setLocation} /><Input label="Target region / zone" value={form.execution_options.target_region || form.execution_options.target_zone} onChange={setTargetLocation} /><Input label="Target resource group (Azure)" value={form.execution_options.target_resource_group} onChange={(value) => option('target_resource_group', value)} /><Input label="Target subnet ID" value={form.execution_options.target_subnet_id} onChange={(value) => option('target_subnet_id', value)} /><Input label="Target location (Azure)" value={form.execution_options.target_location} onChange={(value) => option('target_location', value)} /><Input label="Target instance type / VM size" value={form.execution_options.target_instance_type} onChange={(value) => option('target_instance_type', value)} /></div><TextArea label="Notes" value={form.notes} onChange={(value) => setForm({ ...form, notes: value })} /><div className="button-row"><button className="primary" disabled={!targetConnectors.length}><Save size={16} /> {submitLabel}</button><button className="secondary" type="button" onClick={close}><X size={16} /> Cancel</button></div>{mode === 'edit' && <div className="tip">Edit updates the plan definition only. It is blocked while the plan is queued or running.</div>}</FormPanel></Modal>;
+  return <Modal title={title} onClose={close}><FormPanel title="" onSubmit={save}><div className="tip"><strong>Selected source:</strong> {sourceConnector?.name || 'Unknown'} · {selectedVmIds.length} VM{selectedVmIds.length === 1 ? '' : 's'}<br />Preflight validates source power state, tools, credentials, storage, and network without changing infrastructure. Admin-only Launch remains protected by the Spark live-execution switch and exact plan-name confirmation.</div><Input label="Plan name" value={form.name} onChange={(value) => setForm({ ...form, name: value })} required /><Select label="Target connector" value={form.target_connector_id} options={targetConnectors.map((connector) => [connector.id, `${connector.name} (${connector.connector_type})`])} onChange={(value) => setForm({ ...form, target_connector_id: value })} />{targetConnector && <div className="tip"><strong>Execution inputs for:</strong> {sourceConnector?.connector_type || 'Unknown source'} to {targetConnector.connector_type}<br />{fieldConfig.description}</div>}{Boolean(fieldConfig.fields.length) && <div className="execution-options">{fieldConfig.fields.map((field) => renderMigrationPlanField(field, form, setForm, option, setLocation, setTargetLocation))}</div>}{!fieldConfig.fields.length && targetConnector && <div className="tip">This migration path currently does not require extra plan-level execution inputs in the UI.</div>}<TextArea label="Notes" value={form.notes} onChange={(value) => setForm({ ...form, notes: value })} /><div className="button-row"><button className="primary" disabled={!targetConnectors.length}><Save size={16} /> {submitLabel}</button><button className="secondary" type="button" onClick={close}><X size={16} /> Cancel</button></div>{mode === 'edit' && <div className="tip">Edit updates the plan definition only. It is blocked while the plan is queued or running.</div>}</FormPanel></Modal>;
 }
 
 function MigrationPlans({ plans, vms, connectors, preflight, launch, remove, executeTask, editPlan, executingPlanId, launchingPlanId, selectedPlan, setSelectedPlanId, taskPlan, closeTask, taskExecution, user }) {
@@ -929,6 +931,88 @@ function parseExecutionOptions(value) {
   } catch {
     return {};
   }
+}
+
+function renderMigrationPlanField(field, form, setForm, option, setLocation, setTargetLocation) {
+  const key = field.key;
+  if (key === 'target_datastore') {
+    return <Input key={key} label={field.label} value={form.target_datastore} onChange={(value) => setForm({ ...form, target_datastore: value })} />;
+  }
+  if (key === 'source_location') {
+    return <Input key={key} label={field.label} value={form.execution_options.source_region || form.execution_options.source_zone} onChange={setLocation} />;
+  }
+  if (key === 'target_location_shared') {
+    return <Input key={key} label={field.label} value={form.execution_options.target_region || form.execution_options.target_zone} onChange={setTargetLocation} />;
+  }
+  return <Input key={key} label={field.label} value={form.execution_options[key] || ''} onChange={(value) => option(key, value)} />;
+}
+
+function migrationPlanFieldConfig(sourceType, targetType) {
+  const source = sourceType || '';
+  const target = targetType || '';
+  if (source === 'KVM' && target === 'VMware ESXi / vCenter') {
+    return {
+      description: 'Provide the target vCenter placement and network details needed for OVA import.',
+      fields: [
+        { key: 'target_datastore', label: 'Target datastore' },
+        { key: 'target_network', label: 'Target network' },
+        { key: 'target_resource_pool', label: 'Target vCenter resource pool' },
+        { key: 'target_folder', label: 'Target vCenter folder' },
+      ],
+    };
+  }
+  if (source === 'VMware ESXi / vCenter' && target === 'KVM') {
+    return {
+      description: 'Provide the source vCenter inventory path and the destination KVM storage/network settings used by virt-v2v.',
+      fields: [
+        { key: 'source_datacenter', label: 'Source datacenter' },
+        { key: 'source_compute_resource', label: 'Source ESXi / compute resource' },
+        { key: 'target_storage_pool', label: 'Target KVM storage pool' },
+        { key: 'target_network', label: 'Target network / bridge' },
+      ],
+    };
+  }
+  if (source === 'Amazon Web Services' && target === 'Amazon Web Services') {
+    return {
+      description: 'Set the source and target AWS regions and the target instance type for the launched copy.',
+      fields: [
+        { key: 'source_region', label: 'Source AWS region' },
+        { key: 'target_region', label: 'Target AWS region' },
+        { key: 'target_instance_type', label: 'Target instance type' },
+      ],
+    };
+  }
+  if (source === 'Google Cloud Platform' && target === 'Google Cloud Platform') {
+    return {
+      description: 'Set the source and target GCP zones and the target machine type for the created instance.',
+      fields: [
+        { key: 'source_location', label: 'Source zone' },
+        { key: 'target_location_shared', label: 'Target zone' },
+        { key: 'target_instance_type', label: 'Target machine type' },
+      ],
+    };
+  }
+  if (source === 'Microsoft Azure' && target === 'Microsoft Azure') {
+    return {
+      description: 'Set the Azure destination resource group, virtual network subnet, location, and VM size.',
+      fields: [
+        { key: 'target_resource_group', label: 'Target resource group' },
+        { key: 'target_subnet_id', label: 'Target subnet ID' },
+        { key: 'target_location', label: 'Target Azure location' },
+        { key: 'target_instance_type', label: 'Target VM size' },
+      ],
+    };
+  }
+  if (source === 'KVM' && target === 'KVM') {
+    return {
+      description: 'The current KVM-to-KVM path does not require extra plan-level inputs in this form.',
+      fields: [],
+    };
+  }
+  return {
+    description: 'Only execution inputs that apply to the selected destination path are shown here. Connector-level credentials remain on the connector itself.',
+    fields: [],
+  };
 }
 
 function planToForm(plan) {
