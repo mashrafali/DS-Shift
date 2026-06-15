@@ -153,16 +153,23 @@ def test_host_discovery_sync_and_connector_delete():
             [{"host_key": "kvm", "host_name": "kvm", "platform": "KVM", "cpu": 16, "memory_gb": 64}],
             [{"vm_name": "vm-01", "host_key": "kvm", "host_name": "kvm", "cpu": 2}],
         )
+        assert sync_discovered_vms(
+            db,
+            connector,
+            [{"vm_name": "vm-01", "external_id": "vm-01", "host_name": "kvm", "source_platform": "KVM", "cpu": 2, "memory_gb": 4}],
+        ) == 1
 
         host = db.query(models.HostInventory).one()
         assert count == 1
         assert host.host_name == "kvm"
         assert host.vm_count == 1
         assert json.loads(host.vms_json)[0]["vm_name"] == "vm-01"
+        assert db.query(models.VmInventory).count() == 1
 
         delete_connector(connector.id, db, None)
         assert db.query(models.ConnectorProfile).count() == 0
         assert db.query(models.HostInventory).count() == 0
+        assert db.query(models.VmInventory).count() == 0
 
 
 def test_connector_delete_removes_legacy_migration_jobs_but_blocks_plans():

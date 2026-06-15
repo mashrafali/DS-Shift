@@ -629,6 +629,7 @@ def delete_connector(connector_id: int, db: Session = Depends(get_db), _user: mo
     ).delete(synchronize_session=False)
     db.query(models.DiscoveryRun).filter(models.DiscoveryRun.connector_id == connector_id).delete(synchronize_session=False)
     db.query(models.HostInventory).filter(models.HostInventory.connector_id == connector_id).delete(synchronize_session=False)
+    db.query(models.VmInventory).filter(models.VmInventory.connector_id == connector_id).delete(synchronize_session=False)
     db.delete(connector)
     db.commit()
 
