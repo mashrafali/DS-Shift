@@ -20,6 +20,7 @@ from app.main import (
     delete_user,
     decrypt_connector_secret,
     connector_public,
+    continue_migration_plan,
     execute_migration_plan,
     execute_wave,
     hash_password,
@@ -296,6 +297,54 @@ def test_discovery_inventory_and_migration_plan_execution(monkeypatch):
         assert executed.status == "Preflight ready"
         assert executed.executed_at is not None
         assert db.get(models.VmInventory, vm.id).current_status == "Ready for migration"
+
+
+def test_continue_migration_plan_reuses_preserved_staging(monkeypatch, tmp_path):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        source = models.ConnectorProfile(name="KVM Source", connector_category="host", connector_type="KVM")
+        target = models.ConnectorProfile(name="vCenter Target", connector_category="host", connector_type="VMware ESXi / vCenter")
+        db.add_all([source, target])
+        db.flush()
+        vm = models.VmInventory(vm_name="vm-01", source_platform="KVM", target_platform="VMware ESXi / vCenter", cpu=4, memory_gb=8, disk_gb=80, connector_id=source.id)
+        db.add(vm)
+        db.flush()
+        plan = models.MigrationPlan(
+            name="Resume Plan",
+            source_connector_id=source.id,
+            target_connector_id=target.id,
+            migration_type="KVM to VMware ESXi / vCenter",
+            vm_ids_json=json.dumps([vm.id]),
+            status="Failed",
+            results_json=json.dumps([{"vm_id": vm.id, "vm_name": vm.vm_name, "ok": False, "can_resume": True, "message": "Provisioning failed after conversion"}]),
+        )
+        db.add(plan)
+        db.commit()
+        db.refresh(plan)
+
+        stage_path = tmp_path / f"plan-{plan.id}" / f"vm-{vm.id}-vm-01"
+        stage_path.mkdir(parents=True)
+        (stage_path / "vm-01-migrated-disk1.vmdk").write_text("converted", encoding="utf-8")
+
+        monkeypatch.setattr("app.main.STAGING_ROOT", tmp_path)
+        monkeypatch.setattr(
+            "app.main.create_spark_job",
+            lambda payload: {"id": 77, "plan_id": payload["plan_id"], "status": "Queued", "adapter": "kvm-vcenter-ova"},
+        )
+
+        response = continue_migration_plan(
+            plan.id,
+            schemas.MigrationContinue(confirmation=plan.name),
+            db,
+            models.LocalUser(username="admin", password_hash="unused", role="admin", is_active="true"),
+        )
+
+        assert response["job"]["id"] == 77
+        assert response["resume"]["allowed"] is True
+        assert response["resume"]["workloads"][0]["stage_path"] == str(stage_path)
+        assert db.get(models.MigrationPlan, plan.id).spark_job_id == 77
 
 
 def test_connector_defaults_and_wave_creation():

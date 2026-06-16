@@ -230,6 +230,12 @@ def stage_directory(plan_id: int, workload_id: int, vm_name: str) -> Path:
     return base
 
 
+def preserved_stage_directory(plan_id: int, workload_id: int, vm_name: str) -> Path:
+    base = ensure_staging_root() / f"plan-{plan_id}" / f"vm-{workload_id}-{safe_name(vm_name)}"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
 def temporary_stage_directory(prefix: str) -> Path:
     return Path(tempfile.mkdtemp(prefix=prefix, dir=str(ensure_staging_root())))
 
@@ -282,6 +288,27 @@ def launchgrid_provision(request, workload, target_name: str, metadata: dict, di
             pass
         raise RuntimeError(f"LaunchGrid provisioning failed: {detail}")
     return response.json()
+
+
+def converted_vmdk_layout(stage_path: Path, target_name: str, disks: list[dict]) -> list[dict]:
+    layout = []
+    for index, disk in enumerate(disks, start=1):
+        local_path = stage_path / f"{target_name}-disk{index}.vmdk"
+        layout.append({"local_path": str(local_path), "capacity_bytes": int(disk["capacity_bytes"]), "exists": local_path.exists()})
+    return layout
+
+
+def stage_failure_result(workload, target_name: str, stage_path: Path, message: str, *, can_resume: bool) -> dict:
+    return {
+        "ok": False,
+        "vm_id": workload.id,
+        "vm_name": workload.vm_name,
+        "target_name": target_name,
+        "message": message,
+        "stage_path": str(stage_path),
+        "can_resume": can_resume,
+        "resume_hint": "Use Continue after correcting the blocking issue to reuse the preserved staged artifacts" if can_resume else "Relaunch will rebuild staging because reusable converted artifacts are not available",
+    }
 
 
 def remove_source_kvm_vm(client: paramiko.SSHClient, vm_name: str) -> None:
@@ -439,71 +466,87 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
         try:
             for workload in request.workloads:
                 target_name = safe_name(request.options.get("target_name") or f"{workload.vm_name}-migrated")
-                if reporter:
-                    reporter.task(f"{workload.id}-inspect", f"{workload.vm_name}: inspect source VM", "Running", 15, f"Inspecting KVM source VM {workload.vm_name}")
-                state, _ = ssh_exec(client, f"virsh domstate {shlex.quote(workload.vm_name)}")
-                if state.strip().lower() not in {"shut off", "shutoff"}:
-                    raise RuntimeError(f"{workload.vm_name} must be shut off before disk conversion")
-                xml_text, _ = ssh_exec(client, f"virsh dumpxml {shlex.quote(workload.vm_name)}")
-                metadata = parse_domain_xml(xml_text)
-                if not metadata["disks"]:
-                    raise RuntimeError(f"{workload.vm_name} has no file-backed disks")
-                if reporter:
-                    reporter.task(f"{workload.id}-inspect", f"{workload.vm_name}: inspect source VM", "Succeeded", 25, f"Found {len(metadata['disks'])} file-backed source disk(s)")
-                stage_path = stage_directory(request.plan_id, workload.id, workload.vm_name)
+                stage_path = preserved_stage_directory(request.plan_id, workload.id, workload.vm_name)
                 converted_disks = []
                 try:
-                    for index, disk in enumerate(metadata["disks"], start=1):
-                        source_path = stage_path / f"source-{index}{Path(disk['path']).suffix or '.img'}"
-                        target_path = stage_path / f"{target_name}-disk{index}.vmdk"
+                    resume_from_stage = bool(request.options.get("resume_from_stage"))
+                    if reporter:
+                        reporter.task(f"{workload.id}-inspect", f"{workload.vm_name}: inspect source VM", "Running", 15, f"Inspecting KVM source VM {workload.vm_name}")
+                    state, _ = ssh_exec(client, f"virsh domstate {shlex.quote(workload.vm_name)}")
+                    if state.strip().lower() not in {"shut off", "shutoff"}:
+                        raise RuntimeError(f"{workload.vm_name} must be shut off before disk conversion")
+                    xml_text, _ = ssh_exec(client, f"virsh dumpxml {shlex.quote(workload.vm_name)}")
+                    metadata = parse_domain_xml(xml_text)
+                    if not metadata["disks"]:
+                        raise RuntimeError(f"{workload.vm_name} has no file-backed disks")
+                    if reporter:
+                        reporter.task(f"{workload.id}-inspect", f"{workload.vm_name}: inspect source VM", "Succeeded", 25, f"Found {len(metadata['disks'])} file-backed source disk(s)")
+                    stage_path = preserved_stage_directory(request.plan_id, workload.id, workload.vm_name) if resume_from_stage else stage_directory(request.plan_id, workload.id, workload.vm_name)
+                    reused_converted = resume_from_stage
+                    if resume_from_stage:
+                        candidate_disks = converted_vmdk_layout(stage_path, target_name, metadata["disks"])
+                        if not candidate_disks or not all(disk["exists"] for disk in candidate_disks):
+                            raise RuntimeError(f"Cannot continue {workload.vm_name}: preserved converted disks are missing from {stage_path}")
+                        converted_disks = [{"local_path": disk["local_path"], "capacity_bytes": disk["capacity_bytes"]} for disk in candidate_disks]
                         if reporter:
                             reporter.task(
-                                f"{workload.id}-stage-{index}",
-                                f"{workload.vm_name}: stage source disk {index}",
-                                "Running",
-                                35,
-                                f"Copying {disk['path']} into host staging {stage_path}",
+                                f"{workload.id}-reuse",
+                                f"{workload.vm_name}: reuse staged conversion",
+                                "Completed",
+                                82,
+                                f"Reusing preserved converted disks from {stage_path}",
                             )
-                        sftp.get(disk["path"], str(source_path))
-                        if reporter:
-                            reporter.task(
-                                f"{workload.id}-stage-{index}",
-                                f"{workload.vm_name}: stage source disk {index}",
-                                "Succeeded",
-                                45,
-                                f"Copied source disk {index} into host staging",
-                            )
-                        info = json.loads(run(["qemu-img", "info", "--output=json", str(source_path)]))
-                        if reporter:
-                            reporter.task(
-                                f"{workload.id}-convert-{index}",
-                                f"{workload.vm_name}: convert disk {index}",
-                                "Running",
-                                60,
-                                f"Converting source disk {index} to stream-optimized VMDK in shared staging",
-                            )
-                        run(["qemu-img", "convert", "-p", "-O", "vmdk", "-o", "subformat=streamOptimized", str(source_path), str(target_path)])
-                        converted_disks.append({"local_path": str(target_path), "capacity_bytes": int(info["virtual-size"])})
-                        source_path.unlink(missing_ok=True)
-                        if reporter:
-                            reporter.task(
-                                f"{workload.id}-convert-{index}",
-                                f"{workload.vm_name}: convert disk {index}",
-                                "Succeeded",
-                                70,
-                                f"Converted source disk {index} to {target_path.name}",
-                            )
+                    else:
+                        for index, disk in enumerate(metadata["disks"], start=1):
+                            source_path = stage_path / f"source-{index}{Path(disk['path']).suffix or '.img'}"
+                            target_path = stage_path / f"{target_name}-disk{index}.vmdk"
+                            if reporter:
+                                reporter.task(
+                                    f"{workload.id}-stage-{index}",
+                                    f"{workload.vm_name}: stage source disk {index}",
+                                    "Running",
+                                    35,
+                                    f"Copying {disk['path']} into host staging {stage_path}",
+                                )
+                            sftp.get(disk["path"], str(source_path))
+                            if reporter:
+                                reporter.task(
+                                    f"{workload.id}-stage-{index}",
+                                    f"{workload.vm_name}: stage source disk {index}",
+                                    "Completed",
+                                    45,
+                                    f"Copied source disk {index} into host staging",
+                                )
+                            info = json.loads(run(["qemu-img", "info", "--output=json", str(source_path)]))
+                            if reporter:
+                                reporter.task(
+                                    f"{workload.id}-convert-{index}",
+                                    f"{workload.vm_name}: convert disk {index}",
+                                    "Running",
+                                    60,
+                                    f"Converting source disk {index} to stream-optimized VMDK in shared staging",
+                                )
+                            run(["qemu-img", "convert", "-p", "-O", "vmdk", "-o", "subformat=streamOptimized", str(source_path), str(target_path)])
+                            converted_disks.append({"local_path": str(target_path), "capacity_bytes": int(info["virtual-size"])})
+                            if reporter:
+                                reporter.task(
+                                    f"{workload.id}-convert-{index}",
+                                    f"{workload.vm_name}: convert disk {index}",
+                                    "Completed",
+                                    70,
+                                    f"Converted source disk {index} to {target_path.name}",
+                                )
                     if reporter:
                         reporter.task(f"{workload.id}-provision", f"{workload.vm_name}: provision target VM", "Running", 88, f"Sending converted disks from {stage_path} to LaunchGrid for VMware provisioning")
                     provisioned = launchgrid_provision(request, workload, target_name, metadata, converted_disks)
                     if reporter:
-                        reporter.task(f"{workload.id}-provision", f"{workload.vm_name}: provision target VM", "Succeeded", 96, f"Provisioned {target_name} on VMware through LaunchGrid")
+                        reporter.task(f"{workload.id}-provision", f"{workload.vm_name}: provision target VM", "Completed", 96, f"Provisioned {target_name} on VMware through LaunchGrid")
                     if not request.keep_source_vm:
                         if reporter:
                             reporter.task(f"{workload.id}-cleanup", f"{workload.vm_name}: remove source VM", "Running", 98, f"Removing source KVM VM {workload.vm_name} because Keep Source VM is disabled")
                         remove_source_kvm_vm(client, workload.vm_name)
                         if reporter:
-                            reporter.task(f"{workload.id}-cleanup", f"{workload.vm_name}: remove source VM", "Succeeded", 100, f"Removed source KVM VM {workload.vm_name}")
+                            reporter.task(f"{workload.id}-cleanup", f"{workload.vm_name}: remove source VM", "Completed", 100, f"Removed source KVM VM {workload.vm_name}")
                     results.append(
                         {
                             "ok": True,
@@ -511,11 +554,17 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                             "vm_name": workload.vm_name,
                             "target_name": target_name,
                             "message": f"Provisioned on VMware using LaunchGrid{'' if request.keep_source_vm else ' and removed the source KVM VM'}",
+                            "stage_path": str(stage_path),
+                            "can_resume": False,
+                            "reused_staging": reused_converted,
                             "details": provisioned,
                         }
                     )
-                finally:
                     shutil.rmtree(stage_path, ignore_errors=True)
+                except Exception as exc:
+                    if reporter:
+                        reporter.task(f"{workload.id}-provision", f"{workload.vm_name}: provision target VM", "Failed", 88, str(exc))
+                    results.append(stage_failure_result(workload, target_name, stage_path, str(exc), can_resume=any(Path(disk["local_path"]).exists() for disk in converted_disks)))
         finally:
             sftp.close()
     return results
@@ -550,43 +599,50 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
         sftp = client.open_sftp()
         try:
             for workload in request.workloads:
-                if reporter:
-                    reporter.task(f"{workload.id}-inspect", f"{workload.vm_name}: inspect source VM", "Running", 15, f"Inspecting vCenter source VM {workload.vm_name}")
-                vm_info = find_vcenter_vm(request.source_connector, workload)
-                if vm_info["power_state"].lower() != "poweredoff":
-                    raise RuntimeError(f"{workload.vm_name} must be powered off before virt-v2v conversion")
                 target_name = safe_name(request.options.get("target_name") or f"{workload.vm_name}-migrated")
-                ssh_exec(client, f"! virsh dominfo {shlex.quote(target_name)} >/dev/null 2>&1", timeout=20)
-                if reporter:
-                    reporter.task(f"{workload.id}-inspect", f"{workload.vm_name}: inspect source VM", "Succeeded", 25, f"Verified powered-off source and free target name {target_name}")
-                stage_path = stage_directory(request.plan_id, workload.id, workload.vm_name)
+                stage_path = preserved_stage_directory(request.plan_id, workload.id, workload.vm_name)
                 try:
+                    resume_from_stage = bool(request.options.get("resume_from_stage"))
+                    if reporter:
+                        reporter.task(f"{workload.id}-inspect", f"{workload.vm_name}: inspect source VM", "Running", 15, f"Inspecting vCenter source VM {workload.vm_name}")
+                    vm_info = find_vcenter_vm(request.source_connector, workload)
+                    if vm_info["power_state"].lower() != "poweredoff":
+                        raise RuntimeError(f"{workload.vm_name} must be powered off before virt-v2v conversion")
+                    ssh_exec(client, f"! virsh dominfo {shlex.quote(target_name)} >/dev/null 2>&1", timeout=20)
+                    if reporter:
+                        reporter.task(f"{workload.id}-inspect", f"{workload.vm_name}: inspect source VM", "Completed", 25, f"Verified powered-off source and free target name {target_name}")
+                    stage_path = preserved_stage_directory(request.plan_id, workload.id, workload.vm_name) if resume_from_stage else stage_directory(request.plan_id, workload.id, workload.vm_name)
+                    local_disks = []
+                    output = ""
                     password_path = stage_path / "vcenter-password"
-                    password_path.write_text(password, encoding="utf-8")
-                    password_path.chmod(0o600)
-                    if reporter:
-                        reporter.task(f"{workload.id}-convert", f"{workload.vm_name}: convert with virt-v2v", "Running", 55, f"Converting {workload.vm_name} with virt-v2v in shared staging {stage_path}")
-                    command = [
-                        "virt-v2v",
-                        "-ic", vpx_uri(request.source_connector, workload, request.options),
-                        "-ip", str(password_path),
-                        workload.vm_name,
-                        "-o", "local",
-                        "-os", str(stage_path),
-                        "-of", "qcow2",
-                        "-on", target_name,
-                        "--root", request.options.get("root_selection", "first"),
-                    ]
-                    if request.options.get("target_network"):
-                        command.extend(["--network", request.options["target_network"]])
-                    output = run(command, timeout=int(request.options.get("timeout", 14400)))
-                    if reporter:
-                        reporter.task(f"{workload.id}-convert", f"{workload.vm_name}: convert with virt-v2v", "Succeeded", 70, f"virt-v2v created local conversion artifacts for {target_name} in shared staging")
                     xml_path = stage_path / f"{target_name}.xml"
+                    if resume_from_stage and xml_path.exists():
+                        if reporter:
+                            reporter.task(f"{workload.id}-reuse", f"{workload.vm_name}: reuse staged conversion", "Completed", 70, f"Reusing preserved virt-v2v artifacts from {stage_path}")
+                    else:
+                        password_path.write_text(password, encoding="utf-8")
+                        password_path.chmod(0o600)
+                        if reporter:
+                            reporter.task(f"{workload.id}-convert", f"{workload.vm_name}: convert with virt-v2v", "Running", 55, f"Converting {workload.vm_name} with virt-v2v in shared staging {stage_path}")
+                        command = [
+                            "virt-v2v",
+                            "-ic", vpx_uri(request.source_connector, workload, request.options),
+                            "-ip", str(password_path),
+                            workload.vm_name,
+                            "-o", "local",
+                            "-os", str(stage_path),
+                            "-of", "qcow2",
+                            "-on", target_name,
+                            "--root", request.options.get("root_selection", "first"),
+                        ]
+                        if request.options.get("target_network"):
+                            command.extend(["--network", request.options["target_network"]])
+                        output = run(command, timeout=int(request.options.get("timeout", 14400)))
+                        if reporter:
+                            reporter.task(f"{workload.id}-convert", f"{workload.vm_name}: convert with virt-v2v", "Completed", 70, f"virt-v2v created local conversion artifacts for {target_name} in shared staging")
                     if not xml_path.exists():
                         raise RuntimeError("virt-v2v did not generate target libvirt XML")
                     root = ET.parse(xml_path)
-                    local_disks = []
                     if reporter:
                         reporter.task(f"{workload.id}-transfer", f"{workload.vm_name}: transfer converted disks", "Running", 82, f"Uploading converted disks into storage pool {request.options['target_storage_pool']}")
                     for disk in root.findall("./devices/disk[@device='disk']"):
@@ -612,7 +668,7 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                         if request.options.get("power_on"):
                             ssh_exec(client, f"virsh start {shlex.quote(target_name)}", timeout=60)
                         if reporter:
-                            reporter.task(f"{workload.id}-define", f"{workload.vm_name}: define target VM", "Succeeded", 98, f"Defined libvirt domain {target_name}")
+                            reporter.task(f"{workload.id}-define", f"{workload.vm_name}: define target VM", "Completed", 98, f"Defined libvirt domain {target_name}")
                     except Exception:
                         for remote_disk in local_disks:
                             try:
@@ -625,9 +681,12 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                             sftp.remove(remote_xml)
                         except OSError:
                             pass
-                finally:
+                    results.append({"ok": True, "vm_id": workload.id, "vm_name": workload.vm_name, "target_name": target_name, "target_pool": request.options["target_storage_pool"], "message": output.strip() or "virt-v2v conversion and libvirt definition completed", "stage_path": str(stage_path), "can_resume": False})
                     shutil.rmtree(stage_path, ignore_errors=True)
-                results.append({"ok": True, "vm_id": workload.id, "vm_name": workload.vm_name, "target_name": target_name, "target_pool": request.options["target_storage_pool"], "message": output.strip() or "virt-v2v conversion and libvirt definition completed"})
+                except Exception as exc:
+                    if reporter:
+                        reporter.task(f"{workload.id}-define", f"{workload.vm_name}: define target VM", "Failed", 82, str(exc))
+                    results.append(stage_failure_result(workload, target_name, stage_path, str(exc), can_resume=stage_path.exists()))
         finally:
             sftp.close()
     return results

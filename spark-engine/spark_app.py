@@ -234,6 +234,19 @@ def _job_entries(connection, job_id: int) -> list[dict]:
     return parsed if isinstance(parsed, list) else []
 
 
+def current_task_progress(job_id: int) -> int:
+    with engine.connect() as connection:
+        entries = _job_entries(connection, job_id)
+    return max(
+        (
+            int(task.get("progress", 0))
+            for task in entries
+            if isinstance(task, dict) and task.get("kind") == "task" and task.get("key") not in {"failed", "complete"} and task.get("status") != "Failed"
+        ),
+        default=0,
+    )
+
+
 def row_dict(row) -> dict:
     result = dict(row._mapping)
     for key in ("created_at", "started_at", "completed_at"):
@@ -246,7 +259,20 @@ def row_dict(row) -> dict:
     tasks = [entry for entry in result["result"] if isinstance(entry, dict) and entry.get("kind") == "task"]
     result["tasks"] = tasks
     result["vm_results"] = [entry for entry in result["result"] if isinstance(entry, dict) and entry.get("kind") != "task"]
-    result["progress_percent"] = max((int(task.get("progress", 0)) for task in tasks), default=0)
+    if result.get("status") == "Succeeded":
+        progress = 100
+    elif result.get("status") == "Failed":
+        progress = max(
+            (
+                int(task.get("progress", 0))
+                for task in tasks
+                if task.get("key") not in {"failed", "complete"} and task.get("status") != "Failed"
+            ),
+            default=max((int(task.get("progress", 0)) for task in tasks if task.get("key") != "failed"), default=0),
+        )
+    else:
+        progress = max((int(task.get("progress", 0)) for task in tasks), default=0)
+    result["progress_percent"] = min(100, max(0, progress))
     result.pop("request_json", None)
     result.pop("result_json", None)
     return result
@@ -403,12 +429,19 @@ def execute_job(job: dict) -> None:
             result = execute_vcenter_to_kvm(request, reporter=reporter)
         else:
             raise RuntimeError(f"Unknown Spark adapter: {job['adapter']}")
-        message = f"Spark Engine completed {len(result)} workload migration(s)"
-        reporter.task("complete", "Finalize execution", "Succeeded", 100, message)
-        merged_result = reporter.finalize(result)
-        status = "Succeeded"
+        failed_results = [row for row in result if row.get("ok") is False]
+        if failed_results:
+            message = failed_results[0].get("message") or f"Spark Engine failed {len(failed_results)} workload migration(s)"
+            reporter.task("failed", "Execution failed", "Failed", current_task_progress(job["id"]), message)
+            merged_result = reporter.finalize(result)
+            status = "Failed"
+        else:
+            message = f"Spark Engine completed {len(result)} workload migration(s)"
+            reporter.task("complete", "Finalize execution", "Succeeded", 100, message)
+            merged_result = reporter.finalize(result)
+            status = "Succeeded"
     except Exception as exc:
-        reporter.task("failed", "Execution failed", "Failed", 100, str(exc))
+        reporter.task("failed", "Execution failed", "Failed", current_task_progress(job["id"]), str(exc))
         merged_result = reporter.finalize([{"kind": "vm_result", "ok": False, "message": str(exc)}])
         status = "Failed"
         message = str(exc)

@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+from pathlib import Path
 from urllib.parse import urlparse
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -45,6 +46,7 @@ MIGRATION_STATUSES = {
 USER_ROLES = {"admin", "operator", "viewer"}
 PROFILE_PHOTO_PATTERN = re.compile(r"^data:image/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$")
 MAX_PROFILE_PHOTO_BYTES = 256 * 1024
+STAGING_ROOT = Path(os.getenv("DS_SHIFT_STAGING_ROOT", "/DS-Shift-Staging"))
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
 app.add_middleware(
@@ -415,8 +417,12 @@ def validate_live_migration_plan(plan: models.MigrationPlan, db: Session) -> tup
 
 
 def queue_live_migration_plan(plan: models.MigrationPlan, db: Session, admin: models.LocalUser) -> dict:
+    return queue_live_migration_plan_with_options(plan, db, admin)
+
+
+def queue_live_migration_plan_with_options(plan: models.MigrationPlan, db: Session, admin: models.LocalUser, *, extra_options: dict | None = None) -> dict:
     source, target, vms = validate_live_migration_plan(plan, db)
-    request = migration_plan_execution_payload(plan, source, target, vms, admin.username, live=True)
+    request = migration_plan_execution_payload(plan, source, target, vms, admin.username, live=True, extra_options=extra_options)
     try:
         job = create_spark_job(request)
     except ValueError as exc:
@@ -426,6 +432,45 @@ def queue_live_migration_plan(plan: models.MigrationPlan, db: Session, admin: mo
     plan.spark_job_id = job["id"]
     plan.status = job["status"]
     return job
+
+
+def stage_safe_name(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-.")
+    if not cleaned:
+        raise HTTPException(409, "Migration plan contains a VM name that cannot be mapped to a staging path")
+    return cleaned[:80]
+
+
+def workload_stage_directory(plan_id: int, vm: models.VmInventory) -> Path:
+    return STAGING_ROOT / f"plan-{plan_id}" / f"vm-{vm.id}-{stage_safe_name(vm.vm_name)}"
+
+
+def plan_resume_metadata(plan: models.MigrationPlan, vms: list[models.VmInventory]) -> dict:
+    if plan.status != "Failed":
+        return {"allowed": False, "reason": "Only failed migration plans can continue from preserved staging"}
+    if plan.migration_type not in {"KVM to VMware ESXi / vCenter", "VMware ESXi / vCenter to KVM"}:
+        return {"allowed": False, "reason": "Continue is only available for host-path migrations that preserve staging"}
+    results = parsed_json_array(plan.results_json)
+    vm_result_by_id = {row.get("vm_id"): row for row in results if isinstance(row, dict) and row.get("vm_id")}
+    resumable = []
+    reasons = []
+    for vm in vms:
+        result = vm_result_by_id.get(vm.id, {})
+        if result.get("can_resume") is not True:
+            reasons.append(f"{vm.vm_name} is not marked resumable")
+            continue
+        stage_path = workload_stage_directory(plan.id, vm)
+        if not stage_path.exists():
+            reasons.append(f"{vm.vm_name} staging folder is missing")
+            continue
+        artifacts = list(stage_path.glob("*.vmdk")) + list(stage_path.glob("*.qcow2")) + list(stage_path.glob("*.xml"))
+        if not artifacts:
+            reasons.append(f"{vm.vm_name} staging folder has no reusable artifacts")
+            continue
+        resumable.append({"vm_id": vm.id, "vm_name": vm.vm_name, "stage_path": str(stage_path)})
+    if len(resumable) != len(vms):
+        return {"allowed": False, "reason": reasons[0] if reasons else "Not every VM in the plan has reusable staging artifacts"}
+    return {"allowed": True, "workloads": resumable}
 
 
 def current_user(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> models.LocalUser:
@@ -1285,10 +1330,12 @@ def migration_plan_execution_payload(
     requested_by: str,
     *,
     live: bool,
+    extra_options: dict | None = None,
 ) -> dict:
     options = {
         **resolve_connector_defaults(target),
         **compact_execution_options(parsed_json_object(plan.execution_options_json)),
+        **compact_execution_options(extra_options or {}),
     }
     return {
         "plan_id": plan.id,
@@ -1346,6 +1393,28 @@ def launch_migration_plan(
     db.commit()
     db.refresh(plan)
     return {"plan": schemas.MigrationPlan.model_validate(plan), "job": job}
+
+
+@app.post("/api/migration-plans/{plan_id}/continue")
+def continue_migration_plan(
+    plan_id: int,
+    payload: schemas.MigrationContinue,
+    db: Session = Depends(get_db),
+    admin: models.LocalUser = Depends(admin_user),
+):
+    plan = db.get(models.MigrationPlan, plan_id)
+    if not plan:
+        raise HTTPException(404, "Migration plan not found")
+    if payload.confirmation != plan.name:
+        raise HTTPException(400, "Type the exact migration plan name to continue live execution")
+    _, _, vms = validate_live_migration_plan(plan, db)
+    resume = plan_resume_metadata(plan, vms)
+    if not resume.get("allowed"):
+        raise HTTPException(409, resume.get("reason") or "This migration plan cannot continue from staging")
+    job = queue_live_migration_plan_with_options(plan, db, admin, extra_options={"resume_from_stage": True})
+    db.commit()
+    db.refresh(plan)
+    return {"plan": schemas.MigrationPlan.model_validate(plan), "job": job, "resume": resume}
 
 
 @app.get("/api/migration-plans/{plan_id}/execution")

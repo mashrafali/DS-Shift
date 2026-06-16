@@ -264,6 +264,8 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   background: linear-gradient(90deg, #29d3c2, #0b7f8d);
   border-radius: inherit;
 }
+.task-progress-bar.warning span { background: linear-gradient(90deg, #f7d96b, #d08a1d); }
+.task-progress-bar.danger span { background: linear-gradient(90deg, #f49a8e, #b3342f); }
 .metric-grid { display: grid; grid-template-columns: repeat(6, minmax(130px, 1fr)); gap: 14px; margin-bottom: 22px; }
 .metric, .form-panel, .table-wrap, .about { background: #fff; border: 1px solid #d9e4ee; border-radius: 8px; }
 .metric { padding: 18px; }
@@ -371,6 +373,7 @@ th { color: #506274; background: #f9fbfd; font-size: 12px; text-transform: upper
 .badge { display: inline-flex; align-items: center; min-height: 26px; padding: 0 10px; border-radius: 999px; font-weight: 750; font-size: 12px; }
 .badge.neutral { background: #eaf0f7; color: #244b70; }
 .badge.success { background: #e8f7ef; color: #17623a; }
+.badge.warning { background: #fff3d9; color: #9a6400; }
 .badge.danger { background: #fdebea; color: #9b1c1c; }
 .about { padding: 22px; max-width: 900px; }
 .about p { color: #54687b; }
