@@ -165,7 +165,7 @@ ensure_env_file() {
   set_env_value "${env_file}" "ADMIN_INITIAL_USERNAME" "${ADMIN_USERNAME}"
   set_env_value "${env_file}" "ADMIN_INITIAL_PASSWORD" "${ADMIN_PASSWORD}"
   if ! grep -q '^SPARK_LIVE_EXECUTION_ENABLED=' "${env_file}"; then
-    printf 'SPARK_LIVE_EXECUTION_ENABLED=false\n' >> "${env_file}"
+    printf 'SPARK_LIVE_EXECUTION_ENABLED=true\n' >> "${env_file}"
   fi
 }
 

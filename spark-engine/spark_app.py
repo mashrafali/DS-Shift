@@ -47,7 +47,7 @@ from host_migrations import (
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://dsshift:dsshift@database:5432/dsshift")
-LIVE_EXECUTION_ENABLED = os.getenv("SPARK_LIVE_EXECUTION_ENABLED", "false").lower() == "true"
+LIVE_EXECUTION_ENABLED = os.getenv("SPARK_LIVE_EXECUTION_ENABLED", "true").lower() == "true"
 WORKER_ID = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
 POLL_SECONDS = float(os.getenv("SPARK_POLL_SECONDS", "2"))
 LAUNCHGRID_URL = os.getenv("LAUNCHGRID_URL", "http://launchgrid:8300")
