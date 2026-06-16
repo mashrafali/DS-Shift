@@ -230,6 +230,10 @@ def stage_directory(plan_id: int, workload_id: int, vm_name: str) -> Path:
     return base
 
 
+def temporary_stage_directory(prefix: str) -> Path:
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=str(ensure_staging_root())))
+
+
 def find_compute_path(env: dict, compute_name: str) -> tuple[str, str]:
     host_path = run(["govc", "find", "-type", "h", "-name", compute_name], env=env, timeout=30).strip()
     if host_path:
@@ -382,11 +386,17 @@ def preflight_kvm_to_vcenter(request) -> list[dict]:
 def preflight_vcenter_to_kvm(request) -> list[dict]:
     checks = [{"check": "virt_v2v", "ok": bool(shutil.which("virt-v2v")), "message": shutil.which("virt-v2v") or "virt-v2v is not installed"}]
     try:
+        staging_root = ensure_staging_root()
+        checks.append({"check": "staging_path", "ok": True, "message": str(staging_root)})
+    except Exception as exc:
+        checks.append({"check": "staging_path", "ok": False, "message": str(exc)})
+    try:
         password = connector_password(request.source_connector)
         if not password:
             raise RuntimeError("vCenter password is unavailable")
-        with tempfile.TemporaryDirectory(prefix="ds-shift-v2v-preflight-") as stage:
-            password_path = Path(stage) / "vcenter-password"
+        stage_path = temporary_stage_directory("ds-shift-v2v-preflight-")
+        try:
+            password_path = stage_path / "vcenter-password"
             password_path.write_text(password, encoding="utf-8")
             password_path.chmod(0o600)
             for workload in request.workloads:
@@ -405,6 +415,8 @@ def preflight_vcenter_to_kvm(request) -> list[dict]:
                         timeout=120,
                     )
                     checks.append({"check": "virt_v2v_source", "vm_name": workload.vm_name, "ok": True, "message": "virt-v2v read the source VM metadata"})
+        finally:
+            shutil.rmtree(stage_path, ignore_errors=True)
     except Exception as exc:
         checks.append({"check": "source_vcenter", "ok": False, "message": str(exc)})
     try:
@@ -547,13 +559,13 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                 ssh_exec(client, f"! virsh dominfo {shlex.quote(target_name)} >/dev/null 2>&1", timeout=20)
                 if reporter:
                     reporter.task(f"{workload.id}-inspect", f"{workload.vm_name}: inspect source VM", "Succeeded", 25, f"Verified powered-off source and free target name {target_name}")
-                with tempfile.TemporaryDirectory(prefix="ds-shift-vc-kvm-") as stage:
-                    stage_path = Path(stage)
+                stage_path = stage_directory(request.plan_id, workload.id, workload.vm_name)
+                try:
                     password_path = stage_path / "vcenter-password"
                     password_path.write_text(password, encoding="utf-8")
                     password_path.chmod(0o600)
                     if reporter:
-                        reporter.task(f"{workload.id}-convert", f"{workload.vm_name}: convert with virt-v2v", "Running", 55, f"Converting {workload.vm_name} with virt-v2v")
+                        reporter.task(f"{workload.id}-convert", f"{workload.vm_name}: convert with virt-v2v", "Running", 55, f"Converting {workload.vm_name} with virt-v2v in shared staging {stage_path}")
                     command = [
                         "virt-v2v",
                         "-ic", vpx_uri(request.source_connector, workload, request.options),
@@ -569,7 +581,7 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                         command.extend(["--network", request.options["target_network"]])
                     output = run(command, timeout=int(request.options.get("timeout", 14400)))
                     if reporter:
-                        reporter.task(f"{workload.id}-convert", f"{workload.vm_name}: convert with virt-v2v", "Succeeded", 70, f"virt-v2v created local conversion artifacts for {target_name}")
+                        reporter.task(f"{workload.id}-convert", f"{workload.vm_name}: convert with virt-v2v", "Succeeded", 70, f"virt-v2v created local conversion artifacts for {target_name} in shared staging")
                     xml_path = stage_path / f"{target_name}.xml"
                     if not xml_path.exists():
                         raise RuntimeError("virt-v2v did not generate target libvirt XML")
@@ -613,6 +625,8 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                             sftp.remove(remote_xml)
                         except OSError:
                             pass
+                finally:
+                    shutil.rmtree(stage_path, ignore_errors=True)
                 results.append({"ok": True, "vm_id": workload.id, "vm_name": workload.vm_name, "target_name": target_name, "target_pool": request.options["target_storage_pool"], "message": output.strip() or "virt-v2v conversion and libvirt definition completed"})
         finally:
             sftp.close()

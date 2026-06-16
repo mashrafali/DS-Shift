@@ -169,6 +169,10 @@ deploy_stack() {
   (cd "${INSTALL_DIR}" && ./scripts/deploy.sh)
 }
 
+ensure_host_staging() {
+  mkdir -p /DS-Shift-Staging
+}
+
 validate_stack() {
   log "Validating DS Shift"
   (cd "${INSTALL_DIR}" && ./scripts/validate.sh)
@@ -201,6 +205,7 @@ main() {
   need_command docker
   clone_or_update_repo
   ensure_env_file
+  ensure_host_staging
   if [[ "${SKIP_DEPLOY}" == "true" ]]; then
     log "Skipping deployment because DS_SHIFT_SKIP_DEPLOY=true"
     print_summary
