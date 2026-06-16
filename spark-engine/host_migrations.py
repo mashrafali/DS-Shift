@@ -13,12 +13,15 @@ import tempfile
 from urllib.parse import quote, urlparse
 import xml.etree.ElementTree as ET
 
+import httpx
 import paramiko
 from pyVim.connect import Disconnect, SmartConnect
 from pyVmomi import vim
 
 
 VMWARE_TYPES = {"VMware ESXi / vCenter", "VMware ESXi", "vCenter"}
+STAGING_ROOT = Path(os.getenv("DS_SHIFT_STAGING_ROOT", "/DS-Shift-Staging"))
+LAUNCHGRID_URL = os.getenv("LAUNCHGRID_URL", "http://launchgrid:8300").rstrip("/")
 
 
 def credential_value(reference: str | None) -> str | None:
@@ -210,6 +213,86 @@ def govc_environment(connector, options: dict) -> dict:
     return env
 
 
+def ensure_staging_root() -> Path:
+    STAGING_ROOT.mkdir(parents=True, exist_ok=True)
+    if not STAGING_ROOT.is_dir():
+        raise RuntimeError(f"Staging path {STAGING_ROOT} is not a directory")
+    if not os.access(STAGING_ROOT, os.W_OK):
+        raise RuntimeError(f"Staging path {STAGING_ROOT} is not writable")
+    return STAGING_ROOT
+
+
+def stage_directory(plan_id: int, workload_id: int, vm_name: str) -> Path:
+    base = ensure_staging_root() / f"plan-{plan_id}" / f"vm-{workload_id}-{safe_name(vm_name)}"
+    if base.exists():
+        shutil.rmtree(base, ignore_errors=True)
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def find_compute_path(env: dict, compute_name: str) -> tuple[str, str]:
+    host_path = run(["govc", "find", "-type", "h", "-name", compute_name], env=env, timeout=30).strip()
+    if host_path:
+        return "host", host_path.splitlines()[0].strip()
+    cluster_path = run(["govc", "find", "-type", "c", "-name", compute_name], env=env, timeout=30).strip()
+    if cluster_path:
+        return "cluster", cluster_path.splitlines()[0].strip()
+    raise RuntimeError(f"Target cluster or host {compute_name} was not found")
+
+
+def launchgrid_provision(request, workload, target_name: str, metadata: dict, disks: list[dict]) -> dict:
+    payload = {
+        "target_connector": {
+            "id": request.target_connector.id,
+            "name": request.target_connector.name,
+            "connector_category": request.target_connector.connector_category,
+            "connector_type": request.target_connector.connector_type,
+            "endpoint": request.target_connector.endpoint,
+            "port": request.target_connector.port,
+            "username": request.target_connector.username,
+            "target_network": request.options.get("target_network") or request.target_connector.target_network,
+            "target_datastore": request.options.get("target_datastore") or request.target_connector.target_datastore,
+            "target_vdc_name": request.options.get("target_datacenter") or request.options.get("target_vdc_name") or request.target_connector.target_vdc_name,
+            "target_compute_name": request.options.get("target_compute_name") or request.target_connector.target_compute_name,
+            "credential_reference": request.target_connector.credential_reference,
+            "credential_payload": getattr(request.target_connector, "credential_payload", {}) or {},
+        },
+        "vm_name": target_name,
+        "cpu": metadata["cpu"],
+        "memory_bytes": metadata["memory_bytes"],
+        "disks": [
+            {"local_path": disk["local_path"], "capacity_bytes": disk["capacity_bytes"]}
+            for disk in disks
+        ],
+        "power_on": bool(request.options.get("power_on")),
+        "guest_os_id": workload.details.get("guest_os_id") or "otherGuest64",
+    }
+    timeout = httpx.Timeout(connect=15.0, write=7200.0, read=7200.0, pool=30.0)
+    with httpx.Client(timeout=timeout) as client:
+        response = client.post(f"{LAUNCHGRID_URL}/provision", json=payload)
+    if response.status_code >= 400:
+        detail = response.text.strip()
+        try:
+            detail = response.json().get("detail", detail)
+        except Exception:
+            pass
+        raise RuntimeError(f"LaunchGrid provisioning failed: {detail}")
+    return response.json()
+
+
+def remove_source_kvm_vm(client: paramiko.SSHClient, vm_name: str) -> None:
+    quoted = shlex.quote(vm_name)
+    try:
+        ssh_exec(client, f"virsh undefine --remove-all-storage {quoted}", timeout=180)
+        return
+    except Exception as primary_error:
+        try:
+            ssh_exec(client, f"virsh undefine --nvram --managed-save --snapshots-metadata --checkpoints-metadata --remove-all-storage {quoted}", timeout=180)
+            return
+        except Exception:
+            raise RuntimeError(f"Provisioning completed, but source cleanup failed for {vm_name}: {primary_error}") from primary_error
+
+
 def find_vcenter_vm(connector, workload):
     password = connector_password(connector)
     parsed = urlparse(connector.endpoint if "://" in (connector.endpoint or "") else f"https://{connector.endpoint}")
@@ -245,10 +328,16 @@ def preflight_kvm_to_vcenter(request) -> list[dict]:
     target_datastore = request.options.get("target_datastore") or request.target_connector.target_datastore
     target_network = request.options.get("target_network") or request.target_connector.target_network
     target_vdc_name = request.options.get("target_datacenter") or request.options.get("target_vdc_name") or request.target_connector.target_vdc_name
+    target_compute_name = request.options.get("target_compute_name") or request.target_connector.target_compute_name
     checks = [
         {"check": "qemu_img", "ok": bool(shutil.which("qemu-img")), "message": shutil.which("qemu-img") or "qemu-img is not installed"},
         {"check": "govc", "ok": bool(shutil.which("govc")), "message": shutil.which("govc") or "govc is not installed"},
     ]
+    try:
+        staging_root = ensure_staging_root()
+        checks.append({"check": "staging_path", "ok": True, "message": str(staging_root)})
+    except Exception as exc:
+        checks.append({"check": "staging_path", "ok": False, "message": str(exc)})
     try:
         env = govc_environment(request.target_connector, request.options)
         about = json.loads(run(["govc", "about", "-json"], env=env, timeout=30))
@@ -268,6 +357,12 @@ def preflight_kvm_to_vcenter(request) -> list[dict]:
             if not datacenter:
                 raise RuntimeError(f"Target vDC name {target_vdc_name} was not found")
             checks.append({"check": "target_vdc_name", "ok": True, "message": target_vdc_name})
+        else:
+            raise RuntimeError("Target vDC name is not configured on the target connector")
+        if not target_compute_name:
+            raise RuntimeError("Target Cluster Name or Host Name is not configured on the target connector")
+        compute_kind, compute_path = find_compute_path(env, target_compute_name)
+        checks.append({"check": "target_compute_name", "ok": True, "message": f"{target_compute_name} ({compute_kind}: {compute_path})"})
     except Exception as exc:
         checks.append({"check": "target_vcenter", "ok": False, "message": str(exc)})
     try:
@@ -327,7 +422,6 @@ def preflight_vcenter_to_kvm(request) -> list[dict]:
 
 def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
     results = []
-    env = govc_environment(request.target_connector, request.options)
     with ssh_client(request.source_connector) as client:
         sftp = client.open_sftp()
         try:
@@ -344,9 +438,9 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                     raise RuntimeError(f"{workload.vm_name} has no file-backed disks")
                 if reporter:
                     reporter.task(f"{workload.id}-inspect", f"{workload.vm_name}: inspect source VM", "Succeeded", 25, f"Found {len(metadata['disks'])} file-backed source disk(s)")
-                with tempfile.TemporaryDirectory(prefix="ds-shift-kvm-vc-") as stage:
-                    stage_path = Path(stage)
-                    ovf_disks = []
+                stage_path = stage_directory(request.plan_id, workload.id, workload.vm_name)
+                converted_disks = []
+                try:
                     for index, disk in enumerate(metadata["disks"], start=1):
                         source_path = stage_path / f"source-{index}{Path(disk['path']).suffix or '.img'}"
                         target_path = stage_path / f"{target_name}-disk{index}.vmdk"
@@ -356,7 +450,7 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                                 f"{workload.vm_name}: stage source disk {index}",
                                 "Running",
                                 35,
-                                f"Copying {disk['path']} into Spark staging",
+                                f"Copying {disk['path']} into host staging {stage_path}",
                             )
                         sftp.get(disk["path"], str(source_path))
                         if reporter:
@@ -365,7 +459,7 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                                 f"{workload.vm_name}: stage source disk {index}",
                                 "Succeeded",
                                 45,
-                                f"Copied source disk {index} into Spark staging",
+                                f"Copied source disk {index} into host staging",
                             )
                         info = json.loads(run(["qemu-img", "info", "--output=json", str(source_path)]))
                         if reporter:
@@ -374,11 +468,11 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                                 f"{workload.vm_name}: convert disk {index}",
                                 "Running",
                                 60,
-                                f"Converting source disk {index} to stream-optimized VMDK",
+                                f"Converting source disk {index} to stream-optimized VMDK in shared staging",
                             )
                         run(["qemu-img", "convert", "-p", "-O", "vmdk", "-o", "subformat=streamOptimized", str(source_path), str(target_path)])
-                        ovf_disks.append({"name": target_path.name, "size": target_path.stat().st_size, "capacity": info["virtual-size"]})
-                        source_path.unlink()
+                        converted_disks.append({"local_path": str(target_path), "capacity_bytes": int(info["virtual-size"])})
+                        source_path.unlink(missing_ok=True)
                         if reporter:
                             reporter.task(
                                 f"{workload.id}-convert-{index}",
@@ -387,30 +481,29 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                                 70,
                                 f"Converted source disk {index} to {target_path.name}",
                             )
-                    ovf_path = stage_path / f"{target_name}.ovf"
                     if reporter:
-                        reporter.task(f"{workload.id}-package", f"{workload.vm_name}: package OVA", "Running", 75, f"Building OVF and OVA package for {target_name}")
-                    ovf_path.write_text(
-                        ovf_descriptor(target_name, metadata["cpu"], metadata["memory_bytes"], ovf_disks, metadata["interfaces"]),
-                        encoding="utf-8",
+                        reporter.task(f"{workload.id}-provision", f"{workload.vm_name}: provision target VM", "Running", 88, f"Sending converted disks from {stage_path} to LaunchGrid for VMware provisioning")
+                    provisioned = launchgrid_provision(request, workload, target_name, metadata, converted_disks)
+                    if reporter:
+                        reporter.task(f"{workload.id}-provision", f"{workload.vm_name}: provision target VM", "Succeeded", 96, f"Provisioned {target_name} on VMware through LaunchGrid")
+                    if not request.keep_source_vm:
+                        if reporter:
+                            reporter.task(f"{workload.id}-cleanup", f"{workload.vm_name}: remove source VM", "Running", 98, f"Removing source KVM VM {workload.vm_name} because Keep Source VM is disabled")
+                        remove_source_kvm_vm(client, workload.vm_name)
+                        if reporter:
+                            reporter.task(f"{workload.id}-cleanup", f"{workload.vm_name}: remove source VM", "Succeeded", 100, f"Removed source KVM VM {workload.vm_name}")
+                    results.append(
+                        {
+                            "ok": True,
+                            "vm_id": workload.id,
+                            "vm_name": workload.vm_name,
+                            "target_name": target_name,
+                            "message": f"Provisioned on VMware using LaunchGrid{'' if request.keep_source_vm else ' and removed the source KVM VM'}",
+                            "details": provisioned,
+                        }
                     )
-                    ova_path = stage_path / f"{target_name}.ova"
-                    with tarfile.open(ova_path, "w") as archive:
-                        archive.add(ovf_path, arcname=ovf_path.name)
-                        for disk in ovf_disks:
-                            archive.add(stage_path / disk["name"], arcname=disk["name"])
-                    if reporter:
-                        reporter.task(f"{workload.id}-package", f"{workload.vm_name}: package OVA", "Succeeded", 82, f"Prepared OVA package {ova_path.name}")
-                    command = ["govc", "import.ova", "-name", target_name]
-                    if request.options.get("power_on"):
-                        command.append("-powerOn")
-                    command.append(str(ova_path))
-                    if reporter:
-                        reporter.task(f"{workload.id}-import", f"{workload.vm_name}: import into vCenter", "Running", 92, f"Importing {ova_path.name} into vCenter as {target_name}")
-                    output = run(command, env=env, timeout=int(request.options.get("timeout", 14400)))
-                    if reporter:
-                        reporter.task(f"{workload.id}-import", f"{workload.vm_name}: import into vCenter", "Succeeded", 98, f"Imported {target_name} into vCenter")
-                results.append({"ok": True, "vm_id": workload.id, "vm_name": workload.vm_name, "target_name": target_name, "message": output.strip() or "OVA imported into vCenter"})
+                finally:
+                    shutil.rmtree(stage_path, ignore_errors=True)
         finally:
             sftp.close()
     return results

@@ -15,6 +15,7 @@ SERVICE_ORDER = [
     "database",
     "frontend",
     "host-connector",
+    "launchgrid",
     "reverse-proxy",
     "spark-engine",
 ]
@@ -53,6 +54,8 @@ def decode_chunked(body: bytes) -> bytes:
 
 
 def display_name(service: str) -> str:
+    if service == "launchgrid":
+        return "LaunchGrid"
     return "-".join(part.capitalize() for part in service.split("-"))
 
 

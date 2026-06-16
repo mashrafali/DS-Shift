@@ -79,6 +79,7 @@ def connector_payload(connector: models.ConnectorProfile, credential_payload: di
         "target_network": connector.target_network,
         "target_datastore": connector.target_datastore,
         "target_vdc_name": connector.target_vdc_name,
+        "target_compute_name": connector.target_compute_name,
         "credential_reference": connector.credential_reference,
         "environment": connector.environment,
     }

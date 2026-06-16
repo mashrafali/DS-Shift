@@ -13,6 +13,7 @@ import uuid
 from urllib.parse import urlparse
 
 import boto3
+import httpx
 from azure.identity import ClientSecretCredential
 from azure.mgmt.compute import ComputeManagementClient
 from azure.mgmt.compute.models import (
@@ -49,6 +50,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://dsshift:dsshift@d
 LIVE_EXECUTION_ENABLED = os.getenv("SPARK_LIVE_EXECUTION_ENABLED", "false").lower() == "true"
 WORKER_ID = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
 POLL_SECONDS = float(os.getenv("SPARK_POLL_SECONDS", "2"))
+LAUNCHGRID_URL = os.getenv("LAUNCHGRID_URL", "http://launchgrid:8300")
 logger = logging.getLogger("spark-engine")
 
 metadata = MetaData()
@@ -110,8 +112,8 @@ CAPABILITIES = [
         "target": "VMware ESXi / vCenter",
         "adapter": "kvm-vcenter-ova",
         "live": True,
-        "required_options": ["target_datastore", "target_network"],
-        "notes": "Copies powered-off file-backed KVM disks into Spark staging, converts them to stream-optimized VMDK, packages an OVA, and imports it with govc.",
+        "required_options": ["target_datastore", "target_network", "target_vdc_name", "target_compute_name"],
+        "notes": "Copies powered-off file-backed KVM disks into host staging, converts them to stream-optimized VMDK, and hands them to LaunchGrid for VMware provisioning.",
     },
     {
         "source": "VMware ESXi / vCenter",
@@ -135,6 +137,7 @@ class Connector(BaseModel):
     target_network: str | None = None
     target_datastore: str | None = None
     target_vdc_name: str | None = None
+    target_compute_name: str | None = None
     credential_reference: str | None = None
     credential_payload: dict = Field(default_factory=dict)
 
@@ -153,6 +156,7 @@ class JobRequest(BaseModel):
     target_connector: Connector
     workloads: list[Workload]
     options: dict = Field(default_factory=dict)
+    keep_source_vm: bool = True
     requested_by: str
     live: bool = True
     approval: str

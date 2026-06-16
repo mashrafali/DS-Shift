@@ -57,6 +57,7 @@ class ConnectorBase(BaseModel):
     target_network: Optional[str] = None
     target_datastore: Optional[str] = None
     target_vdc_name: Optional[str] = None
+    target_compute_name: Optional[str] = None
     environment: Optional[str] = None
     status: str = "Not validated"
     notes: Optional[str] = None
@@ -294,6 +295,7 @@ class MigrationPlanCreate(BaseModel):
     vm_ids: list[int]
     target_connector_id: int
     notes: Optional[str] = None
+    keep_source_vm: bool = True
     execution_options: dict = Field(default_factory=dict)
 
 
@@ -302,6 +304,7 @@ class MigrationPlanUpdate(BaseModel):
     vm_ids: list[int]
     target_connector_id: int
     notes: Optional[str] = None
+    keep_source_vm: bool = True
     execution_options: dict = Field(default_factory=dict)
 
 
@@ -320,6 +323,7 @@ class MigrationPlan(BaseModel):
     target_datastore: Optional[str] = None
     status: str
     notes: Optional[str] = None
+    keep_source_vm: bool = True
     execution_options_json: str
     spark_job_id: Optional[int] = None
     results_json: str

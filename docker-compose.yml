@@ -138,13 +138,37 @@ services:
       AWS_CONNECTOR_CREDENTIALS: ${AWS_CONNECTOR_CREDENTIALS:-}
       GCP_CONNECTOR_CREDENTIALS: ${GCP_CONNECTOR_CREDENTIALS:-}
       AZURE_CONNECTOR_CREDENTIALS: ${AZURE_CONNECTOR_CREDENTIALS:-}
+      LAUNCHGRID_URL: http://launchgrid:8300
     depends_on:
       database:
         condition: service_healthy
+      launchgrid:
+        condition: service_healthy
     volumes:
       - ./engine-ssh:/root/.ssh:ro
+      - /DS-Shift-Staging:/DS-Shift-Staging
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8200/health', timeout=3).read()\""]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ds_shift
+
+  launchgrid:
+    image: ds-shift-launchgrid:latest
+    build:
+      context: ./launch-grid
+      network: host
+    restart: unless-stopped
+    deploy:
+      replicas: 3
+    environment:
+      VCENTER_PASSWORD: ${VCENTER_PASSWORD:-}
+    volumes:
+      - /DS-Shift-Staging:/DS-Shift-Staging
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8300/health', timeout=3).read()\""]
       interval: 20s
       timeout: 5s
       retries: 5

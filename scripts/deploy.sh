@@ -10,6 +10,7 @@ if [[ ! -f .env ]]; then
 fi
 
 mkdir -p ops/certs
+mkdir -p /DS-Shift-Staging
 if [[ ! -f ops/certs/ds-shift.crt || ! -f ops/certs/ds-shift.key ]]; then
   openssl req -x509 -nodes -newkey rsa:4096 -days 825 \
     -keyout ops/certs/ds-shift.key \

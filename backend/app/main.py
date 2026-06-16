@@ -156,6 +156,7 @@ def connector_public(connector: models.ConnectorProfile) -> schemas.Connector:
         target_network=connector.target_network,
         target_datastore=connector.target_datastore,
         target_vdc_name=connector.target_vdc_name,
+        target_compute_name=connector.target_compute_name,
         credential_reference=connector.credential_reference,
         has_stored_secret=bool(connector.secret_json_encrypted),
         environment=connector.environment,
@@ -299,6 +300,8 @@ def resolve_connector_defaults(connector: models.ConnectorProfile) -> dict:
     if connector.target_vdc_name:
         defaults["target_vdc_name"] = connector.target_vdc_name
         defaults["target_datacenter"] = connector.target_vdc_name
+    if connector.target_compute_name:
+        defaults["target_compute_name"] = connector.target_compute_name
     return defaults
 
 
@@ -445,8 +448,10 @@ def startup() -> None:
         connection.execute(text("ALTER TABLE connector_profiles ADD COLUMN IF NOT EXISTS target_network VARCHAR(160)"))
         connection.execute(text("ALTER TABLE connector_profiles ADD COLUMN IF NOT EXISTS target_datastore VARCHAR(160)"))
         connection.execute(text("ALTER TABLE connector_profiles ADD COLUMN IF NOT EXISTS target_vdc_name VARCHAR(160)"))
+        connection.execute(text("ALTER TABLE connector_profiles ADD COLUMN IF NOT EXISTS target_compute_name VARCHAR(160)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_vm_inventory_external_id ON vm_inventory (external_id)"))
         connection.execute(text("ALTER TABLE migration_plans ADD COLUMN IF NOT EXISTS execution_options_json TEXT NOT NULL DEFAULT '{}'"))
+        connection.execute(text("ALTER TABLE migration_plans ADD COLUMN IF NOT EXISTS keep_source_vm BOOLEAN NOT NULL DEFAULT true"))
         connection.execute(text("ALTER TABLE migration_plans ADD COLUMN IF NOT EXISTS spark_job_id INTEGER"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_migration_plans_spark_job_id ON migration_plans (spark_job_id)"))
         connection.execute(text("ALTER TABLE migration_waves ALTER COLUMN project_id DROP NOT NULL"))
@@ -1186,6 +1191,7 @@ def create_migration_plan(payload: schemas.MigrationPlanCreate, db: Session = De
         migration_type=f"{source.connector_type} to {target.connector_type}",
         vm_ids_json=json.dumps(sorted(set(payload.vm_ids))),
         notes=payload.notes,
+        keep_source_vm=payload.keep_source_vm,
         execution_options_json=json.dumps(compact_execution_options(payload.execution_options)),
     )
     db.add(plan)
@@ -1218,6 +1224,7 @@ def update_migration_plan(plan_id: int, payload: schemas.MigrationPlanUpdate, db
     plan.target_connector_id = payload.target_connector_id
     plan.vm_ids_json = json.dumps(sorted({vm.id for vm in vms}))
     plan.notes = payload.notes
+    plan.keep_source_vm = payload.keep_source_vm
     plan.execution_options_json = json.dumps(compact_execution_options(payload.execution_options))
     plan.migration_type = f"{source.connector_type} to {target.connector_type}"
     plan.status = "Draft"
@@ -1249,6 +1256,7 @@ def connector_execution_payload(connector: models.ConnectorProfile) -> dict:
         "target_network": connector.target_network,
         "target_datastore": connector.target_datastore,
         "target_vdc_name": connector.target_vdc_name,
+        "target_compute_name": connector.target_compute_name,
         "credential_reference": connector.credential_reference,
         "credential_payload": decrypt_connector_secret(connector),
     }
@@ -1282,6 +1290,7 @@ def migration_plan_execution_payload(
             for vm in vms
         ],
         "options": options,
+        "keep_source_vm": plan.keep_source_vm,
         "requested_by": requested_by,
         "live": live,
         "approval": f"EXECUTE:{plan.id}" if live else f"PREFLIGHT:{plan.id}",

@@ -15,6 +15,7 @@ class ConnectorRequest(BaseModel):
     target_network: str | None = None
     target_datastore: str | None = None
     target_vdc_name: str | None = None
+    target_compute_name: str | None = None
     credential_reference: str | None = None
     credential_payload: dict = Field(default_factory=dict)
     environment: str | None = None

@@ -10,12 +10,15 @@ EXPECTED_SERVICES = [
     "database",
     "frontend",
     "host-connector",
+    "launchgrid",
     "reverse-proxy",
     "spark-engine",
 ]
 
 
 def display_name(service: str) -> str:
+    if service == "launchgrid":
+        return "LaunchGrid"
     return "-".join(part.capitalize() for part in service.split("-"))
 
 
