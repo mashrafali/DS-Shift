@@ -106,6 +106,10 @@ random_secret() {
   openssl rand -base64 32 | tr -d '\n'
 }
 
+urlencode() {
+  python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
+}
+
 current_env_value() {
   local env_file="$1"
   local key="$2"
@@ -157,6 +161,7 @@ ensure_env_file() {
   fi
 
   set_env_value "${env_file}" "POSTGRES_PASSWORD" "${POSTGRES_PASSWORD}"
+  set_env_value "${env_file}" "POSTGRES_PASSWORD_URLENCODED" "$(urlencode "${POSTGRES_PASSWORD}")"
   set_env_value "${env_file}" "ADMIN_INITIAL_USERNAME" "${ADMIN_USERNAME}"
   set_env_value "${env_file}" "ADMIN_INITIAL_PASSWORD" "${ADMIN_PASSWORD}"
   if ! grep -q '^SPARK_LIVE_EXECUTION_ENABLED=' "${env_file}"; then
