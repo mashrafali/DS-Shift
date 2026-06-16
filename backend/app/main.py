@@ -315,6 +315,21 @@ def compact_execution_options(options: dict | None) -> dict:
     }
 
 
+def summarize_preflight_checks(checks: list[dict]) -> str:
+    blocking = [check for check in checks if not check.get("ok")]
+    if not blocking:
+        return "Preflight passed"
+    messages = []
+    for check in blocking[:4]:
+        label = str(check.get("check") or "check").replace("_", " ")
+        vm_name = check.get("vm_name")
+        detail = str(check.get("message") or "No details returned").strip()
+        messages.append(f"{vm_name}: {label}: {detail}" if vm_name else f"{label}: {detail}")
+    if len(blocking) > 4:
+        messages.append(f"{len(blocking) - 4} more blocking check(s)")
+    return "Preflight blocked: " + "; ".join(messages)
+
+
 def validate_plan_vm_selection(vm_ids: list[int], db: Session) -> tuple[list[models.VmInventory], int]:
     normalized_ids = sorted(set(vm_ids))
     if not normalized_ids:
@@ -1407,7 +1422,7 @@ def execute_migration_plan(plan_id: int, db: Session = Depends(get_db), _user: m
                 "vm_id": vm.id,
                 "vm_name": vm.vm_name,
                 "ok": ok,
-                "message": "Preflight passed" if ok else "Preflight found blocking checks",
+                "message": summarize_preflight_checks(checks),
                 "checks": checks,
                 "adapter": preflight.get("adapter"),
             }

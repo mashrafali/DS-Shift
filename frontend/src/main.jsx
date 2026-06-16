@@ -923,7 +923,7 @@ function MigrationPlans({ plans, vms, connectors, preflight, launch, remove, exe
     return <tr key={plan.id}><td><strong>{plan.name}</strong></td><td>{source?.name || plan.source_connector_id} → {target?.name || plan.target_connector_id}</td><td>{vmCount}</td><td><Badge value={plan.status} /></td><td>{formatDateTime(plan.executed_at)}</td><td><div className="button-row compact"><button className="mini" onClick={() => setSelectedPlanId(plan.id)}><FileText size={14} /> Details</button><button className="mini" onClick={() => executeTask(plan)}><Gauge size={14} /> Task</button><button className="mini" disabled={active} onClick={() => editPlan(plan)}><Edit3 size={14} /> Edit</button><button className="mini" disabled={active || executingPlanId === plan.id} onClick={() => preflight(plan)}><CheckCircle2 size={14} /> {executingPlanId === plan.id ? 'Checking...' : 'Preflight'}</button>{user?.role === 'admin' && <button className="mini" disabled={active || launchingPlanId === plan.id} onClick={() => launch(plan)}><Play size={14} /> {launchingPlanId === plan.id ? 'Queueing...' : 'Launch'}</button>}<button className="mini danger-button" disabled={active} onClick={() => remove(plan)}><Trash2 size={14} /> Delete</button></div></td></tr>;
   })}</tbody></table></div>{selectedPlan && <Modal title={selectedPlan.name} onClose={() => setSelectedPlanId(null)} wide><div className="plan-detail"><dl className="host-facts"><div><dt>Status</dt><dd>{selectedPlan.status}</dd></div><div><dt>Migration type</dt><dd>{selectedPlan.migration_type}</dd></div><div><dt>VMs</dt><dd>{planVms.length}</dd></div><div><dt>Keep source VM</dt><dd>{selectedPlan.keep_source_vm !== false ? 'Yes' : 'No'}</dd></div><div><dt>Spark job</dt><dd>{selectedPlan.spark_job_id || '-'}</dd></div><div><dt>Executed</dt><dd>{formatDateTime(selectedPlan.executed_at)}</dd></div></dl><div className="table-wrap"><table><thead><tr><th>VM</th><th>Source</th><th>OS</th><th>Status</th><th>Execution result</th></tr></thead><tbody>{planVms.map((vm) => {
     const result = results.find((row) => row.vm_id === vm.id);
-    return <tr key={vm.id}><td>{vm.vm_name}</td><td>{vm.source_platform}</td><td>{vm.os_type || 'Unknown'}</td><td><Badge value={planDetailStatus(result, selectedPlan.status, vm.current_status)} /></td><td>{result?.message || 'Not executed'}</td></tr>;
+    return <tr key={vm.id}><td>{vm.vm_name}</td><td>{vm.source_platform}</td><td>{vm.os_type || 'Unknown'}</td><td><Badge value={planDetailStatus(result, selectedPlan.status, vm.current_status)} /></td><td>{preflightDetail(result)}</td></tr>;
   })}</tbody></table></div></div></Modal>}{taskPlan && <MigrationTaskModal plan={taskPlan} execution={taskExecution} connectors={connectors} onClose={closeTask} />}</section>;
 }
 
@@ -1082,7 +1082,7 @@ function MigrationTaskModal({ plan, execution, connectors, onClose }) {
   const vmResults = job?.vm_results?.length ? job.vm_results : storedResults.filter((row) => row.vm_id);
   const progressPercent = normalizeProgress(job?.progress_percent ?? taskRows.reduce((current, row) => Math.max(current, Number(row.progress_percent) || 0), 0));
   const summaryMessage = job?.message || vmResults.find((row) => row.message)?.message || 'Not executed yet';
-  return <Modal title={`Task: ${plan.name}`} onClose={onClose} wide><div className="plan-detail"><dl className="host-facts"><div><dt>Status</dt><dd>{plan.status}</dd></div><div><dt>Migration</dt><dd>{source?.name || plan.source_connector_id} → {target?.name || plan.target_connector_id}</dd></div><div><dt>Spark job</dt><dd>{plan.spark_job_id || '-'}</dd></div><div><dt>Progress</dt><dd>{progressPercent}%</dd></div><div><dt>Executed</dt><dd>{formatDateTime(plan.executed_at)}</dd></div></dl><div className="task-summary"><div className="task-progress"><div className="task-progress-bar"><span style={{ width: `${progressPercent}%` }} /></div><strong>{progressPercent}%</strong></div><p>{summaryMessage}</p></div>{!plan.spark_job_id && <div className="about"><h2>Not executed yet</h2><p>This migration plan has not been sent to the Spark Engine. Run Preflight or Launch first to generate task telemetry.</p></div>}{Boolean(taskRows.length) && <div className="table-wrap"><table><thead><tr><th>Task</th><th>Status</th><th>Progress</th><th>Detail</th><th>Updated</th></tr></thead><tbody>{taskRows.map((task, index) => <tr key={`${task.task_code || 'task'}-${index}`}><td>{task.task_name || task.task_code || 'Task'}</td><td><Badge value={task.status || 'Running'} /></td><td>{normalizeProgress(task.progress_percent)}%</td><td>{task.message || '-'}</td><td>{formatDateTime(task.updated_at)}</td></tr>)}</tbody></table></div>}{plan.spark_job_id && !taskRows.length && <div className="about"><h2>Task stream pending</h2><p>The Spark Engine job exists, but it has not published task entries yet. Refresh after a few seconds if this persists.</p></div>}{Boolean(vmResults.length) && <div className="table-wrap"><table><thead><tr><th>VM ID</th><th>Status</th><th>Detail</th></tr></thead><tbody>{vmResults.map((row, index) => <tr key={`${row.vm_id || 'result'}-${index}`}><td>{row.vm_id || '-'}</td><td><Badge value={row.ok ? 'Succeeded' : 'Failed'} /></td><td>{row.message || '-'}</td></tr>)}</tbody></table></div>}</div></Modal>;
+  return <Modal title={`Task: ${plan.name}`} onClose={onClose} wide><div className="plan-detail"><dl className="host-facts"><div><dt>Status</dt><dd>{plan.status}</dd></div><div><dt>Migration</dt><dd>{source?.name || plan.source_connector_id} → {target?.name || plan.target_connector_id}</dd></div><div><dt>Spark job</dt><dd>{plan.spark_job_id || '-'}</dd></div><div><dt>Progress</dt><dd>{progressPercent}%</dd></div><div><dt>Executed</dt><dd>{formatDateTime(plan.executed_at)}</dd></div></dl><div className="task-summary"><div className="task-progress"><div className="task-progress-bar"><span style={{ width: `${progressPercent}%` }} /></div><strong>{progressPercent}%</strong></div><p>{summaryMessage}</p></div>{!plan.spark_job_id && <div className="about"><h2>Not executed yet</h2><p>This migration plan has not been sent to the Spark Engine. Run Preflight or Launch first to generate task telemetry.</p></div>}{Boolean(taskRows.length) && <div className="table-wrap"><table><thead><tr><th>Task</th><th>Status</th><th>Progress</th><th>Detail</th><th>Updated</th></tr></thead><tbody>{taskRows.map((task, index) => <tr key={`${task.task_code || 'task'}-${index}`}><td>{task.task_name || task.task_code || 'Task'}</td><td><Badge value={task.status || 'Running'} /></td><td>{normalizeProgress(task.progress_percent)}%</td><td>{task.message || '-'}</td><td>{formatDateTime(task.updated_at)}</td></tr>)}</tbody></table></div>}{plan.spark_job_id && !taskRows.length && <div className="about"><h2>Task stream pending</h2><p>The Spark Engine job exists, but it has not published task entries yet. Refresh after a few seconds if this persists.</p></div>}{Boolean(vmResults.length) && <div className="table-wrap"><table><thead><tr><th>VM ID</th><th>Status</th><th>Detail</th></tr></thead><tbody>{vmResults.map((row, index) => <tr key={`${row.vm_id || 'result'}-${index}`}><td>{row.vm_id || '-'}</td><td><Badge value={row.ok ? 'Succeeded' : 'Failed'} /></td><td>{preflightDetail(row)}</td></tr>)}</tbody></table></div>}</div></Modal>;
 }
 
 function WaveModal({ mode, plans, form, setForm, save, close }) {
@@ -1166,6 +1166,24 @@ function connectorCredentialSummary(connector) {
 function planDetailStatus(result, planStatus, fallbackStatus) {
   if (result) return result.ok ? planStatus : 'Failed';
   return fallbackStatus || planStatus;
+}
+
+function normalizeCheckLabel(value) {
+  return String(value || 'check').replaceAll('_', ' ');
+}
+
+function blockingChecks(result) {
+  return (result?.checks || []).filter((check) => check && check.ok === false);
+}
+
+function preflightDetail(result) {
+  if (!result) return 'Not executed';
+  const blocking = blockingChecks(result);
+  if (!blocking.length) return result.message || 'Preflight passed';
+  return blocking.map((check) => {
+    const prefix = check.vm_name ? `${check.vm_name}: ` : '';
+    return `${prefix}${normalizeCheckLabel(check.check)}: ${check.message || 'No details returned'}`;
+  }).join(' | ');
 }
 
 function renderConnectorCredentialFields(form, update, updateCredential) {
