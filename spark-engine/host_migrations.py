@@ -534,7 +534,19 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                                     60,
                                     f"Converting source disk {index} to stream-optimized VMDK in shared staging",
                                 )
-                            run(["qemu-img", "convert", "-p", "-O", "vmdk", "-o", "subformat=streamOptimized", str(source_path), str(target_path)])
+                            run(
+                                [
+                                    "qemu-img",
+                                    "convert",
+                                    "-p",
+                                    "-O",
+                                    "vmdk",
+                                    "-o",
+                                    "adapter_type=lsilogic,subformat=streamOptimized,compat6=on",
+                                    str(source_path),
+                                    str(target_path),
+                                ]
+                            )
                             converted_disks.append({"local_path": str(target_path), "capacity_bytes": int(info["virtual-size"])})
                             if reporter:
                                 reporter.task(

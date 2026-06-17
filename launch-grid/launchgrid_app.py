@@ -58,7 +58,8 @@ def connector_password(connector: Connector) -> str | None:
 def run(command: list[str], *, env: dict[str, str], timeout: int = 1800) -> str:
     completed = subprocess.run(command, capture_output=True, text=True, env=env, timeout=timeout, check=False)
     if completed.returncode:
-        raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or f"{command[0]} exited with status {completed.returncode}")
+        detail = completed.stderr.strip() or completed.stdout.strip() or f"{command[0]} exited with status {completed.returncode}"
+        raise RuntimeError(f"{' '.join(command)} failed: {detail}")
     return completed.stdout.strip()
 
 
@@ -114,7 +115,11 @@ def resolve_imported_disk_path(env: dict[str, str], remote_dir: str, local_path:
     listing = run(["govc", "datastore.ls", "-p", remote_dir], env=env, timeout=60)
     entries = [entry.strip() for entry in listing.splitlines() if entry.strip()]
     basename = local_path.name
-    candidates = [entry for entry in entries if entry.endswith(".vmdk")]
+    candidates = [
+        entry
+        for entry in entries
+        if entry.endswith(".vmdk") and not entry.endswith("-flat.vmdk") and not entry.endswith("-sesparse.vmdk")
+    ]
 
     exact_matches = [entry for entry in candidates if Path(entry).name == basename]
     if exact_matches:
@@ -188,13 +193,18 @@ def provision(request: ProvisionRequest):
             request.target_connector.target_network,
             "-ds",
             request.target_connector.target_datastore,
+            "-disk.controller",
+            "lsilogic",
+            "-disk",
+            imported_paths[0],
+            "-link=false",
             *compute_option(env, request.target_connector.target_compute_name),
             request.vm_name,
         ]
         command_log.append(" ".join(create_command))
         try:
             run(create_command, env=env, timeout=300)
-            for disk_path in imported_paths:
+            for disk_path in imported_paths[1:]:
                 attach_command = ["govc", "vm.disk.attach", "-vm", request.vm_name, "-link=false", "-disk", disk_path]
                 command_log.append(" ".join(attach_command))
                 run(attach_command, env=env, timeout=300)

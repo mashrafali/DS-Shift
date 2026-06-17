@@ -209,6 +209,16 @@ def parsed_json_object(value: str | None) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def parsed_json_array(value: str | None) -> list:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
 def raw_dashboard_summary(db: Session) -> schemas.DashboardSummary:
     plans = db.query(models.MigrationPlan).count()
     vms = db.query(models.VmInventory).all()
