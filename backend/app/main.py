@@ -310,9 +310,11 @@ def resolve_connector_defaults(connector: models.ConnectorProfile) -> dict:
 def compact_execution_options(options: dict | None) -> dict:
     if not isinstance(options, dict):
         return {}
+    blocked_keys = {"target_datastore"}
     return {
         key: value
         for key, value in options.items()
+        if key not in blocked_keys
         if value not in (None, "", [], {})
     }
 
@@ -1522,7 +1524,7 @@ def create_migration_job(payload: schemas.MigrationJobCreate, db: Session = Depe
         target.credential_reference,
         decrypt_connector_secret(target).get("password"),
         payload.vm_name,
-        payload.target_datastore or target.target_datastore,
+        target.target_datastore,
     )
     job = models.MigrationJob(
         source_connector_id=source.id,

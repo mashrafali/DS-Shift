@@ -261,7 +261,7 @@ def launchgrid_provision(request, workload, target_name: str, metadata: dict, di
             "port": request.target_connector.port,
             "username": request.target_connector.username,
             "target_network": request.options.get("target_network") or request.target_connector.target_network,
-            "target_datastore": request.options.get("target_datastore") or request.target_connector.target_datastore,
+            "target_datastore": request.target_connector.target_datastore,
             "target_vdc_name": request.options.get("target_datacenter") or request.options.get("target_vdc_name") or request.target_connector.target_vdc_name,
             "target_compute_name": request.options.get("target_compute_name") or request.target_connector.target_compute_name,
             "credential_reference": request.target_connector.credential_reference,
@@ -356,7 +356,7 @@ def find_vcenter_vm(connector, workload):
 
 
 def preflight_kvm_to_vcenter(request) -> list[dict]:
-    target_datastore = request.options.get("target_datastore") or request.target_connector.target_datastore
+    target_datastore = request.target_connector.target_datastore
     target_network = request.options.get("target_network") or request.target_connector.target_network
     target_vdc_name = request.options.get("target_datacenter") or request.options.get("target_vdc_name") or request.target_connector.target_vdc_name
     target_compute_name = request.options.get("target_compute_name") or request.target_connector.target_compute_name
