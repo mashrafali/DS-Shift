@@ -106,6 +106,34 @@ def rollback_vm(env: dict[str, str], vm_name: str, remote_dir: str) -> None:
         pass
 
 
+def ensure_remote_dir(env: dict[str, str], remote_dir: str) -> None:
+    run(["govc", "datastore.mkdir", "-p", remote_dir], env=env, timeout=60)
+
+
+def resolve_imported_disk_path(env: dict[str, str], remote_dir: str, local_path: Path) -> str:
+    listing = run(["govc", "datastore.ls", "-p", remote_dir], env=env, timeout=60)
+    entries = [entry.strip() for entry in listing.splitlines() if entry.strip()]
+    basename = local_path.name
+    candidates = [entry for entry in entries if entry.endswith(".vmdk")]
+
+    exact_matches = [entry for entry in candidates if Path(entry).name == basename]
+    if exact_matches:
+        return exact_matches[0]
+
+    stem_matches = [entry for entry in candidates if Path(entry).stem == local_path.stem]
+    if stem_matches:
+        return stem_matches[0]
+
+    if len(candidates) == 1:
+        return candidates[0]
+
+    if candidates:
+        raise RuntimeError(
+            f"Imported disk path for {basename} is ambiguous in {remote_dir}: {', '.join(candidates)}"
+        )
+    raise RuntimeError(f"No imported VMDK was found in datastore folder {remote_dir}")
+
+
 def validate_request(request: ProvisionRequest) -> None:
     connector = request.target_connector
     if connector.connector_type not in {"VMware ESXi / vCenter", "VMware ESXi", "vCenter"}:
@@ -135,13 +163,17 @@ def provision(request: ProvisionRequest):
         remote_dir = f"DS-Shift/{request.vm_name}"
         command_log: list[str] = []
         imported_paths: list[str] = []
+        command_log.append(f"govc datastore.mkdir -p {remote_dir}")
+        ensure_remote_dir(env, remote_dir)
         for disk in request.disks:
             local_path = Path(disk.local_path)
             if not local_path.exists():
                 raise RuntimeError(f"Converted disk is missing: {local_path}")
             command_log.append(f"govc import.vmdk {local_path} {remote_dir}")
             run(["govc", "import.vmdk", str(local_path), remote_dir], env=env, timeout=7200)
-            imported_paths.append(f"{remote_dir}/{local_path.name}")
+            imported_path = resolve_imported_disk_path(env, remote_dir, local_path)
+            command_log.append(f"resolved imported disk path: {imported_path}")
+            imported_paths.append(imported_path)
         create_command = [
             "govc",
             "vm.create",
