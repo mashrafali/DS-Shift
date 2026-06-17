@@ -447,6 +447,26 @@ def workload_stage_directory(plan_id: int, vm: models.VmInventory) -> Path:
     return STAGING_ROOT / f"plan-{plan_id}" / f"vm-{vm.id}-{stage_safe_name(vm.vm_name)}"
 
 
+def prune_staging_area(retention_days: int) -> int:
+    STAGING_ROOT.mkdir(parents=True, exist_ok=True)
+    days = max(0, int(retention_days or 0))
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    removed = 0
+    for entry in STAGING_ROOT.iterdir():
+        try:
+            modified = datetime.utcfromtimestamp(entry.stat().st_mtime)
+        except FileNotFoundError:
+            continue
+        if modified >= cutoff:
+            continue
+        if entry.is_dir():
+            shutil.rmtree(entry, ignore_errors=True)
+        else:
+            entry.unlink(missing_ok=True)
+        removed += 1
+    return removed
+
+
 def plan_resume_metadata(plan: models.MigrationPlan, vms: list[models.VmInventory]) -> dict:
     if plan.status != "Failed":
         return {"allowed": False, "reason": "Only failed migration plans can continue from preserved staging"}
@@ -459,19 +479,16 @@ def plan_resume_metadata(plan: models.MigrationPlan, vms: list[models.VmInventor
     for vm in vms:
         result = vm_result_by_id.get(vm.id, {})
         if result.get("can_resume") is not True:
-            reasons.append(f"{vm.vm_name} is not marked resumable")
+            stage_path = workload_stage_directory(plan.id, vm)
+            resumable.append({"vm_id": vm.id, "vm_name": vm.vm_name, "stage_path": str(stage_path), "reuse_ready": False})
             continue
         stage_path = workload_stage_directory(plan.id, vm)
-        if not stage_path.exists():
-            reasons.append(f"{vm.vm_name} staging folder is missing")
-            continue
-        artifacts = list(stage_path.glob("*.vmdk")) + list(stage_path.glob("*.qcow2")) + list(stage_path.glob("*.xml"))
-        if not artifacts:
-            reasons.append(f"{vm.vm_name} staging folder has no reusable artifacts")
-            continue
-        resumable.append({"vm_id": vm.id, "vm_name": vm.vm_name, "stage_path": str(stage_path)})
+        artifacts = []
+        if stage_path.exists():
+            artifacts = list(stage_path.glob("*.vmdk")) + list(stage_path.glob("*.qcow2")) + list(stage_path.glob("*.xml"))
+        resumable.append({"vm_id": vm.id, "vm_name": vm.vm_name, "stage_path": str(stage_path), "reuse_ready": bool(artifacts)})
     if len(resumable) != len(vms):
-        return {"allowed": False, "reason": reasons[0] if reasons else "Not every VM in the plan has reusable staging artifacts"}
+        return {"allowed": False, "reason": reasons[0] if reasons else "Not every VM in the plan can continue"}
     return {"allowed": True, "workloads": resumable}
 
 
@@ -521,6 +538,9 @@ def startup() -> None:
         connection.execute(text("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS dashboard_reset_json TEXT NOT NULL DEFAULT '{}'"))
         with Session(bind=connection) as db:
             seed_defaults(db)
+            settings_row = db.query(models.AppSetting).first()
+            if settings_row:
+                prune_staging_area(settings_row.retention_days)
 
 
 @app.get("/api/health")
@@ -1183,6 +1203,7 @@ def get_settings(db: Session = Depends(get_db), _user: models.LocalUser = Depend
         db.add(settings_row)
         db.commit()
         db.refresh(settings_row)
+    prune_staging_area(settings_row.retention_days)
     return settings_row
 
 
@@ -1201,6 +1222,7 @@ def update_settings(payload: schemas.SettingsUpdate, db: Session = Depends(get_d
         setattr(settings_row, key, value)
     db.commit()
     db.refresh(settings_row)
+    prune_staging_area(settings_row.retention_days)
     return settings_row
 
 

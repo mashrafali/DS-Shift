@@ -30,6 +30,23 @@ import './styles.css';
 
 const tokenKey = 'ds_shift_token';
 const legacyTokenKey = 'ds_replace_token';
+let displayTimezone = 'Asia/Riyadh';
+
+const timezoneOptions = [
+  ['UTC', 'UTC'],
+  ['Asia/Riyadh', 'Asia/Riyadh'],
+  ['Asia/Dubai', 'Asia/Dubai'],
+  ['Asia/Kolkata', 'Asia/Kolkata'],
+  ['Asia/Singapore', 'Asia/Singapore'],
+  ['Asia/Tokyo', 'Asia/Tokyo'],
+  ['Europe/London', 'Europe/London'],
+  ['Europe/Paris', 'Europe/Paris'],
+  ['America/New_York', 'America/New_York'],
+  ['America/Chicago', 'America/Chicago'],
+  ['America/Denver', 'America/Denver'],
+  ['America/Los_Angeles', 'America/Los_Angeles'],
+  ['Australia/Sydney', 'Australia/Sydney'],
+];
 
 function loadStoredToken() {
   const token = localStorage.getItem(tokenKey) || localStorage.getItem(legacyTokenKey) || '';
@@ -85,6 +102,13 @@ const blankSettings = {
   default_timezone: 'Asia/Riyadh',
   retention_days: 365,
   banner_message: '',
+};
+
+const blankAbout = {
+  product: 'DS Shift',
+  brand: 'Defined Solutions',
+  version: '1.0 RC1',
+  purpose: '',
 };
 
 const blankWave = {
@@ -195,6 +219,7 @@ function App() {
   const [users, setUsers] = useState([]);
   const [migrationPlans, setMigrationPlans] = useState([]);
   const [settings, setSettings] = useState(blankSettings);
+  const [about, setAbout] = useState(blankAbout);
   const [serviceStatus, setServiceStatus] = useState({ services: [], monitor_error: '' });
   const [serviceStatusLoading, setServiceStatusLoading] = useState(false);
   const [selectedVmIds, setSelectedVmIds] = useState([]);
@@ -252,7 +277,7 @@ function App() {
     if (!token) return;
     setError('');
     try {
-      const [me, dashboard, vmRows, waveRows, connectorRows, connectorPlatformRows, hostRows, planRows, appSettings] = await Promise.all([
+      const [me, dashboard, vmRows, waveRows, connectorRows, connectorPlatformRows, hostRows, planRows, appSettings, aboutInfo] = await Promise.all([
         api('/auth/me'),
         api('/dashboard'),
         api('/vms'),
@@ -262,6 +287,7 @@ function App() {
         api('/hosts'),
         api('/migration-plans'),
         api('/settings'),
+        api('/about'),
       ]);
       const userRows = me.role === 'admin' ? await api('/users') : [];
       setUser(me);
@@ -274,6 +300,21 @@ function App() {
       setHosts(hostRows);
       setMigrationPlans(planRows);
       setSettings(appSettings);
+      setAbout(aboutInfo);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const refreshCurrentView = async () => {
+    setError('');
+    try {
+      if (active === 'plans' && taskPlanId) await loadPlanExecution(taskPlanId);
+      await load();
+      if (active === 'settings') {
+        const result = await api('/service-status');
+        setServiceStatus(result);
+      }
     } catch (err) {
       setError(err.message);
     }
@@ -768,12 +809,15 @@ function App() {
     ...(user?.role === 'admin' ? [['users', Users, 'Users']] : []),
     ['settings', Settings, 'Settings'],
   ];
+  displayTimezone = settings.default_timezone || 'Asia/Riyadh';
 
   return (
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <BrandLogo className="brand-logo" />
+          <button className="brand-link" type="button" onClick={() => setActive('dashboard')} title="Open Dashboard">
+            <BrandLogo className="brand-logo" />
+          </button>
         </div>
         <nav>
           {nav.map(([key, Icon, label]) => (
@@ -782,6 +826,10 @@ function App() {
             </button>
           ))}
         </nav>
+        <div className="sidebar-footer">
+          <small>{about.product || 'DS Shift'}</small>
+          <strong>Version {about.version || '1.0 RC1'}</strong>
+        </div>
       </aside>
 
       <main>
@@ -791,7 +839,7 @@ function App() {
             <h1>{titleFor(active)}</h1>
           </div>
           <div className="toolbar">
-            <button className="icon-button" onClick={load} title="Refresh data"><RefreshCw size={18} /></button>
+            <button className="icon-button" onClick={refreshCurrentView} title="Refresh current page"><RefreshCw size={18} /></button>
             <div className="signed-in-user">
               <UserAvatar user={user} />
               <div className="user-card-details" title={`Signed in as ${user?.username || 'Loading user'}`}>
@@ -816,7 +864,7 @@ function App() {
         {active === 'waves' && <Waves waves={waves} plans={migrationPlans} user={user} editingWaveId={editingWaveId} executingWaveId={executingWaveId} openCreate={() => { setEditingWaveId(null); setWaveForm(blankWave); setShowWaveModal(true); }} editWave={editWave} deleteWave={deleteWave} executeWave={executeWave} />}
         {active === 'reports' && <Reports csv={csv} vms={vms} />}
         {active === 'users' && user?.role === 'admin' && <UsersView currentUser={user} users={users} form={userForm} setForm={setUserForm} save={saveUser} editForm={editUserForm} setEditForm={setEditUserForm} saveEdit={saveUserEdit} edit={editUser} remove={deleteUser} editingUserId={editingUserId} cancelEdit={cancelUserEdit} setError={setError} />}
-        {active === 'settings' && <SettingsView settings={settings} setSettings={setSettings} save={saveSettings} resetDashboard={resetDashboard} user={user} serviceStatus={serviceStatus} serviceStatusLoading={serviceStatusLoading} />}
+        {active === 'settings' && <SettingsView settings={settings} setSettings={setSettings} save={saveSettings} resetDashboard={resetDashboard} user={user} serviceStatus={serviceStatus} serviceStatusLoading={serviceStatusLoading} about={about} />}
         {showPlanModal && <MigrationPlanModal mode="create" title="Create executable migration plan" submitLabel="Save plan" selectedVmIds={selectedVmIds} vms={vms} connectors={connectors} form={migrationPlanForm} setForm={setMigrationPlanForm} save={createMigrationPlan} close={() => setShowPlanModal(false)} />}
         {editingPlan && <MigrationPlanModal mode="edit" title={`Edit migration plan: ${editingPlan.name}`} submitLabel="Save changes" selectedVmIds={parseJsonArray(editingPlan.vm_ids_json)} sourceConnectorIdOverride={editingPlan.source_connector_id} vms={vms} connectors={connectors} form={editPlanForm} setForm={setEditPlanForm} save={saveMigrationPlanEdit} close={cancelMigrationPlanEdit} />}
         {showWaveModal && <WaveModal mode={editingWaveId ? 'edit' : 'create'} plans={migrationPlans} form={waveForm} setForm={setWaveForm} save={saveWave} close={editingWaveId ? cancelWaveEdit : () => setShowWaveModal(false)} />}
@@ -942,7 +990,7 @@ function MigrationPlans({ plans, vms, connectors, preflight, launch, resume, rem
     const target = connectors.find((row) => row.id === plan.target_connector_id);
     const vmCount = parseJsonArray(plan.vm_ids_json).length;
     const active = ['Queued', 'Running'].includes(plan.status);
-    const canResume = parseJsonArray(plan.results_json).some((row) => row?.can_resume);
+    const canResume = planCanContinue(plan, user);
     return <tr key={plan.id}><td><strong>{plan.name}</strong></td><td>{source?.name || plan.source_connector_id} → {target?.name || plan.target_connector_id}</td><td>{vmCount}</td><td><Badge value={plan.status} /></td><td>{formatDateTime(plan.executed_at)}</td><td><div className="button-row compact"><button className="mini" onClick={() => setSelectedPlanId(plan.id)}><FileText size={14} /> Details</button><button className="mini" onClick={() => executeTask(plan)}><Gauge size={14} /> Task</button><button className="mini" disabled={active} onClick={() => editPlan(plan)}><Edit3 size={14} /> Edit</button><button className="mini" disabled={active || executingPlanId === plan.id} onClick={() => preflight(plan)}><CheckCircle2 size={14} /> {executingPlanId === plan.id ? 'Checking...' : 'Preflight'}</button>{user?.role === 'admin' && <button className="mini" disabled={active || launchingPlanId === plan.id} onClick={() => launch(plan)}><Play size={14} /> {launchingPlanId === plan.id ? 'Queueing...' : 'Launch'}</button>}{user?.role === 'admin' && canResume && plan.status === 'Failed' && <button className="mini" disabled={active || continuingPlanId === plan.id} onClick={() => resume(plan)}><Play size={14} /> {continuingPlanId === plan.id ? 'Continuing...' : 'Continue'}</button>}<button className="mini danger-button" disabled={active} onClick={() => remove(plan)}><Trash2 size={14} /> Delete</button></div></td></tr>;
   })}</tbody></table></div>{selectedPlan && <Modal title={selectedPlan.name} onClose={() => setSelectedPlanId(null)} wide><div className="plan-detail"><dl className="host-facts"><div><dt>Status</dt><dd>{selectedPlan.status}</dd></div><div><dt>Migration type</dt><dd>{selectedPlan.migration_type}</dd></div><div><dt>VMs</dt><dd>{planVms.length}</dd></div><div><dt>Keep source VM</dt><dd>{selectedPlan.keep_source_vm !== false ? 'Yes' : 'No'}</dd></div><div><dt>Spark job</dt><dd>{selectedPlan.spark_job_id || '-'}</dd></div><div><dt>Executed</dt><dd>{formatDateTime(selectedPlan.executed_at)}</dd></div></dl><div className="table-wrap"><table><thead><tr><th>VM</th><th>Source</th><th>OS</th><th>Status</th><th>Execution result</th></tr></thead><tbody>{planVms.map((vm) => {
     const result = results.find((row) => row.vm_id === vm.id);
@@ -1048,8 +1096,8 @@ function UsersView({ currentUser, users, form, setForm, save, editForm, setEditF
   return <section className="split"><FormPanel title="Create user" onSubmit={save}><UserFields form={form} setForm={setForm} setError={setError} /><button className="primary"><Save size={16} /> Create user</button></FormPanel><div className="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>{users.map((row) => <tr key={row.id}><td><div className="user-table-identity"><UserAvatar user={row} /><div><strong>{row.username}</strong>{row.id === currentUser?.id && <span>Current user</span>}</div></div></td><td><Badge value={row.role} /></td><td><Badge value={row.is_active ? 'Active' : 'Inactive'} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini danger-button" disabled={row.id === currentUser?.id} onClick={() => remove(row)}><Trash2 size={14} /> Delete</button></div></td></tr>)}</tbody></table></div>{editingUserId && <Modal title="Edit user" onClose={cancelEdit}><FormPanel title="" onSubmit={saveEdit}><UserFields form={editForm} setForm={setEditForm} editingUserId={editingUserId} setError={setError} /><div className="button-row"><button className="primary"><Save size={16} /> Save changes</button><button className="secondary" type="button" onClick={cancelEdit}><X size={16} /> Cancel</button></div></FormPanel></Modal>}</section>;
 }
 
-function SettingsView({ settings, setSettings, save, resetDashboard, user, serviceStatus, serviceStatusLoading }) {
-  return <section className="split"><FormPanel title="Application settings" onSubmit={save}><Input label="Product name" value={settings.product_name || ''} onChange={() => {}} readOnly disabled /><Input label="Company name" value={settings.company_name || ''} onChange={() => {}} readOnly disabled /><Input label="Default timezone" value={settings.default_timezone || ''} onChange={(v) => setSettings({ ...settings, default_timezone: v })} /><Input label="Retention days" type="number" value={settings.retention_days || 365} onChange={(v) => setSettings({ ...settings, retention_days: v })} /><TextArea label="Banner message" value={settings.banner_message || ''} onChange={(v) => setSettings({ ...settings, banner_message: v })} /><div className="tip">Product name and company name are fixed system identity values and are not editable from Settings.</div><div className="button-row"><button className="primary"><Save size={16} /> Save settings</button>{user?.role === 'admin' && <button className="secondary" type="button" onClick={resetDashboard}><RefreshCw size={16} /> Reset dashboard counters</button>}</div></FormPanel><div className="stack"><ServiceStatusPanel data={serviceStatus} loading={serviceStatusLoading} /></div></section>;
+function SettingsView({ settings, setSettings, save, resetDashboard, user, serviceStatus, serviceStatusLoading, about }) {
+  return <section className="split"><FormPanel title="Application settings" onSubmit={save}><div className="settings-identity-card"><div className="settings-identity-copy"><span className="settings-identity-label">System identity</span><strong>{settings.product_name || about.product || 'DS Shift'}</strong><p>{settings.company_name || about.brand || 'Defined Solutions'}</p></div><Badge value="Fixed" /></div><Select label="Default timezone" value={settings.default_timezone || 'Asia/Riyadh'} options={timezoneOptions} onChange={(v) => setSettings({ ...settings, default_timezone: v })} /><Input label="Staging Area Retention Days" type="number" value={settings.retention_days || 365} onChange={(v) => setSettings({ ...settings, retention_days: v })} /><TextArea label="Banner message" value={settings.banner_message || ''} onChange={(v) => setSettings({ ...settings, banner_message: v })} /><div className="tip">Product name and company name are fixed system identity values. The selected timezone is used across GUI date and log timestamp rendering. Staging Area Retention Days only controls cleanup under <code>/DS-Shift-Staging</code>.</div><div className="button-row"><button className="primary"><Save size={16} /> Save settings</button>{user?.role === 'admin' && <button className="secondary" type="button" onClick={resetDashboard}><RefreshCw size={16} /> Reset dashboard counters</button>}</div></FormPanel><div className="stack"><ServiceStatusPanel data={serviceStatus} loading={serviceStatusLoading} /></div></section>;
 }
 
 function ServiceStatusPanel({ data, loading }) {
@@ -1111,7 +1159,7 @@ function MigrationTaskModal({ plan, execution, connectors, onClose, onContinue, 
   const vmResults = job?.vm_results?.length ? job.vm_results : storedResults.filter((row) => row.vm_id);
   const progressPercent = normalizeProgress(job?.progress_percent ?? taskRows.reduce((current, row) => Math.max(current, taskPercent(row)), 0));
   const summaryMessage = job?.message || vmResults.find((row) => row.message)?.message || 'Not executed yet';
-  const canContinue = taskCanContinue(plan, vmResults, user);
+  const canContinue = taskCanContinue(plan, user);
   return <Modal title={`Task: ${plan.name}`} onClose={onClose} wide><div className="plan-detail"><dl className="host-facts"><div><dt>Status</dt><dd>{plan.status}</dd></div><div><dt>Migration</dt><dd>{source?.name || plan.source_connector_id} → {target?.name || plan.target_connector_id}</dd></div><div><dt>Spark job</dt><dd>{plan.spark_job_id || '-'}</dd></div><div><dt>Progress</dt><dd>{progressPercent}%</dd></div><div><dt>Executed</dt><dd>{formatDateTime(plan.executed_at)}</dd></div></dl><div className="task-summary"><div className="task-progress"><div className={`task-progress-bar ${taskProgressTone(plan.status)}`}><span style={{ width: `${progressPercent}%` }} /></div><strong>{progressPercent}%</strong></div><p>{summaryMessage}</p>{canContinue && <div className="button-row"><button className="primary" type="button" disabled={continuingPlanId === plan.id} onClick={() => onContinue(plan)}><Play size={16} /> {continuingPlanId === plan.id ? 'Continuing...' : 'Continue from staging'}</button></div>}</div>{!plan.spark_job_id && <div className="about"><h2>Not executed yet</h2><p>This migration plan has not been sent to the Spark Engine. Run Preflight or Launch first to generate task telemetry.</p></div>}{Boolean(taskRows.length) && <div className="table-wrap"><table><thead><tr><th>Step</th><th>Status</th><th>Reached</th><th>Detail</th><th>Updated</th></tr></thead><tbody>{taskRows.map((task, index) => <tr key={`${task.key || task.task_code || 'task'}-${index}`}><td>{taskTitle(task, index)}</td><td><Badge value={taskStatusLabel(task.status)} /></td><td>{taskPercent(task)}%</td><td>{task.message || '-'}</td><td>{formatDateTime(taskUpdatedAt(task))}</td></tr>)}</tbody></table></div>}{plan.spark_job_id && !taskRows.length && <div className="about"><h2>Task stream pending</h2><p>The Spark Engine job exists, but it has not published task entries yet. Refresh after a few seconds if this persists.</p></div>}{Boolean(vmResults.length) && <div className="table-wrap"><table><thead><tr><th>VM ID</th><th>Status</th><th>Detail</th></tr></thead><tbody>{vmResults.map((row, index) => <tr key={`${row.vm_id || 'result'}-${index}`}><td>{row.vm_id || '-'}</td><td><Badge value={row.ok ? 'Completed' : 'Failed'} /></td><td>{row.message || preflightDetail(row)}</td></tr>)}</tbody></table></div>}</div></Modal>;
 }
 
@@ -1148,7 +1196,22 @@ function Table({ rows, columns }) {
 
 function formatDateTime(value) {
   if (!value) return '-';
-  return value.replace('T', ' ');
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value.replace('T', ' ');
+  try {
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: displayTimezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).format(parsed).replace(',', '');
+  } catch {
+    return parsed.toISOString().replace('T', ' ').slice(0, 19);
+  }
 }
 
 function parseJsonArray(value) {
@@ -1223,10 +1286,16 @@ function taskProgressTone(planStatus) {
   return 'success';
 }
 
-function taskCanContinue(plan, vmResults, user) {
+function taskCanContinue(plan, user) {
   if (user?.role !== 'admin') return false;
   if (!plan?.spark_job_id || plan?.status !== 'Failed') return false;
-  return vmResults.some((row) => row?.can_resume);
+  return ['KVM to VMware ESXi / vCenter', 'VMware ESXi / vCenter to KVM'].includes(plan?.migration_type);
+}
+
+function planCanContinue(plan, user) {
+  if (user?.role !== 'admin') return false;
+  if (plan?.status !== 'Failed') return false;
+  return ['KVM to VMware ESXi / vCenter', 'VMware ESXi / vCenter to KVM'].includes(plan?.migration_type);
 }
 
 function normalizeCheckLabel(value) {

@@ -482,21 +482,29 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                     if reporter:
                         reporter.task(f"{workload.id}-inspect", f"{workload.vm_name}: inspect source VM", "Succeeded", 25, f"Found {len(metadata['disks'])} file-backed source disk(s)")
                     stage_path = preserved_stage_directory(request.plan_id, workload.id, workload.vm_name) if resume_from_stage else stage_directory(request.plan_id, workload.id, workload.vm_name)
-                    reused_converted = resume_from_stage
+                    reused_converted = False
                     if resume_from_stage:
                         candidate_disks = converted_vmdk_layout(stage_path, target_name, metadata["disks"])
-                        if not candidate_disks or not all(disk["exists"] for disk in candidate_disks):
-                            raise RuntimeError(f"Cannot continue {workload.vm_name}: preserved converted disks are missing from {stage_path}")
-                        converted_disks = [{"local_path": disk["local_path"], "capacity_bytes": disk["capacity_bytes"]} for disk in candidate_disks]
-                        if reporter:
+                        if candidate_disks and all(disk["exists"] for disk in candidate_disks):
+                            reused_converted = True
+                            converted_disks = [{"local_path": disk["local_path"], "capacity_bytes": disk["capacity_bytes"]} for disk in candidate_disks]
+                            if reporter:
+                                reporter.task(
+                                    f"{workload.id}-reuse",
+                                    f"{workload.vm_name}: reuse staged conversion",
+                                    "Completed",
+                                    82,
+                                    f"Reusing preserved converted disks from {stage_path}",
+                                )
+                        elif reporter:
                             reporter.task(
                                 f"{workload.id}-reuse",
                                 f"{workload.vm_name}: reuse staged conversion",
-                                "Completed",
-                                82,
-                                f"Reusing preserved converted disks from {stage_path}",
+                                "Running",
+                                28,
+                                f"Preserved converted disks are missing from {stage_path}; rebuilding conversion before continuing",
                             )
-                    else:
+                    if not reused_converted:
                         for index, disk in enumerate(metadata["disks"], start=1):
                             source_path = stage_path / f"source-{index}{Path(disk['path']).suffix or '.img'}"
                             target_path = stage_path / f"{target_name}-disk{index}.vmdk"
@@ -620,6 +628,14 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                         if reporter:
                             reporter.task(f"{workload.id}-reuse", f"{workload.vm_name}: reuse staged conversion", "Completed", 70, f"Reusing preserved virt-v2v artifacts from {stage_path}")
                     else:
+                        if resume_from_stage and reporter:
+                            reporter.task(
+                                f"{workload.id}-reuse",
+                                f"{workload.vm_name}: reuse staged conversion",
+                                "Running",
+                                28,
+                                f"Preserved conversion artifacts are missing from {stage_path}; rebuilding conversion before continuing",
+                            )
                         password_path.write_text(password, encoding="utf-8")
                         password_path.chmod(0o600)
                         if reporter:

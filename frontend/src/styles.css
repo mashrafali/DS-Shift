@@ -39,14 +39,22 @@ button { cursor: pointer; }
 }
 
 .shell { display: grid; grid-template-columns: 286px 1fr; min-height: 100vh; }
-.sidebar { background: #071c33; color: #f9fbff; padding: 24px 18px; }
+.sidebar { background: #071c33; color: #f9fbff; padding: 24px 18px; display: flex; flex-direction: column; }
 .brand { margin-bottom: 26px; }
+.brand-link {
+  width: 100%;
+  display: block;
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
 .brand-logo {
   width: 100%;
   height: auto;
   display: block;
   border-radius: 6px;
 }
+.brand-link:hover .brand-logo { box-shadow: 0 0 0 2px rgba(41, 211, 194, 0.42); }
 .signed-in-user {
   display: flex;
   align-items: center;
@@ -91,6 +99,18 @@ button { cursor: pointer; }
 }
 .user-card-logout:hover { color: #fff; background: #a72f3c; }
 nav { display: grid; gap: 8px; }
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 18px;
+  display: grid;
+  gap: 4px;
+  color: #9bb1c6;
+  font-size: 12px;
+}
+.sidebar-footer strong {
+  color: #f3fbff;
+  font-size: 13px;
+}
 nav button {
   width: 100%;
   height: 44px;
@@ -136,6 +156,35 @@ h2 { margin: 0 0 16px; font-size: 18px; }
 .secondary { min-height: 40px; padding: 0 14px; background: #e8eef5; color: #18334d; font-weight: 700; }
 .mini { min-height: 30px; padding: 0 10px; background: #e6f7f5; color: #0d5260; font-weight: 750; }
 .danger-button { background: #fdebea; color: #9b1c1c; }
+.settings-identity-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 18px;
+  background: linear-gradient(135deg, #0f2a45, #173e66);
+  color: #f8fcff;
+  border-radius: 8px;
+}
+.settings-identity-copy {
+  display: grid;
+  gap: 4px;
+}
+.settings-identity-label {
+  color: #9fd8da;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.settings-identity-copy strong {
+  font-size: 24px;
+  line-height: 1.1;
+}
+.settings-identity-copy p {
+  margin: 0;
+  color: #d2deeb;
+}
 .spin { animation: spin 1s linear infinite; }
 button:disabled { cursor: not-allowed; opacity: 0.45; }
 .alert, .notice, .tip {

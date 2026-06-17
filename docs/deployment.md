@@ -108,17 +108,17 @@ Cloud connector credential values are JSON strings stored only in `.env`:
 - Azure: `AZURE_CONNECTOR_CREDENTIALS` with `tenant_id`, `client_id`, `client_secret`, and `subscription_id`.
 
 Spark Engine runs three Compose replicas and uses PostgreSQL as its shared job
-queue. Keep live execution disabled during installation and validation:
+queue. Fresh installations enable live execution by default:
 
 ```bash
-SPARK_LIVE_EXECUTION_ENABLED=false
+SPARK_LIVE_EXECUTION_ENABLED=true
 docker compose up -d --build
 docker compose ps spark-engine
 ```
 
-Set the flag to `true` only after validating provider permissions, target
-network mappings, rollback procedures, and operational approval. Enabling the
-flag does not bypass the admin-only launch and exact plan-name confirmation.
+If you need a maintenance window where launch requests are blocked, set
+`SPARK_LIVE_EXECUTION_ENABLED=false` before restarting the stack. The flag does
+not bypass the admin-only launch and exact plan-name confirmation.
 
 The Spark image includes `virt-v2v`, `qemu-img`, libvirt clients, and `govc`.
 KVM-to-vCenter plans require a target datastore and network. vCenter-to-KVM
