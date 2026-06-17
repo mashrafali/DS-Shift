@@ -160,7 +160,7 @@ def provision(request: ProvisionRequest):
     try:
         validate_request(request)
         env = govc_environment(request.target_connector)
-        remote_dir = f"DS-Shift/{request.vm_name}"
+        remote_dir = request.vm_name
         command_log: list[str] = []
         imported_paths: list[str] = []
         command_log.append(f"govc datastore.mkdir -p {remote_dir}")
@@ -189,14 +189,12 @@ def provision(request: ProvisionRequest):
             "-ds",
             request.target_connector.target_datastore,
             *compute_option(env, request.target_connector.target_compute_name),
-            "-disk",
-            imported_paths[0],
             request.vm_name,
         ]
         command_log.append(" ".join(create_command))
         try:
             run(create_command, env=env, timeout=300)
-            for disk_path in imported_paths[1:]:
+            for disk_path in imported_paths:
                 attach_command = ["govc", "vm.disk.attach", "-vm", request.vm_name, "-link=false", "-disk", disk_path]
                 command_log.append(" ".join(attach_command))
                 run(attach_command, env=env, timeout=300)
