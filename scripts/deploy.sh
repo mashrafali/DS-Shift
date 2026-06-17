@@ -24,7 +24,8 @@ wait_for_database() {
 }
 
 sync_database_credentials() {
-  local legacy_db="${LEGACY_POSTGRES_DB:-dsreplace}"
+  local legacy_db="${LEGACY_POSTGRES_DB:-}"
+  local legacy_user="${LEGACY_POSTGRES_USER:-}"
   local sql_user sql_password sql_db sql_legacy_db
   sql_user="$(python3 -c "import sys; print(repr(sys.argv[1]))" "${POSTGRES_USER}")"
   sql_password="$(python3 -c "import sys; print(repr(sys.argv[1]))" "${POSTGRES_PASSWORD}")"
@@ -33,7 +34,7 @@ sync_database_credentials() {
 
   docker compose exec -T \
     -e TARGET_USER="${POSTGRES_USER}" \
-    -e LEGACY_USER="${LEGACY_POSTGRES_USER:-dsreplace}" \
+    -e LEGACY_USER="${legacy_user}" \
     database \
     sh -lc '
       for candidate in "$TARGET_USER" "$LEGACY_USER" postgres; do
