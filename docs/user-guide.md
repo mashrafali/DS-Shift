@@ -37,8 +37,8 @@ vCenter-to-KVM through `virt-v2v`. Host conversion plans require powered-off
 source VMs. For KVM-to-vCenter paths, destination network, datastore, and vDC
 defaults are configured on the target connector and verified during connector
 validation and plan preflight. Other combinations are rejected. Live launch is
-disabled unless the deployment explicitly sets
-`SPARK_LIVE_EXECUTION_ENABLED=true`. Plans with queued or running jobs cannot
+enabled by default and can be paused by setting
+`SPARK_LIVE_EXECUTION_ENABLED=false`. Plans with queued or running jobs cannot
 be deleted.
 
 ## Migration Workflow

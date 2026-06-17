@@ -65,7 +65,8 @@ DS Shift uses a service-oriented application architecture deployed with Docker C
   KVM-to-vCenter, and vCenter-to-KVM adapters.
 - Contains `virt-v2v`, `qemu-img`, libvirt clients, and pinned `govc` for host
   conversion, packaging, import, and target definition.
-- Keeps live execution disabled unless `SPARK_LIVE_EXECUTION_ENABLED=true`.
+- Enables live execution by default and can be paused by setting
+  `SPARK_LIVE_EXECUTION_ENABLED=false`.
 - Rejects unsupported source and target combinations instead of generating
   commands that the underlying tools cannot execute.
 
