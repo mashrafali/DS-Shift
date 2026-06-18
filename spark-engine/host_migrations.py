@@ -329,7 +329,25 @@ def converted_vmdk_layout(stage_path: Path, target_name: str, disks: list[dict])
                 capacity = int(json.loads(run(["qemu-img", "info", "--output=json", str(local_path)]))["virtual-size"])
             except Exception:
                 capacity = local_path.stat().st_size
-        layout.append({"local_path": str(local_path), "capacity_bytes": int(capacity or 0), "exists": local_path.exists()})
+        compatible = False
+        if local_path.exists():
+            try:
+                descriptor = local_path.read_bytes()[:65536].decode("latin-1", errors="ignore")
+                version_match = re.search(r'ddb\.virtualHWVersion\s*=\s*"(\d+)"', descriptor)
+                create_type_match = re.search(r'createType="([^"]+)"', descriptor)
+                hardware_version = int(version_match.group(1)) if version_match else 0
+                create_type = create_type_match.group(1) if create_type_match else ""
+                compatible = hardware_version >= 13 and create_type == "streamOptimized"
+            except Exception:
+                compatible = False
+        layout.append(
+            {
+                "local_path": str(local_path),
+                "capacity_bytes": int(capacity or 0),
+                "exists": local_path.exists(),
+                "compatible": compatible,
+            }
+        )
     return layout
 
 
@@ -525,7 +543,7 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                     reused_converted = False
                     if resume_from_stage:
                         candidate_disks = converted_vmdk_layout(stage_path, target_name, metadata["disks"])
-                        if candidate_disks and all(disk["exists"] for disk in candidate_disks):
+                        if candidate_disks and all(disk["exists"] and disk.get("compatible") for disk in candidate_disks):
                             reused_converted = True
                             converted_disks = [{"local_path": disk["local_path"], "capacity_bytes": disk["capacity_bytes"]} for disk in candidate_disks]
                             if reporter:
@@ -537,12 +555,18 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                                     f"Reusing preserved converted disks from {stage_path}",
                                 )
                         elif reporter:
+                            incompatible = [Path(disk["local_path"]).name for disk in candidate_disks if disk.get("exists") and not disk.get("compatible")]
+                            reason = (
+                                f"Preserved converted disks are incompatible for VMware import ({', '.join(incompatible)}); rebuilding conversion before continuing"
+                                if incompatible
+                                else f"Preserved converted disks are missing from {stage_path}; rebuilding conversion before continuing"
+                            )
                             reporter.task(
                                 f"{workload.id}-reuse",
                                 f"{workload.vm_name}: reuse staged conversion",
                                 "Running",
                                 28,
-                                f"Preserved converted disks are missing from {stage_path}; rebuilding conversion before continuing",
+                                reason,
                             )
                     if not reused_converted:
                         for index, disk in enumerate(metadata["disks"], start=1):
@@ -592,7 +616,7 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                                     "-O",
                                     "vmdk",
                                     "-o",
-                                    "adapter_type=lsilogic,subformat=streamOptimized,compat6=on",
+                                    "adapter_type=lsilogic,subformat=streamOptimized,hwversion=13",
                                     str(source_path),
                                     str(target_path),
                                 ]
