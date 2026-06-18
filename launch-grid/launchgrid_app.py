@@ -41,6 +41,7 @@ class ProvisionRequest(BaseModel):
     disks: list[ConvertedDisk]
     power_on: bool = False
     guest_os_id: str = "otherGuest64"
+    boot_firmware: str = "bios"
 
 
 def credential_value(reference: str | None) -> str | None:
@@ -189,6 +190,8 @@ def provision(request: ProvisionRequest):
             str(max(1, request.cpu)),
             "-g",
             request.guest_os_id,
+            "-firmware",
+            "efi" if str(request.boot_firmware).lower() in {"efi", "uefi"} else "bios",
             "-net",
             request.target_connector.target_network,
             "-ds",

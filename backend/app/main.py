@@ -225,7 +225,16 @@ def raw_dashboard_summary(db: Session) -> schemas.DashboardSummary:
     status_counts = Counter(vm.current_status for vm in vms)
     migrated = status_counts["Validation completed"] + status_counts["Cutover completed"]
     failed = status_counts["Failed"] + status_counts["Rolled back"] + status_counts["Blocked"]
-    planned = sum(status_counts[s] for s in ["Assessed", "Ready for migration", "Replication prepared", "Cutover scheduled"])
+    planned_statuses = {
+        "Assessed",
+        "Ready for migration",
+        "Replication prepared",
+        "Migration in progress",
+        "Cutover scheduled",
+        "Cutover completed",
+        "Validation completed",
+    }
+    planned = sum(count for status, count in status_counts.items() if status in planned_statuses)
     progress = int((migrated / len(vms)) * 100) if vms else 0
     return schemas.DashboardSummary(
         total_plans=plans,
@@ -453,8 +462,28 @@ def stage_safe_name(value: str) -> str:
     return cleaned[:80]
 
 
-def workload_stage_directory(plan_id: int, vm: models.VmInventory) -> Path:
-    return STAGING_ROOT / f"plan-{plan_id}" / f"vm-{vm.id}-{stage_safe_name(vm.vm_name)}"
+def stage_plan_directory_name(plan_id: int, plan_name: str | None = None) -> str:
+    if plan_name:
+        return f"Plan-{stage_safe_name(plan_name)}"
+    return f"plan-{plan_id}"
+
+
+def workload_stage_directory(plan_id: int, vm: models.VmInventory, plan_name: str | None = None) -> Path:
+    return STAGING_ROOT / stage_plan_directory_name(plan_id, plan_name) / stage_safe_name(vm.vm_name)
+
+
+def workload_stage_directories(plan: models.MigrationPlan, vm: models.VmInventory) -> list[Path]:
+    preferred = workload_stage_directory(plan.id, vm, plan.name)
+    legacy = STAGING_ROOT / stage_plan_directory_name(plan.id, None) / f"vm-{vm.id}-{stage_safe_name(vm.vm_name)}"
+    seen: set[str] = set()
+    ordered: list[Path] = []
+    for path in [preferred, legacy]:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(path)
+    return ordered
 
 
 def prune_staging_area(retention_days: int) -> int:
@@ -489,10 +518,11 @@ def plan_resume_metadata(plan: models.MigrationPlan, vms: list[models.VmInventor
     for vm in vms:
         result = vm_result_by_id.get(vm.id, {})
         if result.get("can_resume") is not True:
-            stage_path = workload_stage_directory(plan.id, vm)
+            stage_path = next((path for path in workload_stage_directories(plan, vm) if path.exists()), workload_stage_directories(plan, vm)[0])
             resumable.append({"vm_id": vm.id, "vm_name": vm.vm_name, "stage_path": str(stage_path), "reuse_ready": False})
             continue
-        stage_path = workload_stage_directory(plan.id, vm)
+        candidate_paths = workload_stage_directories(plan, vm)
+        stage_path = next((path for path in candidate_paths if path.exists()), candidate_paths[0])
         artifacts = []
         if stage_path.exists():
             artifacts = list(stage_path.glob("*.vmdk")) + list(stage_path.glob("*.qcow2")) + list(stage_path.glob("*.xml"))
@@ -1246,7 +1276,15 @@ def reset_dashboard_metrics(db: Session = Depends(get_db), _admin: models.LocalU
     summary = raw_dashboard_summary(db)
     settings_row.dashboard_reset_json = json.dumps(summary.model_dump())
     db.commit()
-    return apply_dashboard_reset(summary, parsed_json_object(settings_row.dashboard_reset_json))
+    return schemas.DashboardSummary(
+        total_plans=0,
+        vms_discovered=0,
+        vms_planned=0,
+        vms_migrated=0,
+        vms_failed_or_blocked=0,
+        progress_percent=0,
+        by_status={},
+    )
 
 
 @app.get("/api/discovery-runs", response_model=list[schemas.DiscoveryRun])
@@ -1373,6 +1411,7 @@ def migration_plan_execution_payload(
     }
     return {
         "plan_id": plan.id,
+        "plan_name": plan.name,
         "source_connector": connector_execution_payload(source),
         "target_connector": connector_execution_payload(target),
         "workloads": [

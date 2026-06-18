@@ -94,6 +94,12 @@ def safe_name(value: str) -> str:
     return cleaned[:80]
 
 
+def stage_plan_directory_name(plan_id: int, plan_name: str | None = None) -> str:
+    if plan_name:
+        return f"Plan-{safe_name(plan_name)}"
+    return f"plan-{plan_id}"
+
+
 def parse_domain_xml(xml_text: str) -> dict:
     root = ET.fromstring(xml_text)
     memory = int(root.findtext("memory", "1048576"))
@@ -107,11 +113,19 @@ def parse_domain_xml(xml_text: str) -> dict:
         path = source.get("file") if source is not None else None
         if path:
             disks.append({"path": path, "target": target.get("dev", f"sd{chr(97 + len(disks))}") if target is not None else f"sd{chr(97 + len(disks))}"})
+    os_node = root.find("./os")
+    type_node = os_node.find("./type") if os_node is not None else None
+    loader = os_node.find("./loader") if os_node is not None else None
+    firmware_attr = (type_node.get("firmware") or "").lower() if type_node is not None else ""
+    loader_type = (loader.get("type") or "").lower() if loader is not None else ""
+    loader_path = (loader.text or "").lower() if loader is not None and loader.text else ""
+    firmware = "efi" if firmware_attr in {"efi", "uefi"} or loader_type == "pflash" or "ovmf" in loader_path else "bios"
     return {
         "cpu": int(root.findtext("vcpu", "1")),
         "memory_bytes": memory_bytes,
         "disks": disks,
         "interfaces": len(root.findall("./devices/interface")),
+        "boot_firmware": firmware,
     }
 
 
@@ -222,18 +236,32 @@ def ensure_staging_root() -> Path:
     return STAGING_ROOT
 
 
-def stage_directory(plan_id: int, workload_id: int, vm_name: str) -> Path:
-    base = ensure_staging_root() / f"plan-{plan_id}" / f"vm-{workload_id}-{safe_name(vm_name)}"
+def stage_directory(plan_id: int, workload_id: int, vm_name: str, plan_name: str | None = None) -> Path:
+    base = ensure_staging_root() / stage_plan_directory_name(plan_id, plan_name) / safe_name(vm_name)
     if base.exists():
         shutil.rmtree(base, ignore_errors=True)
     base.mkdir(parents=True, exist_ok=True)
     return base
 
 
-def preserved_stage_directory(plan_id: int, workload_id: int, vm_name: str) -> Path:
-    base = ensure_staging_root() / f"plan-{plan_id}" / f"vm-{workload_id}-{safe_name(vm_name)}"
+def preserved_stage_directory(plan_id: int, workload_id: int, vm_name: str, plan_name: str | None = None) -> Path:
+    base = ensure_staging_root() / stage_plan_directory_name(plan_id, plan_name) / safe_name(vm_name)
     base.mkdir(parents=True, exist_ok=True)
     return base
+
+
+def candidate_stage_directories(plan_id: int, workload_id: int, vm_name: str, plan_name: str | None = None) -> list[Path]:
+    preferred = ensure_staging_root() / stage_plan_directory_name(plan_id, plan_name) / safe_name(vm_name)
+    legacy = ensure_staging_root() / stage_plan_directory_name(plan_id, None) / f"vm-{workload_id}-{safe_name(vm_name)}"
+    paths: list[Path] = []
+    seen: set[str] = set()
+    for path in [preferred, legacy]:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+    return paths
 
 
 def temporary_stage_directory(prefix: str) -> Path:
@@ -276,6 +304,7 @@ def launchgrid_provision(request, workload, target_name: str, metadata: dict, di
         ],
         "power_on": bool(request.options.get("power_on")),
         "guest_os_id": workload.details.get("guest_os_id") or "otherGuest64",
+        "boot_firmware": workload.details.get("boot_firmware") or metadata.get("boot_firmware") or "bios",
     }
     timeout = httpx.Timeout(connect=15.0, write=7200.0, read=7200.0, pool=30.0)
     with httpx.Client(timeout=timeout) as client:
@@ -294,7 +323,13 @@ def converted_vmdk_layout(stage_path: Path, target_name: str, disks: list[dict])
     layout = []
     for index, disk in enumerate(disks, start=1):
         local_path = stage_path / f"{target_name}-disk{index}.vmdk"
-        layout.append({"local_path": str(local_path), "capacity_bytes": int(disk["capacity_bytes"]), "exists": local_path.exists()})
+        capacity = disk.get("capacity_bytes")
+        if capacity is None and local_path.exists():
+            try:
+                capacity = int(json.loads(run(["qemu-img", "info", "--output=json", str(local_path)]))["virtual-size"])
+            except Exception:
+                capacity = local_path.stat().st_size
+        layout.append({"local_path": str(local_path), "capacity_bytes": int(capacity or 0), "exists": local_path.exists()})
     return layout
 
 
@@ -466,7 +501,7 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
         try:
             for workload in request.workloads:
                 target_name = safe_name(request.options.get("target_name") or f"{workload.vm_name}-migrated")
-                stage_path = preserved_stage_directory(request.plan_id, workload.id, workload.vm_name)
+                stage_path = preserved_stage_directory(request.plan_id, workload.id, workload.vm_name, request.plan_name)
                 converted_disks = []
                 try:
                     resume_from_stage = bool(request.options.get("resume_from_stage"))
@@ -481,7 +516,12 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                         raise RuntimeError(f"{workload.vm_name} has no file-backed disks")
                     if reporter:
                         reporter.task(f"{workload.id}-inspect", f"{workload.vm_name}: inspect source VM", "Succeeded", 25, f"Found {len(metadata['disks'])} file-backed source disk(s)")
-                    stage_path = preserved_stage_directory(request.plan_id, workload.id, workload.vm_name) if resume_from_stage else stage_directory(request.plan_id, workload.id, workload.vm_name)
+                    if resume_from_stage:
+                        candidate_paths = candidate_stage_directories(request.plan_id, workload.id, workload.vm_name, request.plan_name)
+                        stage_path = next((path for path in candidate_paths if path.exists()), candidate_paths[0])
+                        stage_path.mkdir(parents=True, exist_ok=True)
+                    else:
+                        stage_path = stage_directory(request.plan_id, workload.id, workload.vm_name, request.plan_name)
                     reused_converted = False
                     if resume_from_stage:
                         candidate_disks = converted_vmdk_layout(stage_path, target_name, metadata["disks"])
@@ -508,23 +548,33 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                         for index, disk in enumerate(metadata["disks"], start=1):
                             source_path = stage_path / f"source-{index}{Path(disk['path']).suffix or '.img'}"
                             target_path = stage_path / f"{target_name}-disk{index}.vmdk"
-                            if reporter:
-                                reporter.task(
-                                    f"{workload.id}-stage-{index}",
-                                    f"{workload.vm_name}: stage source disk {index}",
-                                    "Running",
-                                    35,
-                                    f"Copying {disk['path']} into host staging {stage_path}",
-                                )
-                            sftp.get(disk["path"], str(source_path))
-                            if reporter:
-                                reporter.task(
-                                    f"{workload.id}-stage-{index}",
-                                    f"{workload.vm_name}: stage source disk {index}",
-                                    "Completed",
-                                    45,
-                                    f"Copied source disk {index} into host staging",
-                                )
+                            if resume_from_stage and source_path.exists():
+                                if reporter:
+                                    reporter.task(
+                                        f"{workload.id}-stage-{index}",
+                                        f"{workload.vm_name}: stage source disk {index}",
+                                        "Completed",
+                                        45,
+                                        f"Reusing staged source disk {index} from {source_path}",
+                                    )
+                            else:
+                                if reporter:
+                                    reporter.task(
+                                        f"{workload.id}-stage-{index}",
+                                        f"{workload.vm_name}: stage source disk {index}",
+                                        "Running",
+                                        35,
+                                        f"Copying {disk['path']} into host staging {stage_path}",
+                                    )
+                                sftp.get(disk["path"], str(source_path))
+                                if reporter:
+                                    reporter.task(
+                                        f"{workload.id}-stage-{index}",
+                                        f"{workload.vm_name}: stage source disk {index}",
+                                        "Completed",
+                                        45,
+                                        f"Copied source disk {index} into host staging",
+                                    )
                             info = json.loads(run(["qemu-img", "info", "--output=json", str(source_path)]))
                             if reporter:
                                 reporter.task(
@@ -584,7 +634,7 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                 except Exception as exc:
                     if reporter:
                         reporter.task(f"{workload.id}-provision", f"{workload.vm_name}: provision target VM", "Failed", 88, str(exc))
-                    results.append(stage_failure_result(workload, target_name, stage_path, str(exc), can_resume=any(Path(disk["local_path"]).exists() for disk in converted_disks)))
+                    results.append(stage_failure_result(workload, target_name, stage_path, str(exc), can_resume=stage_path.exists()))
         finally:
             sftp.close()
     return results
@@ -620,7 +670,7 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
         try:
             for workload in request.workloads:
                 target_name = safe_name(request.options.get("target_name") or f"{workload.vm_name}-migrated")
-                stage_path = preserved_stage_directory(request.plan_id, workload.id, workload.vm_name)
+                stage_path = preserved_stage_directory(request.plan_id, workload.id, workload.vm_name, request.plan_name)
                 try:
                     resume_from_stage = bool(request.options.get("resume_from_stage"))
                     if reporter:
@@ -631,7 +681,12 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                     ssh_exec(client, f"! virsh dominfo {shlex.quote(target_name)} >/dev/null 2>&1", timeout=20)
                     if reporter:
                         reporter.task(f"{workload.id}-inspect", f"{workload.vm_name}: inspect source VM", "Completed", 25, f"Verified powered-off source and free target name {target_name}")
-                    stage_path = preserved_stage_directory(request.plan_id, workload.id, workload.vm_name) if resume_from_stage else stage_directory(request.plan_id, workload.id, workload.vm_name)
+                    if resume_from_stage:
+                        candidate_paths = candidate_stage_directories(request.plan_id, workload.id, workload.vm_name, request.plan_name)
+                        stage_path = next((path for path in candidate_paths if path.exists()), candidate_paths[0])
+                        stage_path.mkdir(parents=True, exist_ok=True)
+                    else:
+                        stage_path = stage_directory(request.plan_id, workload.id, workload.vm_name, request.plan_name)
                     local_disks = []
                     output = ""
                     password_path = stage_path / "vcenter-password"

@@ -152,6 +152,7 @@ class Workload(BaseModel):
 
 class JobRequest(BaseModel):
     plan_id: int
+    plan_name: str | None = None
     source_connector: Connector
     target_connector: Connector
     workloads: list[Workload]

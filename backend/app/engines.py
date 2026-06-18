@@ -6,6 +6,7 @@ import ssl
 import subprocess
 from dataclasses import dataclass
 from urllib.parse import urlparse
+import xml.etree.ElementTree as ET
 
 import paramiko
 from pyVim.connect import Disconnect, SmartConnect
@@ -80,6 +81,26 @@ def _ssh_exec(client: paramiko.SSHClient, command: str, timeout: int = 30) -> tu
     return code, stdout.read().decode(errors="replace"), stderr.read().decode(errors="replace")
 
 
+def _kvm_firmware(xml_text: str) -> str:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return "bios"
+    os_node = root.find("./os")
+    if os_node is None:
+        return "bios"
+    type_node = os_node.find("./type")
+    firmware_attr = (type_node.get("firmware") or "").lower() if type_node is not None else ""
+    if firmware_attr in {"efi", "uefi"}:
+        return "efi"
+    loader = os_node.find("./loader")
+    loader_type = (loader.get("type") or "").lower() if loader is not None else ""
+    loader_path = (loader.text or "").lower() if loader is not None and loader.text else ""
+    if loader_type == "pflash" or "ovmf" in loader_path:
+        return "efi"
+    return "bios"
+
+
 def validate_kvm(endpoint: str | None, username: str | None, credential_reference: str | None = None, credential_payload: dict | None = None) -> EngineResult:
     commands = ["SSH connect", "virsh list --all --name"]
     try:
@@ -119,6 +140,7 @@ def discover_kvm(endpoint: str | None, username: str | None, credential_referenc
             mem_kib = _match_int(text, r"Max memory:\s+(\d+) KiB") or _match_int(text, r"Used memory:\s+(\d+) KiB") or 0
             state = _match_text(text, r"State:\s+(.+)") or "unknown"
             os_type = _kvm_os_name(text)
+            xml_text = _section(text, "__XML__", "__BLK__")
             disks = _parse_kvm_disks(_section(text, "__BLK__", "__IF__"))
             ip_address = _match_text(_section(text, "__ADDR__", None), r"ipv4\s+([0-9.]+)/")
             records.append(
@@ -132,6 +154,7 @@ def discover_kvm(endpoint: str | None, username: str | None, credential_referenc
                     "ip_address": ip_address,
                     "current_status": "Discovered",
                     "power_state": state,
+                    "boot_firmware": _kvm_firmware(xml_text),
                     "disks": disks,
                     "nics": _parse_kvm_nics(_section(text, "__IF__", "__ADDR__")),
                     "raw_error": detail_err,
@@ -202,6 +225,7 @@ def discover_vcenter(endpoint: str | None, username: str | None, credential_refe
                         "ip_address": guest.ipAddress,
                         "current_status": "Discovered",
                         "power_state": str(runtime.powerState),
+                        "boot_firmware": (getattr(vm_obj.config, "firmware", None) or "bios").lower(),
                         "disks": disks,
                         "path": _inventory_path(vm_obj),
                     }
