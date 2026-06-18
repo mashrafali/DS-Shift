@@ -270,6 +270,24 @@ def apply_dashboard_reset(summary: schemas.DashboardSummary, baseline: dict) -> 
     )
 
 
+def sync_spark_backed_plans(db: Session, plans: list[models.MigrationPlan]) -> None:
+    changed = False
+    for plan in plans:
+        if not plan.spark_job_id:
+            continue
+        try:
+            job = get_spark_job(plan.spark_job_id)
+        except Exception:
+            continue
+        before = (plan.status, plan.results_json, plan.executed_at, plan.updated_at)
+        apply_spark_job(db, plan, job)
+        after = (plan.status, plan.results_json, plan.executed_at, plan.updated_at)
+        if after != before:
+            changed = True
+    if changed:
+        db.commit()
+
+
 def normalize_host_value(raw: str | None) -> str | None:
     value = (raw or "").strip()
     if not value:
@@ -701,6 +719,7 @@ def delete_user(user_id: int, db: Session = Depends(get_db), admin: models.Local
 
 @app.get("/api/dashboard", response_model=schemas.DashboardSummary)
 def dashboard(db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
+    sync_spark_backed_plans(db, db.query(models.MigrationPlan).filter(models.MigrationPlan.spark_job_id.is_not(None)).all())
     summary = raw_dashboard_summary(db)
     settings_row = db.query(models.AppSetting).first()
     baseline = parsed_json_object(settings_row.dashboard_reset_json) if settings_row else {}
@@ -1299,7 +1318,11 @@ def list_migration_jobs(db: Session = Depends(get_db), _user: models.LocalUser =
 
 @app.get("/api/migration-plans", response_model=list[schemas.MigrationPlan])
 def list_migration_plans(db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
-    return db.query(models.MigrationPlan).order_by(models.MigrationPlan.created_at.desc()).all()
+    plans = db.query(models.MigrationPlan).order_by(models.MigrationPlan.created_at.desc()).all()
+    sync_spark_backed_plans(db, plans)
+    for plan in plans:
+        db.refresh(plan)
+    return plans
 
 
 @app.post("/api/migration-plans", response_model=schemas.MigrationPlan, status_code=201)
