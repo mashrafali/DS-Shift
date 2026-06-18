@@ -88,13 +88,26 @@ def govc_environment(connector: Connector) -> dict[str, str]:
     return env
 
 
+def absolute_inventory_path(env: dict[str, str], inventory_path: str) -> str:
+    path = inventory_path.strip()
+    if path.startswith("/"):
+        return path
+    if path.startswith("./"):
+        datacenter = (env.get("GOVC_DATACENTER") or "").strip().strip("/")
+        if not datacenter:
+            raise RuntimeError(f"Cannot normalize inventory path without GOVC_DATACENTER: {inventory_path}")
+        return f"/{datacenter}/{path[2:]}"
+    return path
+
+
 def import_placement(env: dict[str, str], compute_name: str) -> list[str]:
     host_path = run(["govc", "find", "-type", "h", "-name", compute_name], env=env, timeout=30)
     if host_path:
-        return ["-host", host_path.splitlines()[0].strip()]
+        return ["-host", absolute_inventory_path(env, host_path.splitlines()[0].strip())]
     cluster_path = run(["govc", "find", "-type", "c", "-name", compute_name], env=env, timeout=30)
     if cluster_path:
-        return ["-pool", f"{cluster_path.splitlines()[0].strip()}/Resources"]
+        cluster_inventory_path = absolute_inventory_path(env, cluster_path.splitlines()[0].strip())
+        return ["-pool", f"{cluster_inventory_path}/Resources"]
     raise RuntimeError(f"Target cluster or host {compute_name} was not found")
 
 
@@ -183,7 +196,7 @@ def ovf_descriptor(
       </System>
       <Item><rasd:AllocationUnits>hertz * 10^6</rasd:AllocationUnits><rasd:ElementName>{cpu} virtual CPU(s)</rasd:ElementName><rasd:InstanceID>1</rasd:InstanceID><rasd:ResourceType>3</rasd:ResourceType><rasd:VirtualQuantity>{cpu}</rasd:VirtualQuantity></Item>
       <Item><rasd:AllocationUnits>byte * 2^20</rasd:AllocationUnits><rasd:ElementName>{memory_mb} MB of memory</rasd:ElementName><rasd:InstanceID>2</rasd:InstanceID><rasd:ResourceType>4</rasd:ResourceType><rasd:VirtualQuantity>{memory_mb}</rasd:VirtualQuantity></Item>
-      <Item><rasd:Address>0</rasd:Address><rasd:ElementName>SCSI controller 0</rasd:ElementName><rasd:InstanceID>10</rasd:InstanceID><rasd:ResourceSubType>VirtualLsiLogicSAS</rasd:ResourceSubType><rasd:ResourceType>6</rasd:ResourceType></Item>
+      <Item><rasd:Address>0</rasd:Address><rasd:ElementName>SCSI controller 0</rasd:ElementName><rasd:InstanceID>10</rasd:InstanceID><rasd:ResourceSubType>LsiLogic</rasd:ResourceSubType><rasd:ResourceType>6</rasd:ResourceType></Item>
       {''.join(device_rows)}
       <Item>
         <rasd:AddressOnParent>7</rasd:AddressOnParent>

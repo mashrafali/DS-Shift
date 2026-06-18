@@ -1,10 +1,14 @@
 from pathlib import Path
 
-from launchgrid_app import ConvertedDisk, import_placement, ovf_descriptor, request_memory_mb
+from launchgrid_app import ConvertedDisk, absolute_inventory_path, import_placement, ovf_descriptor, request_memory_mb
 
 
 def test_request_memory_mb_rounds_down_to_whole_megabytes():
     assert request_memory_mb(2 * 1024**3) == 2048
+
+
+def test_absolute_inventory_path_expands_relative_paths_with_datacenter():
+    assert absolute_inventory_path({"GOVC_DATACENTER": "TESTING-DC"}, "./host/TESTING-CLUSTER") == "/TESTING-DC/host/TESTING-CLUSTER"
 
 
 def test_import_placement_uses_host_when_present(monkeypatch):
@@ -14,7 +18,7 @@ def test_import_placement_uses_host_when_present(monkeypatch):
         return ""
 
     monkeypatch.setattr("launchgrid_app.run", fake_run)
-    assert import_placement({}, "esxi01") == ["-host", "./host/esxi01"]
+    assert import_placement({"GOVC_DATACENTER": "TESTING-DC"}, "esxi01") == ["-host", "/TESTING-DC/host/esxi01"]
 
 
 def test_import_placement_uses_cluster_root_resource_pool(monkeypatch):
@@ -26,7 +30,7 @@ def test_import_placement_uses_cluster_root_resource_pool(monkeypatch):
         raise AssertionError(command)
 
     monkeypatch.setattr("launchgrid_app.run", fake_run)
-    assert import_placement({}, "TESTING-CLUSTER") == ["-pool", "./host/TESTING-CLUSTER/Resources"]
+    assert import_placement({"GOVC_DATACENTER": "TESTING-DC"}, "TESTING-CLUSTER") == ["-pool", "/TESTING-DC/host/TESTING-CLUSTER/Resources"]
 
 
 def test_ovf_descriptor_includes_stream_optimized_disks_and_efi_config(tmp_path):
@@ -45,3 +49,4 @@ def test_ovf_descriptor_includes_stream_optimized_disks_and_efi_config(tmp_path)
     assert "streamOptimized" in descriptor
     assert "<rasd:Connection>Prod-Network</rasd:Connection>" in descriptor
     assert 'vmw:key="firmware" vmw:value="efi"' in descriptor
+    assert "<rasd:ResourceSubType>LsiLogic</rasd:ResourceSubType>" in descriptor
