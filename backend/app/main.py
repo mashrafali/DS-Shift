@@ -1081,7 +1081,6 @@ def import_discovered_vms(db: Session, project_id: int, target_platform: str, re
             existing.cpu = record.get("cpu") or existing.cpu
             existing.memory_gb = record.get("memory_gb") or existing.memory_gb
             existing.os_type = record.get("os_type") or existing.os_type
-            existing.current_status = "Discovered"
         else:
             db.add(
                 models.VmInventory(
