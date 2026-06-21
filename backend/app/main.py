@@ -254,12 +254,12 @@ def apply_dashboard_reset(summary: schemas.DashboardSummary, baseline: dict) -> 
         if max(0, value - int(baseline_status.get(key, 0) or 0)) > 0
     }
     discovered = summary.vms_discovered
-    migrated = max(0, summary.vms_migrated - int(baseline.get("vms_migrated", 0) or 0))
+    migrated = summary.vms_migrated
     planned = summary.vms_planned
-    failed = max(0, summary.vms_failed_or_blocked - int(baseline.get("vms_failed_or_blocked", 0) or 0))
+    failed = summary.vms_failed_or_blocked
     progress = int((migrated / discovered) * 100) if discovered else 0
     return schemas.DashboardSummary(
-        total_plans=max(0, summary.total_plans - int(baseline.get("total_plans", 0) or 0)),
+        total_plans=summary.total_plans,
         vms_discovered=discovered,
         vms_planned=planned,
         vms_migrated=migrated,
