@@ -12,6 +12,7 @@ from app.connector_client import normalize_connector_type, validate_connector_pl
 from app.database import Base
 from app.main import (
     app,
+    raw_dashboard_summary,
     create_migration_plan,
     create_connector,
     create_wave,
@@ -130,6 +131,7 @@ def test_service_status_fallback():
         "database",
         "frontend",
         "host-connector",
+        "launchgrid",
         "reverse-proxy",
         "spark-engine",
     ]
@@ -384,6 +386,49 @@ def test_connector_defaults_and_wave_creation():
 
         assert json.loads(payload.plan_ids_json) == [plan.id]
         assert {db.get(models.VmInventory, vm1.id).migration_wave, db.get(models.VmInventory, vm2.id).migration_wave} == {"Wave 1"}
+
+
+def test_dashboard_summary_counts_planned_vms_from_plan_membership():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        source = models.ConnectorProfile(name="VMware Source", connector_category="host", connector_type="VMware ESXi / vCenter")
+        target = models.ConnectorProfile(name="KVM Target", connector_category="host", connector_type="KVM")
+        db.add_all([source, target])
+        db.flush()
+        vm1 = models.VmInventory(vm_name="vm-01", source_platform="VMware ESXi / vCenter", target_platform="KVM", cpu=2, memory_gb=4, disk_gb=50, connector_id=source.id, current_status="Discovered")
+        vm2 = models.VmInventory(vm_name="vm-02", source_platform="VMware ESXi / vCenter", target_platform="KVM", cpu=2, memory_gb=4, disk_gb=50, connector_id=source.id, current_status="Blocked")
+        vm3 = models.VmInventory(vm_name="vm-03", source_platform="VMware ESXi / vCenter", target_platform="KVM", cpu=2, memory_gb=4, disk_gb=50, connector_id=source.id, current_status="Validation completed")
+        db.add_all([vm1, vm2, vm3])
+        db.flush()
+        db.add_all(
+            [
+                models.MigrationPlan(
+                    name="Plan 1",
+                    source_connector_id=source.id,
+                    target_connector_id=target.id,
+                    migration_type="VMware ESXi / vCenter to KVM",
+                    vm_ids_json=json.dumps([vm1.id, vm2.id]),
+                ),
+                models.MigrationPlan(
+                    name="Plan 2",
+                    source_connector_id=source.id,
+                    target_connector_id=target.id,
+                    migration_type="VMware ESXi / vCenter to KVM",
+                    vm_ids_json=json.dumps([vm2.id, vm3.id]),
+                ),
+            ]
+        )
+        db.commit()
+
+        summary = raw_dashboard_summary(db)
+
+        assert summary.total_plans == 2
+        assert summary.vms_discovered == 3
+        assert summary.vms_planned == 3
+        assert summary.vms_migrated == 1
+        assert summary.vms_failed_or_blocked == 1
 
 
 def test_wave_update_delete_and_execute(monkeypatch):

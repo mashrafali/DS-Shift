@@ -220,21 +220,19 @@ def parsed_json_array(value: str | None) -> list:
 
 
 def raw_dashboard_summary(db: Session) -> schemas.DashboardSummary:
-    plans = db.query(models.MigrationPlan).count()
+    plan_rows = db.query(models.MigrationPlan).all()
+    plans = len(plan_rows)
     vms = db.query(models.VmInventory).all()
     status_counts = Counter(vm.current_status for vm in vms)
     migrated = status_counts["Validation completed"] + status_counts["Cutover completed"]
     failed = status_counts["Failed"] + status_counts["Rolled back"] + status_counts["Blocked"]
-    planned_statuses = {
-        "Assessed",
-        "Ready for migration",
-        "Replication prepared",
-        "Migration in progress",
-        "Cutover scheduled",
-        "Cutover completed",
-        "Validation completed",
+    planned_vm_ids = {
+        int(vm_id)
+        for plan in plan_rows
+        for vm_id in parsed_json_array(plan.vm_ids_json)
+        if isinstance(vm_id, int) or (isinstance(vm_id, str) and vm_id.isdigit())
     }
-    planned = sum(count for status, count in status_counts.items() if status in planned_statuses)
+    planned = len(planned_vm_ids)
     progress = int((migrated / len(vms)) * 100) if vms else 0
     return schemas.DashboardSummary(
         total_plans=plans,
