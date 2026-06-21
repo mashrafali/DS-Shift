@@ -146,7 +146,6 @@ class AppSetting(TimestampMixin, Base):
     product_name: Mapped[str] = mapped_column(String(120), default="DS Shift")
     company_name: Mapped[str] = mapped_column(String(160), default="Defined Solutions")
     default_timezone: Mapped[str] = mapped_column(String(80), default="Asia/Riyadh")
-    retention_days: Mapped[int] = mapped_column(Integer, default=365)
     maintenance_window: Mapped[str | None] = mapped_column(String(160), nullable=True)
     banner_message: Mapped[str | None] = mapped_column(String(255), nullable=True)
 

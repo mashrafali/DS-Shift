@@ -211,14 +211,12 @@ class SettingsBase(BaseModel):
     product_name: str = "DS Shift"
     company_name: str = "Defined Solutions"
     default_timezone: str = "Asia/Riyadh"
-    retention_days: int = 365
     maintenance_window: Optional[str] = None
     banner_message: Optional[str] = None
 
 
 class SettingsUpdate(BaseModel):
     default_timezone: str = "Asia/Riyadh"
-    retention_days: int = 365
     banner_message: Optional[str] = None
 
 

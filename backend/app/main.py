@@ -489,26 +489,6 @@ def workload_stage_directories(plan: models.MigrationPlan, vm: models.VmInventor
     return ordered
 
 
-def prune_staging_area(retention_days: int) -> int:
-    STAGING_ROOT.mkdir(parents=True, exist_ok=True)
-    days = max(0, int(retention_days or 0))
-    cutoff = datetime.utcnow() - timedelta(days=days)
-    removed = 0
-    for entry in STAGING_ROOT.iterdir():
-        try:
-            modified = datetime.utcfromtimestamp(entry.stat().st_mtime)
-        except FileNotFoundError:
-            continue
-        if modified >= cutoff:
-            continue
-        if entry.is_dir():
-            shutil.rmtree(entry, ignore_errors=True)
-        else:
-            entry.unlink(missing_ok=True)
-        removed += 1
-    return removed
-
-
 def plan_resume_metadata(plan: models.MigrationPlan, vms: list[models.VmInventory]) -> dict:
     if plan.status != "Failed":
         return {"allowed": False, "reason": "Only failed migration plans can continue from preserved staging"}
@@ -581,9 +561,6 @@ def startup() -> None:
         connection.execute(text("ALTER TABLE migration_waves ADD COLUMN IF NOT EXISTS plan_ids_json TEXT NOT NULL DEFAULT '[]'"))
         with Session(bind=connection) as db:
             seed_defaults(db)
-            settings_row = db.query(models.AppSetting).first()
-            if settings_row:
-                prune_staging_area(settings_row.retention_days)
 
 
 @app.get("/api/health")
@@ -1294,7 +1271,6 @@ def get_settings(db: Session = Depends(get_db), _user: models.LocalUser = Depend
         db.add(settings_row)
         db.commit()
         db.refresh(settings_row)
-    prune_staging_area(settings_row.retention_days)
     return settings_row
 
 
@@ -1313,7 +1289,6 @@ def update_settings(payload: schemas.SettingsUpdate, db: Session = Depends(get_d
         setattr(settings_row, key, value)
     db.commit()
     db.refresh(settings_row)
-    prune_staging_area(settings_row.retention_days)
     return settings_row
 
 

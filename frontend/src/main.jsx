@@ -101,7 +101,6 @@ const blankSettings = {
   product_name: 'DS Shift',
   company_name: 'Defined Solutions',
   default_timezone: 'Asia/Riyadh',
-  retention_days: 365,
   banner_message: '',
 };
 
@@ -457,7 +456,7 @@ function App() {
 
   const saveSettings = async (event) => {
     event.preventDefault();
-    await api('/settings', { method: 'PUT', body: JSON.stringify({ default_timezone: settings.default_timezone, retention_days: Number(settings.retention_days), banner_message: settings.banner_message || null }) });
+    await api('/settings', { method: 'PUT', body: JSON.stringify({ default_timezone: settings.default_timezone, banner_message: settings.banner_message || null }) });
     await load();
   };
 
@@ -1088,7 +1087,7 @@ function UsersView({ currentUser, users, form, setForm, save, editForm, setEditF
 }
 
 function SettingsView({ settings, setSettings, save, serviceStatus, serviceStatusLoading, about }) {
-  return <section className="split"><FormPanel title="Application settings" onSubmit={save}><div className="settings-identity-card"><div className="settings-identity-copy"><span className="settings-identity-label">System identity</span><strong>{settings.product_name || about.product || 'DS Shift'}</strong><p>{settings.company_name || about.brand || 'Defined Solutions'}</p></div></div><Select label="Default timezone" value={settings.default_timezone || 'Asia/Riyadh'} options={timezoneOptions} onChange={(v) => setSettings({ ...settings, default_timezone: v })} /><Input label="Staging Area Retention Days" type="number" value={settings.retention_days || 365} onChange={(v) => setSettings({ ...settings, retention_days: v })} /><TextArea label="Banner message" value={settings.banner_message || ''} onChange={(v) => setSettings({ ...settings, banner_message: v })} /><div className="tip">Product name and company name are fixed system identity values. The selected timezone is used across GUI date and log timestamp rendering. Staging Area Retention Days only controls cleanup under <code>/DS-Shift-Staging</code>.</div><div className="button-row"><button className="primary"><Save size={16} /> Save settings</button></div></FormPanel><div className="stack"><ServiceStatusPanel data={serviceStatus} loading={serviceStatusLoading} /></div></section>;
+  return <section className="split"><FormPanel title="Application settings" onSubmit={save}><div className="settings-identity-card"><div className="settings-identity-copy"><span className="settings-identity-label">System identity</span><strong>{settings.product_name || about.product || 'DS Shift'}</strong><p>{settings.company_name || about.brand || 'Defined Solutions'}</p></div></div><Select label="Default timezone" value={settings.default_timezone || 'Asia/Riyadh'} options={timezoneOptions} onChange={(v) => setSettings({ ...settings, default_timezone: v })} /><TextArea label="Banner message" value={settings.banner_message || ''} onChange={(v) => setSettings({ ...settings, banner_message: v })} /><div className="tip">Product name and company name are fixed system identity values. The selected timezone is used across GUI date and log timestamp rendering.</div><div className="button-row"><button className="primary"><Save size={16} /> Save settings</button></div></FormPanel><div className="stack"><ServiceStatusPanel data={serviceStatus} loading={serviceStatusLoading} /></div></section>;
 }
 
 function ServiceStatusPanel({ data, loading }) {

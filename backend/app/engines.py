@@ -5,6 +5,8 @@ import re
 import ssl
 import subprocess
 from dataclasses import dataclass
+import json
+import math
 from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 
@@ -142,6 +144,7 @@ def discover_kvm(endpoint: str | None, username: str | None, credential_referenc
             os_type = _kvm_os_name(text)
             xml_text = _section(text, "__XML__", "__BLK__")
             disks = _parse_kvm_disks(_section(text, "__BLK__", "__IF__"))
+            _populate_kvm_disk_sizes(client, disks, commands)
             ip_address = _match_text(_section(text, "__ADDR__", None), r"ipv4\s+([0-9.]+)/")
             records.append(
                 {
@@ -361,6 +364,25 @@ def _parse_kvm_disks(text: str) -> list[dict]:
         if len(parts) >= 2 and parts[0] not in {"Target", "-"} and parts[0].startswith(("vd", "sd", "hd")):
             disks.append({"target": parts[0], "source": parts[-1], "size_gb": 0})
     return disks
+
+
+def _populate_kvm_disk_sizes(client: paramiko.SSHClient, disks: list[dict], commands: list[str]) -> None:
+    for disk in disks:
+        source = disk.get("source")
+        if not source or source in {"-", "none"}:
+            continue
+        command = f"qemu-img info --output json {source!r}"
+        commands.append(command)
+        code, out, _ = _ssh_exec(client, command, timeout=20)
+        if code != 0:
+            continue
+        try:
+            payload = json.loads(out)
+        except json.JSONDecodeError:
+            continue
+        virtual_size = int(payload.get("virtual-size") or 0)
+        if virtual_size > 0:
+            disk["size_gb"] = max(1, math.ceil(virtual_size / 1024 / 1024 / 1024))
 
 
 def _parse_kvm_nics(text: str) -> list[dict]:

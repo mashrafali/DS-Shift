@@ -1,4 +1,4 @@
-from host_migrations import ensure_libguestfs_ready, ovf_descriptor, parse_domain_xml, safe_name, virt_v2v_env, vpx_uri
+from host_migrations import ensure_libguestfs_ready, ovf_descriptor, parse_domain_xml, safe_name, transient_secret_descriptor, virt_v2v_env, vpx_uri
 
 
 class Connector:
@@ -81,3 +81,10 @@ def test_ensure_libguestfs_ready_requires_test_tool(monkeypatch):
         assert "libguestfs-test-tool" in str(exc)
     else:
         raise AssertionError("ensure_libguestfs_ready should fail when the test tool is unavailable")
+
+
+def test_transient_secret_descriptor_uses_ephemeral_fd():
+    with transient_secret_descriptor("TopSecret123", "vmware-pass") as (path, fd):
+        assert path == f"/proc/self/fd/{fd}"
+        with open(path, encoding="utf-8") as handle:
+            assert handle.read() == "TopSecret123"

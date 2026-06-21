@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -80,8 +81,8 @@ def ssh_exec(client: paramiko.SSHClient, command: str, timeout: int = 60) -> tup
     return output, error
 
 
-def run(command: list[str], *, env: dict | None = None, timeout: int = 7200) -> str:
-    completed = subprocess.run(command, capture_output=True, text=True, env=env, timeout=timeout, check=False)
+def run(command: list[str], *, env: dict | None = None, timeout: int = 7200, pass_fds: tuple[int, ...] = ()) -> str:
+    completed = subprocess.run(command, capture_output=True, text=True, env=env, timeout=timeout, check=False, pass_fds=pass_fds)
     if completed.returncode:
         raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or f"{command[0]} exited with status {completed.returncode}")
     return completed.stdout
@@ -101,6 +102,17 @@ def ensure_libguestfs_ready(timeout: int = 300) -> None:
     if not tool:
         raise RuntimeError("libguestfs-test-tool is not installed in the Spark Engine container")
     run([tool], env=virt_v2v_env(), timeout=timeout)
+
+
+@contextmanager
+def transient_secret_descriptor(secret: str, name: str = "ds-shift-secret"):
+    fd = os.memfd_create(name)
+    try:
+        os.write(fd, secret.encode())
+        os.lseek(fd, 0, os.SEEK_SET)
+        yield f"/proc/self/fd/{fd}", fd
+    finally:
+        os.close(fd)
 
 
 def safe_name(value: str) -> str:
@@ -499,28 +511,27 @@ def preflight_vcenter_to_kvm(request) -> list[dict]:
             raise RuntimeError("vCenter password is unavailable")
         stage_path = temporary_stage_directory("ds-shift-v2v-preflight-")
         try:
-            password_path = stage_path / "vcenter-password"
-            password_path.write_text(password, encoding="utf-8")
-            password_path.chmod(0o600)
-            for workload in request.workloads:
-                vm_info = find_vcenter_vm(request.source_connector, workload)
-                stopped = vm_info["power_state"].lower() == "poweredoff"
-                checks.append({"check": "source_vm_state", "vm_name": workload.vm_name, "ok": stopped, "message": vm_info["power_state"]})
-                if stopped and shutil.which("virt-v2v"):
-                    run(
-                        [
-                            "virt-v2v",
-                            "-v",
-                            "-x",
-                            "-ic", vpx_uri(request.source_connector, workload, request.options),
-                            "-ip", str(password_path),
-                            workload.vm_name,
-                            "--print-source",
-                        ],
-                        env=virt_v2v_env(),
-                        timeout=120,
-                    )
-                    checks.append({"check": "virt_v2v_source", "vm_name": workload.vm_name, "ok": True, "message": "virt-v2v read the source VM metadata"})
+            with transient_secret_descriptor(password, "vcenter-password") as (password_ref, password_fd):
+                for workload in request.workloads:
+                    vm_info = find_vcenter_vm(request.source_connector, workload)
+                    stopped = vm_info["power_state"].lower() == "poweredoff"
+                    checks.append({"check": "source_vm_state", "vm_name": workload.vm_name, "ok": stopped, "message": vm_info["power_state"]})
+                    if stopped and shutil.which("virt-v2v"):
+                        run(
+                            [
+                                "virt-v2v",
+                                "-v",
+                                "-x",
+                                "-ic", vpx_uri(request.source_connector, workload, request.options),
+                                "-ip", password_ref,
+                                workload.vm_name,
+                                "--print-source",
+                            ],
+                            env=virt_v2v_env(),
+                            timeout=120,
+                            pass_fds=(password_fd,),
+                        )
+                        checks.append({"check": "virt_v2v_source", "vm_name": workload.vm_name, "ok": True, "message": "virt-v2v read the source VM metadata"})
         finally:
             shutil.rmtree(stage_path, ignore_errors=True)
     except Exception as exc:
@@ -749,7 +760,6 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                         stage_path = stage_directory(request.plan_id, workload.id, workload.vm_name, request.plan_name)
                     local_disks = []
                     output = ""
-                    password_path = stage_path / "vcenter-password"
                     xml_path = stage_path / f"{target_name}.xml"
                     if resume_from_stage and xml_path.exists():
                         if reporter:
@@ -763,26 +773,30 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                                 28,
                                 f"Preserved conversion artifacts are missing from {stage_path}; rebuilding conversion before continuing",
                             )
-                        password_path.write_text(password, encoding="utf-8")
-                        password_path.chmod(0o600)
                         if reporter:
                             reporter.task(f"{workload.id}-convert", f"{workload.vm_name}: convert with virt-v2v", "Running", 55, f"Converting {workload.vm_name} with virt-v2v in shared staging {stage_path}")
-                        command = [
-                            "virt-v2v",
-                            "-v",
-                            "-x",
-                            "-ic", vpx_uri(request.source_connector, workload, request.options),
-                            "-ip", str(password_path),
-                            workload.vm_name,
-                            "-o", "local",
-                            "-os", str(stage_path),
-                            "-of", "qcow2",
-                            "-on", target_name,
-                            "--root", request.options.get("root_selection", "first"),
-                        ]
-                        if target_network:
-                            command.extend(["--network", target_network])
-                        output = run(command, env=virt_v2v_env(), timeout=int(request.options.get("timeout", 14400)))
+                        with transient_secret_descriptor(password, "vcenter-password") as (password_ref, password_fd):
+                            command = [
+                                "virt-v2v",
+                                "-v",
+                                "-x",
+                                "-ic", vpx_uri(request.source_connector, workload, request.options),
+                                "-ip", password_ref,
+                                workload.vm_name,
+                                "-o", "local",
+                                "-os", str(stage_path),
+                                "-of", "qcow2",
+                                "-on", target_name,
+                                "--root", request.options.get("root_selection", "first"),
+                            ]
+                            if target_network:
+                                command.extend(["--network", target_network])
+                            output = run(
+                                command,
+                                env=virt_v2v_env(),
+                                timeout=int(request.options.get("timeout", 14400)),
+                                pass_fds=(password_fd,),
+                            )
                         if reporter:
                             reporter.task(f"{workload.id}-convert", f"{workload.vm_name}: convert with virt-v2v", "Completed", 70, f"virt-v2v created local conversion artifacts for {target_name} in shared staging")
                     if not xml_path.exists():
