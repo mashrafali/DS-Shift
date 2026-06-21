@@ -1,4 +1,4 @@
-from host_migrations import ovf_descriptor, parse_domain_xml, safe_name, vpx_uri
+from host_migrations import ensure_libguestfs_ready, ovf_descriptor, parse_domain_xml, safe_name, virt_v2v_env, vpx_uri
 
 
 class Connector:
@@ -57,3 +57,27 @@ def test_vpx_uri_uses_connector_and_discovery_metadata():
 
 def test_safe_name_rejects_empty_values():
     assert safe_name("VM migration 01") == "VM-migration-01"
+
+
+def test_virt_v2v_env_enables_guestfs_debugging(monkeypatch):
+    monkeypatch.delenv("LIBGUESTFS_DEBUG", raising=False)
+    monkeypatch.delenv("LIBGUESTFS_TRACE", raising=False)
+    monkeypatch.delenv("LIBGUESTFS_BACKEND", raising=False)
+
+    env = virt_v2v_env()
+
+    assert env["LIBGUESTFS_DEBUG"] == "1"
+    assert env["LIBGUESTFS_TRACE"] == "1"
+    assert env["LIBGUESTFS_BACKEND"] == "direct"
+    assert env["LIBGUESTFS_CACHEDIR"] == "/var/tmp"
+
+
+def test_ensure_libguestfs_ready_requires_test_tool(monkeypatch):
+    monkeypatch.setattr("host_migrations.shutil.which", lambda name: None)
+
+    try:
+        ensure_libguestfs_ready(timeout=1)
+    except RuntimeError as exc:
+        assert "libguestfs-test-tool" in str(exc)
+    else:
+        raise AssertionError("ensure_libguestfs_ready should fail when the test tool is unavailable")

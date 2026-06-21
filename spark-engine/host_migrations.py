@@ -87,6 +87,22 @@ def run(command: list[str], *, env: dict | None = None, timeout: int = 7200) -> 
     return completed.stdout
 
 
+def virt_v2v_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.setdefault("LIBGUESTFS_BACKEND", "direct")
+    env.setdefault("LIBGUESTFS_CACHEDIR", "/var/tmp")
+    env.setdefault("LIBGUESTFS_DEBUG", "1")
+    env.setdefault("LIBGUESTFS_TRACE", "1")
+    return env
+
+
+def ensure_libguestfs_ready(timeout: int = 300) -> None:
+    tool = shutil.which("libguestfs-test-tool")
+    if not tool:
+        raise RuntimeError("libguestfs-test-tool is not installed in the Spark Engine container")
+    run([tool], env=virt_v2v_env(), timeout=timeout)
+
+
 def safe_name(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-.")
     if not cleaned:
@@ -465,6 +481,11 @@ def preflight_kvm_to_vcenter(request) -> list[dict]:
 
 def preflight_vcenter_to_kvm(request) -> list[dict]:
     checks = [{"check": "virt_v2v", "ok": bool(shutil.which("virt-v2v")), "message": shutil.which("virt-v2v") or "virt-v2v is not installed"}]
+    try:
+        ensure_libguestfs_ready(timeout=180)
+        checks.append({"check": "libguestfs_appliance", "ok": True, "message": "libguestfs appliance booted successfully"})
+    except Exception as exc:
+        checks.append({"check": "libguestfs_appliance", "ok": False, "message": str(exc)})
     target_storage_pool = request.target_connector.target_storage_pool or request.options.get("target_storage_pool")
     target_network = request.target_connector.target_network or request.options.get("target_network")
     try:
@@ -489,11 +510,14 @@ def preflight_vcenter_to_kvm(request) -> list[dict]:
                     run(
                         [
                             "virt-v2v",
+                            "-v",
+                            "-x",
                             "-ic", vpx_uri(request.source_connector, workload, request.options),
                             "-ip", str(password_path),
                             workload.vm_name,
                             "--print-source",
                         ],
+                        env=virt_v2v_env(),
                         timeout=120,
                     )
                     checks.append({"check": "virt_v2v_source", "vm_name": workload.vm_name, "ok": True, "message": "virt-v2v read the source VM metadata"})
@@ -692,6 +716,7 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
     password = connector_password(request.source_connector)
     if not password:
         raise RuntimeError("vCenter password is unavailable")
+    ensure_libguestfs_ready(timeout=180)
     target_storage_pool = request.target_connector.target_storage_pool or request.options.get("target_storage_pool")
     target_network = request.target_connector.target_network or request.options.get("target_network")
     if not target_storage_pool:
@@ -744,6 +769,8 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                             reporter.task(f"{workload.id}-convert", f"{workload.vm_name}: convert with virt-v2v", "Running", 55, f"Converting {workload.vm_name} with virt-v2v in shared staging {stage_path}")
                         command = [
                             "virt-v2v",
+                            "-v",
+                            "-x",
                             "-ic", vpx_uri(request.source_connector, workload, request.options),
                             "-ip", str(password_path),
                             workload.vm_name,
@@ -755,7 +782,7 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                         ]
                         if target_network:
                             command.extend(["--network", target_network])
-                        output = run(command, timeout=int(request.options.get("timeout", 14400)))
+                        output = run(command, env=virt_v2v_env(), timeout=int(request.options.get("timeout", 14400)))
                         if reporter:
                             reporter.task(f"{workload.id}-convert", f"{workload.vm_name}: convert with virt-v2v", "Completed", 70, f"virt-v2v created local conversion artifacts for {target_name} in shared staging")
                     if not xml_path.exists():
