@@ -517,7 +517,7 @@ def test_dashboard_reset_keeps_absolute_discovered_count():
     )
 
     assert adjusted.vms_discovered == 136
-    assert adjusted.vms_planned == 1
+    assert adjusted.vms_planned == 4
     assert adjusted.vms_migrated == 1
     assert adjusted.vms_failed_or_blocked == 0
 
