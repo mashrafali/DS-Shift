@@ -11,7 +11,6 @@ from app import models, schemas
 from app.connector_client import normalize_connector_type, validate_connector_platform
 from app.database import Base
 from app.main import (
-    apply_dashboard_reset,
     app,
     migration_plan_execution_payload,
     raw_dashboard_summary,
@@ -493,7 +492,7 @@ def test_dashboard_summary_counts_planned_vms_from_plan_membership():
         assert summary.vms_failed_or_blocked == 1
 
 
-def test_dashboard_reset_keeps_absolute_discovered_count():
+def test_dashboard_summary_uses_live_absolute_counts():
     summary = schemas.DashboardSummary(
         total_plans=5,
         vms_discovered=136,
@@ -504,23 +503,11 @@ def test_dashboard_reset_keeps_absolute_discovered_count():
         by_status={"Discovered": 130, "Validation completed": 2, "Blocked": 1},
     )
 
-    adjusted = apply_dashboard_reset(
-        summary,
-        {
-            "total_plans": 1,
-            "vms_discovered": 136,
-            "vms_planned": 3,
-            "vms_migrated": 1,
-            "vms_failed_or_blocked": 1,
-            "by_status": {"Discovered": 130, "Validation completed": 1, "Blocked": 1},
-        },
-    )
-
-    assert adjusted.vms_discovered == 136
-    assert adjusted.total_plans == 5
-    assert adjusted.vms_planned == 4
-    assert adjusted.vms_migrated == 2
-    assert adjusted.vms_failed_or_blocked == 1
+    assert summary.vms_discovered == 136
+    assert summary.total_plans == 5
+    assert summary.vms_planned == 4
+    assert summary.vms_migrated == 2
+    assert summary.vms_failed_or_blocked == 1
 
 
 def test_wave_update_delete_and_execute(monkeypatch):

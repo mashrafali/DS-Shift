@@ -246,29 +246,6 @@ def raw_dashboard_summary(db: Session) -> schemas.DashboardSummary:
     )
 
 
-def apply_dashboard_reset(summary: schemas.DashboardSummary, baseline: dict) -> schemas.DashboardSummary:
-    baseline_status = baseline.get("by_status") if isinstance(baseline.get("by_status"), dict) else {}
-    by_status = {
-        key: max(0, value - int(baseline_status.get(key, 0) or 0))
-        for key, value in summary.by_status.items()
-        if max(0, value - int(baseline_status.get(key, 0) or 0)) > 0
-    }
-    discovered = summary.vms_discovered
-    migrated = summary.vms_migrated
-    planned = summary.vms_planned
-    failed = summary.vms_failed_or_blocked
-    progress = int((migrated / discovered) * 100) if discovered else 0
-    return schemas.DashboardSummary(
-        total_plans=summary.total_plans,
-        vms_discovered=discovered,
-        vms_planned=planned,
-        vms_migrated=migrated,
-        vms_failed_or_blocked=failed,
-        progress_percent=progress,
-        by_status=by_status,
-    )
-
-
 def sync_spark_backed_plans(db: Session, plans: list[models.MigrationPlan]) -> None:
     changed = False
     for plan in plans:
@@ -602,7 +579,6 @@ def startup() -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_migration_plans_spark_job_id ON migration_plans (spark_job_id)"))
         connection.execute(text("ALTER TABLE migration_waves ALTER COLUMN project_id DROP NOT NULL"))
         connection.execute(text("ALTER TABLE migration_waves ADD COLUMN IF NOT EXISTS plan_ids_json TEXT NOT NULL DEFAULT '[]'"))
-        connection.execute(text("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS dashboard_reset_json TEXT NOT NULL DEFAULT '{}'"))
         with Session(bind=connection) as db:
             seed_defaults(db)
             settings_row = db.query(models.AppSetting).first()
@@ -729,10 +705,7 @@ def delete_user(user_id: int, db: Session = Depends(get_db), admin: models.Local
 @app.get("/api/dashboard", response_model=schemas.DashboardSummary)
 def dashboard(db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
     sync_spark_backed_plans(db, db.query(models.MigrationPlan).filter(models.MigrationPlan.spark_job_id.is_not(None)).all())
-    summary = raw_dashboard_summary(db)
-    settings_row = db.query(models.AppSetting).first()
-    baseline = parsed_json_object(settings_row.dashboard_reset_json) if settings_row else {}
-    return apply_dashboard_reset(summary, baseline)
+    return raw_dashboard_summary(db)
 
 
 @app.get("/api/projects", response_model=list[schemas.Project])
@@ -1291,27 +1264,6 @@ def update_settings(payload: schemas.SettingsUpdate, db: Session = Depends(get_d
     db.refresh(settings_row)
     prune_staging_area(settings_row.retention_days)
     return settings_row
-
-
-@app.post("/api/settings/reset-dashboard", response_model=schemas.DashboardSummary)
-def reset_dashboard_metrics(db: Session = Depends(get_db), _admin: models.LocalUser = Depends(admin_user)):
-    settings_row = db.query(models.AppSetting).first()
-    if not settings_row:
-        settings_row = models.AppSetting()
-        db.add(settings_row)
-        db.flush()
-    summary = raw_dashboard_summary(db)
-    settings_row.dashboard_reset_json = json.dumps(summary.model_dump())
-    db.commit()
-    return schemas.DashboardSummary(
-        total_plans=0,
-        vms_discovered=0,
-        vms_planned=0,
-        vms_migrated=0,
-        vms_failed_or_blocked=0,
-        progress_percent=0,
-        by_status={},
-    )
 
 
 @app.get("/api/discovery-runs", response_model=list[schemas.DiscoveryRun])

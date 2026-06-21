@@ -149,7 +149,6 @@ class AppSetting(TimestampMixin, Base):
     retention_days: Mapped[int] = mapped_column(Integer, default=365)
     maintenance_window: Mapped[str | None] = mapped_column(String(160), nullable=True)
     banner_message: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    dashboard_reset_json: Mapped[str] = mapped_column(Text, default="{}")
 
 
 class DiscoveryRun(TimestampMixin, Base):
