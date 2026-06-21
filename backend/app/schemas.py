@@ -56,6 +56,7 @@ class ConnectorBase(BaseModel):
     username: Optional[str] = None
     target_network: Optional[str] = None
     target_datastore: Optional[str] = None
+    target_storage_pool: Optional[str] = None
     target_vdc_name: Optional[str] = None
     target_compute_name: Optional[str] = None
     environment: Optional[str] = None

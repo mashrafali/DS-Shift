@@ -12,6 +12,7 @@ from app.connector_client import normalize_connector_type, validate_connector_pl
 from app.database import Base
 from app.main import (
     app,
+    migration_plan_execution_payload,
     raw_dashboard_summary,
     create_migration_plan,
     create_connector,
@@ -97,6 +98,29 @@ def test_connector_secret_storage_and_public_shape():
         assert created.username == "administrator@vsphere.local"
         assert decrypt_connector_secret(stored)["password"] == "P@ssw0rd"
         assert connector_public(stored).has_stored_secret is True
+
+
+def test_kvm_connector_public_shape_includes_target_pool():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        connector = models.ConnectorProfile(
+            name="KVM Target",
+            connector_category="host",
+            connector_type="KVM",
+            endpoint="qemu+ssh://root@kvm/system",
+            target_storage_pool="default",
+            target_network="br11",
+        )
+        db.add(connector)
+        db.commit()
+        db.refresh(connector)
+
+        public = connector_public(connector)
+
+        assert public.target_storage_pool == "default"
+        assert public.target_network == "br11"
 
 
 def test_admin_cannot_delete_or_deactivate_self():
@@ -386,6 +410,43 @@ def test_connector_defaults_and_wave_creation():
 
         assert json.loads(payload.plan_ids_json) == [plan.id]
         assert {db.get(models.VmInventory, vm1.id).migration_wave, db.get(models.VmInventory, vm2.id).migration_wave} == {"Wave 1"}
+
+
+def test_connector_defaults_include_kvm_target_storage_pool():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        source = models.ConnectorProfile(name="VMware Source", connector_category="host", connector_type="VMware ESXi / vCenter")
+        target = models.ConnectorProfile(
+            name="KVM Target",
+            connector_category="host",
+            connector_type="KVM",
+            target_storage_pool="default",
+            target_network="br11",
+        )
+        db.add_all([source, target])
+        db.flush()
+        vm = models.VmInventory(vm_name="vm-01", source_platform="VMware ESXi / vCenter", target_platform="KVM", cpu=2, memory_gb=4, disk_gb=50, connector_id=source.id)
+        db.add(vm)
+        db.flush()
+
+        plan = create_migration_plan(
+            schemas.MigrationPlanCreate(name="VMware to KVM", vm_ids=[vm.id], target_connector_id=target.id),
+            db,
+            None,
+        )
+        execution_payload = migration_plan_execution_payload(
+            plan,
+            source,
+            target,
+            [vm],
+            "admin",
+            live=False,
+        )
+
+        assert execution_payload["options"]["target_storage_pool"] == "default"
+        assert execution_payload["options"]["target_network"] == "br11"
 
 
 def test_dashboard_summary_counts_planned_vms_from_plan_membership():

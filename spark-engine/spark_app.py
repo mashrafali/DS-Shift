@@ -136,6 +136,7 @@ class Connector(BaseModel):
     username: str | None = None
     target_network: str | None = None
     target_datastore: str | None = None
+    target_storage_pool: str | None = None
     target_vdc_name: str | None = None
     target_compute_name: str | None = None
     credential_reference: str | None = None

@@ -157,6 +157,7 @@ def connector_public(connector: models.ConnectorProfile) -> schemas.Connector:
         username=connector.username,
         target_network=connector.target_network,
         target_datastore=connector.target_datastore,
+        target_storage_pool=connector.target_storage_pool,
         target_vdc_name=connector.target_vdc_name,
         target_compute_name=connector.target_compute_name,
         credential_reference=connector.credential_reference,
@@ -332,6 +333,8 @@ def resolve_connector_defaults(connector: models.ConnectorProfile) -> dict:
     defaults = {}
     if connector.target_datastore:
         defaults["target_datastore"] = connector.target_datastore
+    if connector.target_storage_pool:
+        defaults["target_storage_pool"] = connector.target_storage_pool
     if connector.target_network:
         defaults["target_network"] = connector.target_network
     if connector.target_vdc_name:
@@ -345,7 +348,14 @@ def resolve_connector_defaults(connector: models.ConnectorProfile) -> dict:
 def compact_execution_options(options: dict | None) -> dict:
     if not isinstance(options, dict):
         return {}
-    blocked_keys = {"target_datastore"}
+    blocked_keys = {
+        "target_datastore",
+        "target_storage_pool",
+        "target_network",
+        "target_vdc_name",
+        "target_datacenter",
+        "target_compute_name",
+    }
     return {
         key: value
         for key, value in options.items()
@@ -582,6 +592,7 @@ def startup() -> None:
         connection.execute(text("ALTER TABLE connector_profiles ADD COLUMN IF NOT EXISTS secret_json_encrypted TEXT"))
         connection.execute(text("ALTER TABLE connector_profiles ADD COLUMN IF NOT EXISTS target_network VARCHAR(160)"))
         connection.execute(text("ALTER TABLE connector_profiles ADD COLUMN IF NOT EXISTS target_datastore VARCHAR(160)"))
+        connection.execute(text("ALTER TABLE connector_profiles ADD COLUMN IF NOT EXISTS target_storage_pool VARCHAR(160)"))
         connection.execute(text("ALTER TABLE connector_profiles ADD COLUMN IF NOT EXISTS target_vdc_name VARCHAR(160)"))
         connection.execute(text("ALTER TABLE connector_profiles ADD COLUMN IF NOT EXISTS target_compute_name VARCHAR(160)"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_vm_inventory_external_id ON vm_inventory (external_id)"))
@@ -1407,6 +1418,7 @@ def connector_execution_payload(connector: models.ConnectorProfile) -> dict:
         "username": connector.username,
         "target_network": connector.target_network,
         "target_datastore": connector.target_datastore,
+        "target_storage_pool": connector.target_storage_pool,
         "target_vdc_name": connector.target_vdc_name,
         "target_compute_name": connector.target_compute_name,
         "credential_reference": connector.credential_reference,

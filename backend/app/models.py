@@ -55,6 +55,7 @@ class ConnectorProfile(TimestampMixin, Base):
     secret_json_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     target_network: Mapped[str | None] = mapped_column(String(160), nullable=True)
     target_datastore: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    target_storage_pool: Mapped[str | None] = mapped_column(String(160), nullable=True)
     target_vdc_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     target_compute_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     environment: Mapped[str | None] = mapped_column(String(80), nullable=True)

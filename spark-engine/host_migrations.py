@@ -465,6 +465,8 @@ def preflight_kvm_to_vcenter(request) -> list[dict]:
 
 def preflight_vcenter_to_kvm(request) -> list[dict]:
     checks = [{"check": "virt_v2v", "ok": bool(shutil.which("virt-v2v")), "message": shutil.which("virt-v2v") or "virt-v2v is not installed"}]
+    target_storage_pool = request.target_connector.target_storage_pool or request.options.get("target_storage_pool")
+    target_network = request.target_connector.target_network or request.options.get("target_network")
     try:
         staging_root = ensure_staging_root()
         checks.append({"check": "staging_path", "ok": True, "message": str(staging_root)})
@@ -500,13 +502,18 @@ def preflight_vcenter_to_kvm(request) -> list[dict]:
     except Exception as exc:
         checks.append({"check": "source_vcenter", "ok": False, "message": str(exc)})
     try:
+        if not target_storage_pool:
+            raise RuntimeError("Target KVM storage pool is not configured on the target connector")
         with ssh_client(request.target_connector) as client:
-            pool_xml, _ = ssh_exec(client, f"virsh pool-dumpxml {shlex.quote(request.options['target_storage_pool'])}", timeout=20)
+            pool_xml, _ = ssh_exec(client, f"virsh pool-dumpxml {shlex.quote(target_storage_pool)}", timeout=20)
             pool_path = ET.fromstring(pool_xml).findtext("./target/path")
             if not pool_path:
                 raise RuntimeError("Target storage pool has no filesystem path")
             ssh_exec(client, f"test -d {shlex.quote(pool_path)} && test -w {shlex.quote(pool_path)}", timeout=20)
-            checks.append({"check": "target_kvm_pool", "ok": True, "message": f"{request.options['target_storage_pool']}: {pool_path}"})
+            checks.append({"check": "target_kvm_pool", "ok": True, "message": f"{target_storage_pool}: {pool_path}"})
+            if target_network:
+                ssh_exec(client, f"ip link show {shlex.quote(target_network)}", timeout=20)
+                checks.append({"check": "target_kvm_network", "ok": True, "message": target_network})
     except Exception as exc:
         checks.append({"check": "target_kvm", "ok": False, "message": str(exc)})
     return checks
@@ -685,8 +692,12 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
     password = connector_password(request.source_connector)
     if not password:
         raise RuntimeError("vCenter password is unavailable")
+    target_storage_pool = request.target_connector.target_storage_pool or request.options.get("target_storage_pool")
+    target_network = request.target_connector.target_network or request.options.get("target_network")
+    if not target_storage_pool:
+        raise RuntimeError("Target KVM storage pool is not configured on the target connector")
     with ssh_client(request.target_connector) as client:
-        pool_xml, _ = ssh_exec(client, f"virsh pool-dumpxml {shlex.quote(request.options['target_storage_pool'])}")
+        pool_xml, _ = ssh_exec(client, f"virsh pool-dumpxml {shlex.quote(target_storage_pool)}")
         pool_path = ET.fromstring(pool_xml).findtext("./target/path")
         if not pool_path:
             raise RuntimeError("Target storage pool has no filesystem path")
@@ -742,8 +753,8 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                             "-on", target_name,
                             "--root", request.options.get("root_selection", "first"),
                         ]
-                        if request.options.get("target_network"):
-                            command.extend(["--network", request.options["target_network"]])
+                        if target_network:
+                            command.extend(["--network", target_network])
                         output = run(command, timeout=int(request.options.get("timeout", 14400)))
                         if reporter:
                             reporter.task(f"{workload.id}-convert", f"{workload.vm_name}: convert with virt-v2v", "Completed", 70, f"virt-v2v created local conversion artifacts for {target_name} in shared staging")
@@ -751,7 +762,7 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                         raise RuntimeError("virt-v2v did not generate target libvirt XML")
                     root = ET.parse(xml_path)
                     if reporter:
-                        reporter.task(f"{workload.id}-transfer", f"{workload.vm_name}: transfer converted disks", "Running", 82, f"Uploading converted disks into storage pool {request.options['target_storage_pool']}")
+                        reporter.task(f"{workload.id}-transfer", f"{workload.vm_name}: transfer converted disks", "Running", 82, f"Uploading converted disks into storage pool {target_storage_pool}")
                     for disk in root.findall("./devices/disk[@device='disk']"):
                         source = disk.find("source")
                         if source is None or not source.get("file"):
@@ -788,7 +799,7 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                             sftp.remove(remote_xml)
                         except OSError:
                             pass
-                    results.append({"ok": True, "vm_id": workload.id, "vm_name": workload.vm_name, "target_name": target_name, "target_pool": request.options["target_storage_pool"], "message": output.strip() or "virt-v2v conversion and libvirt definition completed", "stage_path": str(stage_path), "can_resume": False})
+                    results.append({"ok": True, "vm_id": workload.id, "vm_name": workload.vm_name, "target_name": target_name, "target_pool": target_storage_pool, "message": output.strip() or "virt-v2v conversion and libvirt definition completed", "stage_path": str(stage_path), "can_resume": False})
                     shutil.rmtree(stage_path, ignore_errors=True)
                 except Exception as exc:
                     if reporter:

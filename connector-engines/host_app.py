@@ -92,11 +92,23 @@ def _ssh_exec(client: paramiko.SSHClient, command: str, timeout: int = 30) -> tu
 
 def validate_kvm(request: ConnectorRequest) -> EngineResult:
     commands = ["Paramiko SSH connect", "virsh list --all --name"]
+    if request.target_storage_pool:
+        commands.append(f"virsh pool-dumpxml {request.target_storage_pool}")
+    if request.target_network:
+        commands.append(f"ip link show {request.target_network}")
     try:
         with _ssh_client(request) as client:
             code, output, error = _ssh_exec(client, "virsh list --all --name", timeout=15)
             if code:
                 return EngineResult(False, "KVM validation failed. SSH works, but virsh access failed.", [], commands)
+            if request.target_storage_pool:
+                code, pool_xml, error = _ssh_exec(client, f"virsh pool-dumpxml {request.target_storage_pool!r}", timeout=20)
+                if code:
+                    raise RuntimeError(f"Target storage pool {request.target_storage_pool} is not accessible: {error.strip() or pool_xml.strip()}")
+            if request.target_network:
+                code, _, error = _ssh_exec(client, f"ip link show {request.target_network!r}", timeout=20)
+                if code:
+                    raise RuntimeError(f"Target network or bridge {request.target_network} is not accessible: {error.strip()}")
             return EngineResult(True, "KVM connector validated. SSH and virsh are reachable.", [], commands)
     except Exception as exc:
         return EngineResult(False, f"KVM validation failed: {exc}", [], commands)

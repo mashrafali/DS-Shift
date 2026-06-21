@@ -78,6 +78,7 @@ const blankConnector = {
   username: '',
   target_network: '',
   target_datastore: '',
+  target_storage_pool: '',
   target_vdc_name: '',
   target_compute_name: '',
   credential_reference: '',
@@ -142,8 +143,6 @@ const blankMigrationPlan = {
     target_location: '',
     target_subnet_id: '',
     target_instance_type: '',
-    target_network: '',
-    target_storage_pool: '',
     target_resource_pool: '',
     target_folder: '',
   },
@@ -172,6 +171,7 @@ function connectorPayload(form) {
     username: form.username || null,
     target_network: form.target_network || null,
     target_datastore: form.target_datastore || null,
+    target_storage_pool: form.target_storage_pool || null,
     target_vdc_name: form.target_vdc_name || null,
     target_compute_name: form.target_compute_name || null,
     credential_reference: form.credential_reference || null,
@@ -1027,7 +1027,7 @@ function ConnectorFields({ form, setForm, category, platforms }) {
       port: selectedPlatform?.default_port ?? '',
     });
   };
-  return <><Select label="Platform" value={scopedForm.connector_type} options={types} onChange={onPlatformChange} /><div className="tip"><strong>{platform?.tool}</strong><br />Endpoint: {platform?.endpoint_hint}<br />Credential: {platform?.credential_hint}</div><Input label="Connector name" value={scopedForm.name} onChange={(v) => update({ name: v })} required /><Input label={category === 'cloud' ? 'Region / Project / Subscription' : 'Host IP / Hostname'} value={scopedForm.endpoint} onChange={(v) => update({ endpoint: v })} />{category === 'host' && scopedForm.connector_type === 'VMware ESXi / vCenter' && <div className="execution-options"><Input label="Target vDC Name" value={scopedForm.target_vdc_name || ''} onChange={(v) => update({ target_vdc_name: v })} /><Input label="Target Cluster Name or Host Name" value={scopedForm.target_compute_name || ''} onChange={(v) => update({ target_compute_name: v })} /><Input label="Target Datastore" value={scopedForm.target_datastore || ''} onChange={(v) => update({ target_datastore: v })} /><Input label="Target Network" value={scopedForm.target_network || ''} onChange={(v) => update({ target_network: v })} /></div>}{renderConnectorCredentialFields(scopedForm, update, updateCredential)}<Input label="Environment" value={scopedForm.environment || ''} onChange={(v) => update({ environment: v })} /><TextArea label="Notes" value={scopedForm.notes || ''} onChange={(v) => update({ notes: v })} /></>;
+  return <><Select label="Platform" value={scopedForm.connector_type} options={types} onChange={onPlatformChange} /><div className="tip"><strong>{platform?.tool}</strong><br />Endpoint: {platform?.endpoint_hint}<br />Credential: {platform?.credential_hint}</div><Input label="Connector name" value={scopedForm.name} onChange={(v) => update({ name: v })} required /><Input label={category === 'cloud' ? 'Region / Project / Subscription' : 'Host IP / Hostname'} value={scopedForm.endpoint} onChange={(v) => update({ endpoint: v })} />{category === 'host' && scopedForm.connector_type === 'VMware ESXi / vCenter' && <div className="execution-options"><Input label="Target vDC Name" value={scopedForm.target_vdc_name || ''} onChange={(v) => update({ target_vdc_name: v })} /><Input label="Target Cluster Name or Host Name" value={scopedForm.target_compute_name || ''} onChange={(v) => update({ target_compute_name: v })} /><Input label="Target Datastore" value={scopedForm.target_datastore || ''} onChange={(v) => update({ target_datastore: v })} /><Input label="Target Network" value={scopedForm.target_network || ''} onChange={(v) => update({ target_network: v })} /></div>}{category === 'host' && scopedForm.connector_type === 'KVM' && <div className="execution-options"><Input label="Target Storage Pool" value={scopedForm.target_storage_pool || ''} onChange={(v) => update({ target_storage_pool: v })} /><Input label="Target Network / Bridge" value={scopedForm.target_network || ''} onChange={(v) => update({ target_network: v })} /></div>}{renderConnectorCredentialFields(scopedForm, update, updateCredential)}<Input label="Environment" value={scopedForm.environment || ''} onChange={(v) => update({ environment: v })} /><TextArea label="Notes" value={scopedForm.notes || ''} onChange={(v) => update({ notes: v })} /></>;
 }
 
 function Connectors({ title, category, rows, form, setForm, save, editForm, setEditForm, saveEdit, platforms, discover, validate, edit, remove, cancelEdit, editingConnectorId, discoveringConnectorId, result }) {
@@ -1355,11 +1355,8 @@ function migrationPlanFieldConfig(sourceType, targetType) {
   }
   if (source === 'VMware ESXi / vCenter' && target === 'KVM') {
     return {
-      description: 'Source datacenter and compute context are taken from the VMware connector discovery metadata. Provide only the destination KVM storage and bridge settings used by virt-v2v.',
-      fields: [
-        { key: 'target_storage_pool', label: 'Target KVM storage pool' },
-        { key: 'target_network', label: 'Target network / bridge' },
-      ],
+      description: 'Source datacenter and compute context come from VMware discovery metadata. Destination KVM storage pool and bridge come from the target KVM connector and are validated there and during plan preflight.',
+      fields: [],
     };
   }
   if (source === 'Amazon Web Services' && target === 'Amazon Web Services') {
