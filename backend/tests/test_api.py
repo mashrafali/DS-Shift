@@ -325,6 +325,116 @@ def test_discovery_inventory_and_migration_plan_execution(monkeypatch):
         assert db.get(models.VmInventory, vm.id).current_status == "Ready for migration"
 
 
+def test_sync_discovered_vms_updates_vm_name_when_external_id_matches():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        connector = models.ConnectorProfile(
+            name="vCenter Source",
+            connector_category="host",
+            connector_type="VMware ESXi / vCenter",
+            endpoint="https://vcsa.test.local/sdk",
+        )
+        db.add(connector)
+        db.flush()
+        vm = models.VmInventory(
+            connector_id=connector.id,
+            external_id="vm-500",
+            host_name="esx01.test.local",
+            vm_name="old-name",
+            source_platform="VMware ESXi / vCenter",
+            target_platform="Unassigned",
+            cpu=4,
+            memory_gb=8,
+            disk_gb=120,
+            os_type="Ubuntu Linux (64-bit)",
+            ip_address="192.168.12.40",
+            details_json=json.dumps({"path": "/Datacenter/vm/old-name"}),
+            current_status="Discovered",
+        )
+        db.add(vm)
+        db.commit()
+
+        assert sync_discovered_vms(
+            db,
+            connector,
+            [{
+                "external_id": "vm-500",
+                "vm_name": "new-name",
+                "host_name": "esx01.test.local",
+                "source_platform": "VMware ESXi / vCenter",
+                "cpu": 4,
+                "memory_gb": 8,
+                "disk_gb": 120,
+                "os_type": "Ubuntu Linux (64-bit)",
+                "ip_address": "192.168.12.40",
+                "path": "/Datacenter/vm/new-name",
+            }],
+        ) == 1
+
+        db.refresh(vm)
+        assert vm.vm_name == "new-name"
+        assert vm.external_id == "vm-500"
+        assert json.loads(vm.details_json)["path"] == "/Datacenter/vm/new-name"
+        assert db.query(models.VmInventory).count() == 1
+
+
+def test_sync_discovered_vms_adopts_legacy_vm_row_when_external_id_was_missing():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        connector = models.ConnectorProfile(
+            name="vCenter Source",
+            connector_category="host",
+            connector_type="VMware ESXi / vCenter",
+            endpoint="https://vcsa.test.local/sdk",
+        )
+        db.add(connector)
+        db.flush()
+        legacy = models.VmInventory(
+            connector_id=connector.id,
+            external_id=None,
+            host_name=None,
+            vm_name="legacy-name",
+            source_platform="VMware ESXi / vCenter",
+            target_platform="Unassigned",
+            cpu=4,
+            memory_gb=8,
+            disk_gb=120,
+            os_type="Ubuntu Linux (64-bit)",
+            ip_address="192.168.12.40",
+            details_json=json.dumps({"path": "/Datacenter/vm/legacy-name"}),
+            current_status="Discovered",
+        )
+        db.add(legacy)
+        db.commit()
+
+        assert sync_discovered_vms(
+            db,
+            connector,
+            [{
+                "external_id": "vm-900",
+                "vm_name": "renamed-vm",
+                "host_name": "esx01.test.local",
+                "source_platform": "VMware ESXi / vCenter",
+                "cpu": 4,
+                "memory_gb": 8,
+                "disk_gb": 120,
+                "os_type": "Ubuntu Linux (64-bit)",
+                "ip_address": "192.168.12.40",
+                "path": "/Datacenter/vm/renamed-vm",
+            }],
+        ) == 1
+
+        db.refresh(legacy)
+        assert legacy.vm_name == "renamed-vm"
+        assert legacy.external_id == "vm-900"
+        assert legacy.host_name == "esx01.test.local"
+        assert db.query(models.VmInventory).count() == 1
+
+
 def test_continue_migration_plan_reuses_preserved_staging(monkeypatch, tmp_path):
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)

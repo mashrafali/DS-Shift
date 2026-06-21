@@ -145,7 +145,9 @@ def discover_kvm(endpoint: str | None, username: str | None, credential_referenc
             ip_address = _match_text(_section(text, "__ADDR__", None), r"ipv4\s+([0-9.]+)/")
             records.append(
                 {
+                    "external_id": _match_text(xml_text, r"<uuid>([^<]+)</uuid>") or name,
                     "vm_name": name,
+                    "host_name": _match_text(text, r"(?m)^Host:\s+(.+)$"),
                     "source_platform": "KVM",
                     "cpu": cpu,
                     "memory_gb": round(mem_kib / 1024 / 1024),
@@ -216,7 +218,9 @@ def discover_vcenter(endpoint: str | None, username: str | None, credential_refe
                         disks.append({"label": device.deviceInfo.label, "size_gb": round((device.capacityInKB or 0) / 1024 / 1024)})
                 records.append(
                     {
+                        "external_id": getattr(config, "instanceUuid", None) or getattr(vm_obj, "_moId", None),
                         "vm_name": config.name,
+                        "host_name": getattr(getattr(runtime, "host", None), "name", None),
                         "source_platform": "VMware ESXi / vCenter",
                         "cpu": config.numCpu or 0,
                         "memory_gb": round((config.memorySizeMB or 0) / 1024),

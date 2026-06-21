@@ -1018,6 +1018,8 @@ def sync_discovered_vms(db: Session, connector: models.ConnectorProfile, records
                 models.VmInventory.host_name == host_name,
                 models.VmInventory.vm_name == name,
             ).first()
+        if not existing and external_id:
+            existing = adopt_legacy_discovered_vm(db, connector, record)
         values = {
             "project_id": None,
             "connector_id": connector.id,
@@ -1032,6 +1034,7 @@ def sync_discovered_vms(db: Session, connector: models.ConnectorProfile, records
             "details_json": json.dumps(record),
         }
         if existing:
+            existing.vm_name = name
             for key, value in values.items():
                 setattr(existing, key, value)
         else:
@@ -1048,6 +1051,54 @@ def sync_discovered_vms(db: Session, connector: models.ConnectorProfile, records
         count += 1
     db.commit()
     return count
+
+
+def adopt_legacy_discovered_vm(db: Session, connector: models.ConnectorProfile, record: dict) -> models.VmInventory | None:
+    source_platform = record.get("source_platform") or connector.connector_type
+    cpu = int(record.get("cpu") or 0)
+    memory_gb = int(record.get("memory_gb") or 0)
+    disk_gb = int(record.get("disk_gb") or 0)
+    ip_address = record.get("ip_address")
+    os_type = record.get("os_type")
+    host_name = record.get("host_name")
+    path = record.get("path")
+
+    candidates = db.query(models.VmInventory).filter(
+        models.VmInventory.connector_id == connector.id,
+        models.VmInventory.external_id.is_(None),
+        models.VmInventory.source_platform == source_platform,
+    ).all()
+
+    ranked: list[tuple[int, models.VmInventory]] = []
+    for candidate in candidates:
+        score = 0
+        if path:
+            details = parsed_json_object(candidate.details_json)
+            if details.get("path") == path:
+                score += 5
+        if host_name and candidate.host_name == host_name:
+            score += 3
+        if ip_address and candidate.ip_address == ip_address:
+            score += 4
+        if cpu and candidate.cpu == cpu:
+            score += 1
+        if memory_gb and candidate.memory_gb == memory_gb:
+            score += 1
+        if disk_gb and candidate.disk_gb == disk_gb:
+            score += 1
+        if os_type and candidate.os_type == os_type:
+            score += 1
+        if score >= 5:
+            ranked.append((score, candidate))
+
+    if not ranked:
+        return None
+    ranked.sort(key=lambda row: row[0], reverse=True)
+    top_score = ranked[0][0]
+    top_candidates = [candidate for score, candidate in ranked if score == top_score]
+    if len(top_candidates) != 1:
+        return None
+    return top_candidates[0]
 
 
 def import_discovered_vms(db: Session, project_id: int, target_platform: str, records: list[dict]) -> int:
