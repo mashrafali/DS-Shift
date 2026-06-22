@@ -745,13 +745,25 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                 try:
                     resume_from_stage = bool(request.options.get("resume_from_stage"))
                     if reporter:
-                        reporter.task(f"{workload.id}-inspect", f"{workload.vm_name}: inspect source VM", "Running", 15, f"Inspecting vCenter source VM {workload.vm_name}")
+                        reporter.task(
+                            f"{workload.id}-read-source",
+                            f"{workload.vm_name}: read from vCenter",
+                            "Running",
+                            15,
+                            f"Reading source VM {workload.vm_name} from vCenter and validating target name {target_name}",
+                        )
                     vm_info = find_vcenter_vm(request.source_connector, workload)
                     if vm_info["power_state"].lower() != "poweredoff":
                         raise RuntimeError(f"{workload.vm_name} must be powered off before virt-v2v conversion")
                     ssh_exec(client, f"! virsh dominfo {shlex.quote(target_name)} >/dev/null 2>&1", timeout=20)
                     if reporter:
-                        reporter.task(f"{workload.id}-inspect", f"{workload.vm_name}: inspect source VM", "Completed", 25, f"Verified powered-off source and free target name {target_name}")
+                        reporter.task(
+                            f"{workload.id}-read-source",
+                            f"{workload.vm_name}: read from vCenter",
+                            "Completed",
+                            25,
+                            f"Read source VM {workload.vm_name} from vCenter and confirmed target name {target_name} is available",
+                        )
                     if resume_from_stage:
                         candidate_paths = candidate_stage_directories(request.plan_id, workload.id, workload.vm_name, request.plan_name)
                         stage_path = next((path for path in candidate_paths if path.exists()), candidate_paths[0])
@@ -763,18 +775,30 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                     xml_path = stage_path / f"{target_name}.xml"
                     if resume_from_stage and xml_path.exists():
                         if reporter:
-                            reporter.task(f"{workload.id}-reuse", f"{workload.vm_name}: reuse staged conversion", "Completed", 70, f"Reusing preserved virt-v2v artifacts from {stage_path}")
+                            reporter.task(
+                                f"{workload.id}-convert-staging",
+                                f"{workload.vm_name}: convert into staging",
+                                "Completed",
+                                70,
+                                f"Reusing preserved converted artifacts from {stage_path}",
+                            )
                     else:
                         if resume_from_stage and reporter:
                             reporter.task(
-                                f"{workload.id}-reuse",
-                                f"{workload.vm_name}: reuse staged conversion",
+                                f"{workload.id}-convert-staging",
+                                f"{workload.vm_name}: convert into staging",
                                 "Running",
                                 28,
-                                f"Preserved conversion artifacts are missing from {stage_path}; rebuilding conversion before continuing",
+                                f"Preserved converted artifacts are missing from {stage_path}; rebuilding them before continuing",
                             )
                         if reporter:
-                            reporter.task(f"{workload.id}-convert", f"{workload.vm_name}: convert with virt-v2v", "Running", 55, f"Converting {workload.vm_name} with virt-v2v in shared staging {stage_path}")
+                            reporter.task(
+                                f"{workload.id}-convert-staging",
+                                f"{workload.vm_name}: convert into staging",
+                                "Running",
+                                55,
+                                f"Reading {workload.vm_name} from vCenter with virt-v2v and writing converted qcow2 artifacts into {stage_path}",
+                            )
                         with transient_secret_descriptor(password, "vcenter-password") as (password_ref, password_fd):
                             command = [
                                 "virt-v2v",
@@ -798,12 +822,24 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                                 pass_fds=(password_fd,),
                             )
                         if reporter:
-                            reporter.task(f"{workload.id}-convert", f"{workload.vm_name}: convert with virt-v2v", "Completed", 70, f"virt-v2v created local conversion artifacts for {target_name} in shared staging")
+                            reporter.task(
+                                f"{workload.id}-convert-staging",
+                                f"{workload.vm_name}: convert into staging",
+                                "Completed",
+                                70,
+                                f"virt-v2v wrote converted qcow2 artifacts for {target_name} into {stage_path}",
+                            )
                     if not xml_path.exists():
                         raise RuntimeError("virt-v2v did not generate target libvirt XML")
                     root = ET.parse(xml_path)
                     if reporter:
-                        reporter.task(f"{workload.id}-transfer", f"{workload.vm_name}: transfer converted disks", "Running", 82, f"Uploading converted disks into storage pool {target_storage_pool}")
+                        reporter.task(
+                            f"{workload.id}-upload-kvm",
+                            f"{workload.vm_name}: upload to KVM",
+                            "Running",
+                            82,
+                            f"Uploading converted disks from {stage_path} into KVM storage pool {target_storage_pool}",
+                        )
                     for disk in root.findall("./devices/disk[@device='disk']"):
                         source = disk.find("source")
                         if source is None or not source.get("file"):
@@ -817,7 +853,13 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                     remote_xml = f"/tmp/ds-shift-{target_name}.xml"
                     sftp.put(str(xml_path), remote_xml)
                     if reporter:
-                        reporter.task(f"{workload.id}-transfer", f"{workload.vm_name}: transfer converted disks", "Succeeded", 88, f"Uploaded converted disks and target XML for {target_name}")
+                        reporter.task(
+                            f"{workload.id}-upload-kvm",
+                            f"{workload.vm_name}: upload to KVM",
+                            "Completed",
+                            88,
+                            f"Uploaded converted disks and target XML for {target_name} into KVM storage pool {target_storage_pool}",
+                        )
                     try:
                         if reporter:
                             reporter.task(f"{workload.id}-define", f"{workload.vm_name}: define target VM", "Running", 94, f"Defining libvirt domain {target_name}")
