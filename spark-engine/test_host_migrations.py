@@ -1,6 +1,6 @@
 import xml.etree.ElementTree as ET
 
-from host_migrations import ensure_libguestfs_ready, normalize_kvm_interfaces, ovf_descriptor, parse_domain_xml, safe_name, transient_secret_descriptor, virt_v2v_env, vpx_uri
+from host_migrations import ensure_libguestfs_ready, normalize_kvm_interfaces, ovf_descriptor, parse_domain_xml, safe_name, shifted_artifact_base_name, transient_secret_descriptor, virt_v2v_env, vpx_uri
 
 
 class Connector:
@@ -90,6 +90,11 @@ def test_transient_secret_descriptor_uses_ephemeral_fd():
         assert path == f"/proc/self/fd/{fd}"
         with open(path, encoding="utf-8") as handle:
             assert handle.read() == "TopSecret123"
+
+
+def test_shifted_artifact_base_name_replaces_migrated_suffix():
+    assert shifted_artifact_base_name("test-vm-migrated") == "test-vm-shifted"
+    assert shifted_artifact_base_name("test-vm") == "test-vm-shifted"
 
 
 def test_normalize_kvm_interfaces_rebinds_to_target_bridge():

@@ -139,6 +139,12 @@ def safe_name(value: str) -> str:
     return cleaned[:80]
 
 
+def shifted_artifact_base_name(target_name: str) -> str:
+    if target_name.endswith("-migrated"):
+        return f"{target_name[:-9]}-shifted"
+    return f"{target_name}-shifted"
+
+
 def stage_plan_directory_name(plan_id: int, plan_name: str | None = None) -> str:
     if plan_name:
         return f"Plan-{safe_name(plan_name)}"
@@ -366,8 +372,9 @@ def launchgrid_provision(request, workload, target_name: str, metadata: dict, di
 
 def converted_vmdk_layout(stage_path: Path, target_name: str, disks: list[dict]) -> list[dict]:
     layout = []
+    artifact_base = shifted_artifact_base_name(target_name)
     for index, disk in enumerate(disks, start=1):
-        local_path = stage_path / f"{target_name}-disk{index}.vmdk"
+        local_path = stage_path / f"{artifact_base}-disk{index}.vmdk"
         capacity = disk.get("capacity_bytes")
         if capacity is None and local_path.exists():
             try:
@@ -628,9 +635,10 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                                 reason,
                             )
                     if not reused_converted:
+                        artifact_base = shifted_artifact_base_name(target_name)
                         for index, disk in enumerate(metadata["disks"], start=1):
                             source_path = stage_path / f"source-{index}{Path(disk['path']).suffix or '.img'}"
-                            target_path = stage_path / f"{target_name}-disk{index}.vmdk"
+                            target_path = stage_path / f"{artifact_base}-disk{index}.vmdk"
                             if resume_from_stage and source_path.exists():
                                 if reporter:
                                     reporter.task(
@@ -713,7 +721,6 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                             "details": provisioned,
                         }
                     )
-                    shutil.rmtree(stage_path, ignore_errors=True)
                 except Exception as exc:
                     if reporter:
                         reporter.task(f"{workload.id}-provision", f"{workload.vm_name}: provision target VM", "Failed", 88, str(exc))
@@ -865,7 +872,7 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                         if source is None or not source.get("file"):
                             continue
                         local_path = Path(source.get("file"))
-                        remote_path = f"{pool_path.rstrip('/')}/{target_name}-{local_path.name.rsplit('-', 1)[-1]}.qcow2"
+                        remote_path = f"{pool_path.rstrip('/')}/{shifted_artifact_base_name(target_name)}-{local_path.name.rsplit('-', 1)[-1]}.qcow2"
                         sftp.put(str(local_path), remote_path)
                         source.set("file", remote_path)
                         local_disks.append(remote_path)
@@ -903,7 +910,6 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                         except OSError:
                             pass
                     results.append({"ok": True, "vm_id": workload.id, "vm_name": workload.vm_name, "target_name": target_name, "target_pool": target_storage_pool, "message": output.strip() or "virt-v2v conversion and libvirt definition completed", "stage_path": str(stage_path), "can_resume": False})
-                    shutil.rmtree(stage_path, ignore_errors=True)
                 except Exception as exc:
                     if reporter:
                         reporter.task(f"{workload.id}-define", f"{workload.vm_name}: define target VM", "Failed", 82, str(exc))

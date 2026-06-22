@@ -1,5 +1,6 @@
 import base64
 import json
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -11,6 +12,7 @@ from app import models, schemas
 from app.connector_client import normalize_connector_type, validate_connector_platform
 from app.database import Base
 from app.main import (
+    apply_spark_job,
     app,
     migration_plan_execution_payload,
     raw_dashboard_summary,
@@ -462,7 +464,7 @@ def test_continue_migration_plan_reuses_preserved_staging(monkeypatch, tmp_path)
 
         stage_path = tmp_path / f"plan-{plan.id}" / f"vm-{vm.id}-vm-01"
         stage_path.mkdir(parents=True)
-        (stage_path / "vm-01-migrated-disk1.vmdk").write_text("converted", encoding="utf-8")
+        (stage_path / "vm-01-shifted-disk1.vmdk").write_text("converted", encoding="utf-8")
 
         monkeypatch.setattr("app.main.STAGING_ROOT", tmp_path)
         monkeypatch.setattr(
@@ -481,6 +483,82 @@ def test_continue_migration_plan_reuses_preserved_staging(monkeypatch, tmp_path)
         assert response["resume"]["allowed"] is True
         assert response["resume"]["workloads"][0]["stage_path"] == str(stage_path)
         assert db.get(models.MigrationPlan, plan.id).spark_job_id == 77
+
+
+def test_apply_spark_job_logs_completed_migrations_and_cleans_plan_staging(monkeypatch, tmp_path):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        source = models.ConnectorProfile(name="VMware Source", connector_category="host", connector_type="VMware ESXi / vCenter")
+        target = models.ConnectorProfile(name="KVM Target", connector_category="host", connector_type="KVM")
+        db.add_all([source, target])
+        db.flush()
+        vm = models.VmInventory(
+            vm_name="vm-01",
+            source_platform="VMware ESXi / vCenter",
+            target_platform="KVM",
+            cpu=2,
+            memory_gb=4,
+            disk_gb=50,
+            connector_id=source.id,
+            current_status="Migration in progress",
+        )
+        db.add(vm)
+        db.flush()
+        plan = models.MigrationPlan(
+            name="Prod Wave 1",
+            source_connector_id=source.id,
+            target_connector_id=target.id,
+            migration_type="VMware ESXi / vCenter to KVM",
+            vm_ids_json=json.dumps([vm.id]),
+            status="Running",
+        )
+        db.add(plan)
+        db.commit()
+        db.refresh(plan)
+
+        monkeypatch.setattr("app.main.STAGING_ROOT", tmp_path)
+        plan_dir = tmp_path / "Plan-Prod-Wave-1" / "vm-01"
+        plan_dir.mkdir(parents=True)
+        (plan_dir / "vm-01-shifted-disk1.qcow2").write_text("converted", encoding="utf-8")
+
+        apply_spark_job(
+            db,
+            plan,
+            {
+                "id": 321,
+                "status": "Succeeded",
+                "result": [
+                    {
+                        "vm_id": vm.id,
+                        "vm_name": vm.vm_name,
+                        "ok": True,
+                        "target_name": "vm-01-migrated",
+                        "message": "Provisioned on KVM",
+                    }
+                ],
+            },
+        )
+        db.commit()
+
+        vm_row = db.get(models.VmInventory, vm.id)
+        history = (
+            db.query(models.VmStatusHistory)
+            .filter(models.VmStatusHistory.vm_id == vm.id)
+            .order_by(models.VmStatusHistory.changed_at.desc())
+            .first()
+        )
+        log_path = tmp_path / "migrated-vms.log"
+        log_text = log_path.read_text(encoding="utf-8")
+
+        assert vm_row.current_status == "Cutover completed"
+        assert history is not None
+        assert "Migration completed at" in (history.note or "")
+        assert log_path.exists()
+        assert "plan=Prod Wave 1" in log_text
+        assert "vm=vm-01" in log_text
+        assert not (tmp_path / "Plan-Prod-Wave-1").exists()
 
 
 def test_connector_defaults_and_wave_creation():

@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -471,6 +472,10 @@ def stage_plan_directory_name(plan_id: int, plan_name: str | None = None) -> str
     return f"plan-{plan_id}"
 
 
+def plan_stage_directory(plan: models.MigrationPlan) -> Path:
+    return STAGING_ROOT / stage_plan_directory_name(plan.id, plan.name)
+
+
 def workload_stage_directory(plan_id: int, vm: models.VmInventory, plan_name: str | None = None) -> Path:
     return STAGING_ROOT / stage_plan_directory_name(plan_id, plan_name) / stage_safe_name(vm.vm_name)
 
@@ -513,6 +518,18 @@ def plan_resume_metadata(plan: models.MigrationPlan, vms: list[models.VmInventor
     if len(resumable) != len(vms):
         return {"allowed": False, "reason": reasons[0] if reasons else "Not every VM in the plan can continue"}
     return {"allowed": True, "workloads": resumable}
+
+
+def append_migration_log(plan: models.MigrationPlan, vm: models.VmInventory, result: dict, *, when: datetime) -> None:
+    STAGING_ROOT.mkdir(parents=True, exist_ok=True)
+    log_path = STAGING_ROOT / "migrated-vms.log"
+    target_name = result.get("target_name") or vm.vm_name
+    line = (
+        f"{when.isoformat()}Z | plan={plan.name} | vm_id={vm.id} | vm={vm.vm_name} | "
+        f"target={target_name} | migration={plan.migration_type}\n"
+    )
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(line)
 
 
 def current_user(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> models.LocalUser:
@@ -1448,16 +1465,32 @@ def apply_spark_job(db: Session, plan: models.MigrationPlan, job: dict) -> None:
         plan.status = spark_status
         return
     results = job.get("result") or []
+    previous_status = plan.status
+    previous_results_json = plan.results_json or ""
     plan.results_json = json.dumps(results)
-    plan.executed_at = datetime.utcnow()
+    completed_at = datetime.utcnow()
+    plan.executed_at = completed_at
     plan.status = spark_status if spark_status in {"Succeeded", "Failed"} else ("Completed" if spark_status == "Succeeded" else "Failed")
     vm_ids = {row.get("vm_id") for row in results if row.get("vm_id")}
     vms = db.query(models.VmInventory).filter(models.VmInventory.id.in_(vm_ids)).all() if vm_ids else []
     result_by_vm = {row.get("vm_id"): row for row in results}
+    is_new_terminal_snapshot = previous_status != plan.status or previous_results_json != plan.results_json
     for vm in vms:
         result = result_by_vm.get(vm.id, {})
-        vm.current_status = "Validation completed" if result.get("ok") else "Failed"
-        db.add(models.VmStatusHistory(vm_id=vm.id, status=vm.current_status, note=f"Spark Engine job {job.get('id')}: {result.get('message') or job.get('message')}"))
+        vm.current_status = "Cutover completed" if result.get("ok") else "Failed"
+        if is_new_terminal_snapshot:
+            note = (
+                f"Migration completed at {completed_at.isoformat()}Z via Spark Engine job {job.get('id')}: "
+                f"{result.get('message') or job.get('message')}"
+                if result.get("ok")
+                else f"Migration failed at {completed_at.isoformat()}Z via Spark Engine job {job.get('id')}: "
+                f"{result.get('message') or job.get('message')}"
+            )
+            db.add(models.VmStatusHistory(vm_id=vm.id, status=vm.current_status, note=note))
+            if result.get("ok"):
+                append_migration_log(plan, vm, result, when=completed_at)
+    if is_new_terminal_snapshot and results and all(isinstance(row, dict) and row.get("ok") for row in results):
+        shutil.rmtree(plan_stage_directory(plan), ignore_errors=True)
 
 
 @app.post("/api/migration-plans/{plan_id}/launch")
