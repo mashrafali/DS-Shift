@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import os
 import subprocess
+import shlex
 from pathlib import Path
 from urllib.parse import urlparse
+import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 
 from fastapi import FastAPI, HTTPException
+import paramiko
 from pydantic import BaseModel, Field
 
 
@@ -23,6 +26,7 @@ class Connector(BaseModel):
     username: str | None = None
     target_network: str | None = None
     target_datastore: str | None = None
+    target_storage_pool: str | None = None
     target_vdc_name: str | None = None
     target_compute_name: str | None = None
     credential_reference: str | None = None
@@ -41,8 +45,10 @@ class ProvisionRequest(BaseModel):
     memory_bytes: int
     disks: list[ConvertedDisk]
     power_on: bool = False
+    autostart: bool = False
     guest_os_id: str = "otherGuest64"
     boot_firmware: str = "bios"
+    libvirt_xml_path: str | None = None
 
 
 def credential_value(reference: str | None) -> str | None:
@@ -55,6 +61,54 @@ def connector_password(connector: Connector) -> str | None:
     if connector.credential_payload.get("password"):
         return str(connector.credential_payload["password"])
     return credential_value(connector.credential_reference)
+
+
+def ssh_parts(connector: Connector) -> tuple[str, int, str]:
+    endpoint = connector.endpoint
+    if not endpoint:
+        raise RuntimeError("KVM target connector requires an endpoint")
+    parsed = urlparse(endpoint)
+    if parsed.scheme.startswith("qemu+ssh"):
+        host = parsed.hostname or ""
+        user = parsed.username or connector.username or "root"
+        port = parsed.port or 22
+    else:
+        host_port = endpoint.replace("https://", "").replace("http://", "").split("/")[0]
+        host = host_port.split(":", 1)[0]
+        user = connector.username or (endpoint.split("@", 1)[0] if "@" in endpoint else "root")
+        port = int(host_port.split(":", 1)[1]) if ":" in host_port and host_port.rsplit(":", 1)[1].isdigit() else 22
+    if not host:
+        raise RuntimeError("KVM target connector host could not be parsed from endpoint")
+    return host, port, user
+
+
+def ssh_client(connector: Connector) -> paramiko.SSHClient:
+    host, port, user = ssh_parts(connector)
+    password = connector_password(connector)
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(
+        hostname=host,
+        port=port,
+        username=user,
+        password=password,
+        look_for_keys=not bool(password),
+        allow_agent=not bool(password),
+        timeout=15,
+        banner_timeout=15,
+        auth_timeout=15,
+    )
+    return client
+
+
+def ssh_exec(client: paramiko.SSHClient, command: str, timeout: int = 1800) -> tuple[str, str]:
+    _, stdout, stderr = client.exec_command(command, timeout=timeout)
+    code = stdout.channel.recv_exit_status()
+    output = stdout.read().decode(errors="replace")
+    error = stderr.read().decode(errors="replace")
+    if code:
+        raise RuntimeError(error.strip() or output.strip() or f"Remote command exited with status {code}")
+    return output, error
 
 
 def run(command: list[str], *, env: dict[str, str], timeout: int = 1800) -> str:
@@ -120,6 +174,25 @@ def rollback_vm(env: dict[str, str], vm_name: str, remote_dir: str) -> None:
         run(["govc", "datastore.rm", remote_dir], env=env, timeout=60)
     except Exception:
         pass
+
+
+def rollback_kvm_vm(client: paramiko.SSHClient, vm_name: str, remote_disk_paths: list[str]) -> None:
+    quoted_name = shlex.quote(vm_name)
+    for command in [
+        f"virsh destroy {quoted_name}",
+        f"virsh undefine {quoted_name} --nvram --managed-save --snapshots-metadata --checkpoints-metadata",
+        f"virsh undefine {quoted_name}",
+    ]:
+        try:
+            ssh_exec(client, command, timeout=120)
+            break
+        except Exception:
+            continue
+    for remote_disk in remote_disk_paths:
+        try:
+            ssh_exec(client, f"rm -f {shlex.quote(remote_disk)}", timeout=60)
+        except Exception:
+            pass
 
 
 def request_memory_mb(memory_bytes: int) -> int:
@@ -213,6 +286,45 @@ def ovf_descriptor(
 """
 
 
+def normalize_kvm_xml(xml_path: Path, vm_name: str, disks: list[ConvertedDisk], remote_pool_path: str, target_bridge: str) -> str:
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+    name_node = root.find("./name")
+    if name_node is None:
+        name_node = ET.SubElement(root, "name")
+    name_node.text = vm_name
+    uuid_node = root.find("./uuid")
+    if uuid_node is not None:
+        root.remove(uuid_node)
+    os_node = root.find("./os")
+    if os_node is not None:
+        nvram = os_node.find("./nvram")
+        if nvram is not None:
+            os_node.remove(nvram)
+    for index, disk in enumerate(root.findall("./devices/disk[@device='disk']")):
+        source = disk.find("./source")
+        if source is None:
+            source = ET.SubElement(disk, "source")
+        local_name = Path(disks[index].local_path).name
+        source.attrib.clear()
+        source.set("file", f"{remote_pool_path.rstrip('/')}/{local_name}")
+        driver = disk.find("./driver")
+        if driver is None:
+            driver = ET.SubElement(disk, "driver")
+        driver.set("name", "qemu")
+        driver.set("type", "qcow2")
+    for interface in root.findall("./devices/interface"):
+        interface.set("type", "bridge")
+        for child in list(interface):
+            if child.tag in {"source", "virtualport", "filterref", "backenddomain"}:
+                interface.remove(child)
+        ET.SubElement(interface, "source", {"bridge": target_bridge})
+        model = interface.find("./model")
+        if model is None:
+            ET.SubElement(interface, "model", {"type": "virtio"})
+    return ET.tostring(root, encoding="unicode")
+
+
 def write_ovf_bundle(request: ProvisionRequest) -> Path:
     bundle_dir = Path(request.disks[0].local_path).resolve().parent
     ovf_path = bundle_dir / f"{request.vm_name}.ovf"
@@ -233,18 +345,123 @@ def write_ovf_bundle(request: ProvisionRequest) -> Path:
 
 def validate_request(request: ProvisionRequest) -> None:
     connector = request.target_connector
-    if connector.connector_type not in {"VMware ESXi / vCenter", "VMware ESXi", "vCenter"}:
-        raise RuntimeError("LaunchGrid currently provisions only VMware ESXi / vCenter targets")
-    if not connector.target_vdc_name:
-        raise RuntimeError("Target vDC Name is required on the VMware connector")
-    if not connector.target_compute_name:
-        raise RuntimeError("Target Cluster Name or Host Name is required on the VMware connector")
-    if not connector.target_datastore:
-        raise RuntimeError("Target Datastore is required on the VMware connector")
-    if not connector.target_network:
-        raise RuntimeError("Target Network is required on the VMware connector")
     if not request.disks:
         raise RuntimeError("At least one converted disk is required for provisioning")
+    if connector.connector_type in {"VMware ESXi / vCenter", "VMware ESXi", "vCenter"}:
+        if not connector.target_vdc_name:
+            raise RuntimeError("Target vDC Name is required on the VMware connector")
+        if not connector.target_compute_name:
+            raise RuntimeError("Target Cluster Name or Host Name is required on the VMware connector")
+        if not connector.target_datastore:
+            raise RuntimeError("Target Datastore is required on the VMware connector")
+        if not connector.target_network:
+            raise RuntimeError("Target Network is required on the VMware connector")
+        return
+    if connector.connector_type != "KVM":
+        raise RuntimeError(f"LaunchGrid does not support target connector type {connector.connector_type}")
+    if not connector.target_storage_pool:
+        raise RuntimeError("Target storage pool is required on the KVM connector")
+    if not connector.target_network:
+        raise RuntimeError("Target network bridge is required on the KVM connector")
+    if not request.libvirt_xml_path:
+        raise RuntimeError("libvirt XML path is required for KVM provisioning")
+
+
+def provision_vmware(request: ProvisionRequest) -> dict:
+    env = govc_environment(request.target_connector)
+    remote_dir = request.vm_name
+    command_log: list[str] = []
+    for disk in request.disks:
+        local_path = Path(disk.local_path)
+        if not local_path.exists():
+            raise RuntimeError(f"Converted disk is missing: {local_path}")
+    ovf_path = write_ovf_bundle(request)
+    command_log.append(f"generated OVF bundle {ovf_path}")
+    import_command = [
+        "govc",
+        "import.ovf",
+        "-name",
+        request.vm_name,
+        *import_placement(env, request.target_connector.target_compute_name),
+        str(ovf_path),
+    ]
+    command_log.append(" ".join(import_command))
+    try:
+        run(import_command, env=env, timeout=7200)
+        verify_command = ["govc", "vm.info", request.vm_name]
+        command_log.append(" ".join(verify_command))
+        run(verify_command, env=env, timeout=120)
+        if request.power_on:
+            power_command = ["govc", "vm.power", "-on", request.vm_name]
+            command_log.append(" ".join(power_command))
+            run(power_command, env=env, timeout=300)
+    except Exception:
+        rollback_vm(env, request.vm_name, remote_dir)
+        raise
+    return {
+        "ok": True,
+        "vm_name": request.vm_name,
+        "disk_paths": [f"{remote_dir}/{Path(disk.local_path).name}" for disk in request.disks],
+        "commands": command_log,
+    }
+
+
+def provision_kvm(request: ProvisionRequest) -> dict:
+    connector = request.target_connector
+    local_xml = Path(request.libvirt_xml_path or "")
+    if not local_xml.exists():
+        raise RuntimeError(f"Converted libvirt XML is missing: {local_xml}")
+    for disk in request.disks:
+        local_path = Path(disk.local_path)
+        if not local_path.exists():
+            raise RuntimeError(f"Converted disk is missing: {local_path}")
+    command_log: list[str] = []
+    client = ssh_client(connector)
+    sftp = client.open_sftp()
+    remote_disk_paths: list[str] = []
+    remote_xml = f"/tmp/ds-shift-{request.vm_name}.xml"
+    try:
+        pool_xml, _ = ssh_exec(client, f"virsh pool-dumpxml {shlex.quote(connector.target_storage_pool)}", timeout=30)
+        pool_path = ET.fromstring(pool_xml).findtext("./target/path")
+        if not pool_path:
+            raise RuntimeError("Target storage pool has no filesystem path")
+        ssh_exec(client, f"! virsh dominfo {shlex.quote(request.vm_name)} >/dev/null 2>&1", timeout=20)
+        rendered_xml = normalize_kvm_xml(local_xml, request.vm_name, request.disks, pool_path, connector.target_network)
+        for disk in request.disks:
+            local_path = Path(disk.local_path)
+            remote_path = f"{pool_path.rstrip('/')}/{local_path.name}"
+            command_log.append(f"upload {local_path} -> {remote_path}")
+            sftp.put(str(local_path), remote_path)
+            remote_disk_paths.append(remote_path)
+        tmp_xml = local_xml.parent / f"{request.vm_name}.launchgrid.xml"
+        try:
+            tmp_xml.write_text(rendered_xml, encoding="utf-8")
+            command_log.append(f"upload {tmp_xml} -> {remote_xml}")
+            sftp.put(str(tmp_xml), remote_xml)
+        finally:
+            tmp_xml.unlink(missing_ok=True)
+        define_command = f"virsh define {shlex.quote(remote_xml)}"
+        command_log.append(define_command)
+        ssh_exec(client, define_command, timeout=120)
+        if request.autostart:
+            autostart_command = f"virsh autostart {shlex.quote(request.vm_name)}"
+            command_log.append(autostart_command)
+            ssh_exec(client, autostart_command, timeout=60)
+        if request.power_on:
+            start_command = f"virsh start {shlex.quote(request.vm_name)}"
+            command_log.append(start_command)
+            ssh_exec(client, start_command, timeout=120)
+        return {"ok": True, "vm_name": request.vm_name, "disk_paths": remote_disk_paths, "commands": command_log}
+    except Exception:
+        rollback_kvm_vm(client, request.vm_name, remote_disk_paths)
+        raise
+    finally:
+        try:
+            sftp.remove(remote_xml)
+        except Exception:
+            pass
+        sftp.close()
+        client.close()
 
 
 @app.get("/health")
@@ -256,41 +473,8 @@ def health():
 def provision(request: ProvisionRequest):
     try:
         validate_request(request)
-        env = govc_environment(request.target_connector)
-        remote_dir = request.vm_name
-        command_log: list[str] = []
-        for disk in request.disks:
-            local_path = Path(disk.local_path)
-            if not local_path.exists():
-                raise RuntimeError(f"Converted disk is missing: {local_path}")
-        ovf_path = write_ovf_bundle(request)
-        command_log.append(f"generated OVF bundle {ovf_path}")
-        import_command = [
-            "govc",
-            "import.ovf",
-            "-name",
-            request.vm_name,
-            *import_placement(env, request.target_connector.target_compute_name),
-            str(ovf_path),
-        ]
-        command_log.append(" ".join(import_command))
-        try:
-            run(import_command, env=env, timeout=7200)
-            verify_command = ["govc", "vm.info", request.vm_name]
-            command_log.append(" ".join(verify_command))
-            run(verify_command, env=env, timeout=120)
-            if request.power_on:
-                power_command = ["govc", "vm.power", "-on", request.vm_name]
-                command_log.append(" ".join(power_command))
-                run(power_command, env=env, timeout=300)
-        except Exception:
-            rollback_vm(env, request.vm_name, remote_dir)
-            raise
-        return {
-            "ok": True,
-            "vm_name": request.vm_name,
-            "disk_paths": [f"{remote_dir}/{Path(disk.local_path).name}" for disk in request.disks],
-            "commands": command_log,
-        }
+        if request.target_connector.connector_type in {"VMware ESXi / vCenter", "VMware ESXi", "vCenter"}:
+            return provision_vmware(request)
+        return provision_kvm(request)
     except RuntimeError as exc:
         raise HTTPException(400, str(exc)) from exc

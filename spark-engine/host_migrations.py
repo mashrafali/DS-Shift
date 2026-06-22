@@ -350,6 +350,7 @@ def launchgrid_provision(request, workload, target_name: str, metadata: dict, di
             "username": request.target_connector.username,
             "target_network": request.options.get("target_network") or request.target_connector.target_network,
             "target_datastore": request.target_connector.target_datastore,
+            "target_storage_pool": request.target_connector.target_storage_pool,
             "target_vdc_name": request.options.get("target_datacenter") or request.options.get("target_vdc_name") or request.target_connector.target_vdc_name,
             "target_compute_name": request.options.get("target_compute_name") or request.target_connector.target_compute_name,
             "credential_reference": request.target_connector.credential_reference,
@@ -363,9 +364,12 @@ def launchgrid_provision(request, workload, target_name: str, metadata: dict, di
             for disk in disks
         ],
         "power_on": bool(request.options.get("power_on")),
+        "autostart": bool(request.options.get("autostart")),
         "guest_os_id": workload.details.get("guest_os_id") or "otherGuest64",
         "boot_firmware": workload.details.get("boot_firmware") or metadata.get("boot_firmware") or "bios",
     }
+    if metadata.get("libvirt_xml_path"):
+        payload["libvirt_xml_path"] = metadata["libvirt_xml_path"]
     timeout = httpx.Timeout(connect=15.0, write=7200.0, read=7200.0, pool=30.0)
     with httpx.Client(timeout=timeout) as client:
         response = client.post(f"{LAUNCHGRID_URL}/provision", json=payload)
@@ -784,166 +788,156 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
     target_network = request.target_connector.target_network or request.options.get("target_network")
     if not target_storage_pool:
         raise RuntimeError("Target KVM storage pool is not configured on the target connector")
-    with ssh_client(request.target_connector) as client:
-        pool_xml, _ = ssh_exec(client, f"virsh pool-dumpxml {shlex.quote(target_storage_pool)}")
-        pool_path = ET.fromstring(pool_xml).findtext("./target/path")
-        if not pool_path:
-            raise RuntimeError("Target storage pool has no filesystem path")
-        sftp = client.open_sftp()
+    for workload in request.workloads:
+        target_name = shifted_target_name(workload.vm_name, request.options.get("target_name"))
+        stage_path = preserved_stage_directory(request.plan_id, workload.id, workload.vm_name, request.plan_name)
         try:
-            for workload in request.workloads:
-                target_name = shifted_target_name(workload.vm_name, request.options.get("target_name"))
-                stage_path = preserved_stage_directory(request.plan_id, workload.id, workload.vm_name, request.plan_name)
+            resume_from_stage = bool(request.options.get("resume_from_stage"))
+            if reporter:
+                reporter.task(
+                    f"{workload.id}-read-source",
+                    f"{workload.vm_name}: read from vCenter",
+                    "Running",
+                    15,
+                    f"Reading source VM {workload.vm_name} from vCenter and validating target name {target_name}",
+                )
+            vm_info = find_vcenter_vm(request.source_connector, workload)
+            if vm_info["power_state"].lower() != "poweredoff":
+                raise RuntimeError(f"{workload.vm_name} must be powered off before virt-v2v conversion")
+            if reporter:
+                reporter.task(
+                    f"{workload.id}-read-source",
+                    f"{workload.vm_name}: read from vCenter",
+                    "Completed",
+                    25,
+                    f"Read source VM {workload.vm_name} from vCenter and validated target name {target_name}",
+                )
+            if resume_from_stage:
+                candidate_paths = candidate_stage_directories(request.plan_id, workload.id, workload.vm_name, request.plan_name)
+                stage_path = next((path for path in candidate_paths if path.exists()), candidate_paths[0])
+                stage_path.mkdir(parents=True, exist_ok=True)
+            else:
+                stage_path = stage_directory(request.plan_id, workload.id, workload.vm_name, request.plan_name)
+            output = ""
+            xml_path = stage_path / f"{target_name}.xml"
+            if resume_from_stage and xml_path.exists():
+                if reporter:
+                    reporter.task(
+                        f"{workload.id}-convert-staging",
+                        f"{workload.vm_name}: convert into staging",
+                        "Completed",
+                        70,
+                        f"Reusing preserved converted artifacts from {stage_path}",
+                    )
+            else:
+                if resume_from_stage and reporter:
+                    reporter.task(
+                        f"{workload.id}-convert-staging",
+                        f"{workload.vm_name}: convert into staging",
+                        "Running",
+                        28,
+                        f"Preserved converted artifacts are missing from {stage_path}; rebuilding them before continuing",
+                    )
+                if reporter:
+                    reporter.task(
+                        f"{workload.id}-convert-staging",
+                        f"{workload.vm_name}: convert into staging",
+                        "Running",
+                        55,
+                        f"Reading {workload.vm_name} from vCenter with virt-v2v and writing converted qcow2 artifacts into {stage_path}",
+                    )
+                with transient_secret_descriptor(password, "vcenter-password") as (password_ref, password_fd):
+                    command = [
+                        "virt-v2v",
+                        "-v",
+                        "-x",
+                        "-ic", vpx_uri(request.source_connector, workload, request.options),
+                        "-ip", password_ref,
+                        workload.vm_name,
+                        "-o", "local",
+                        "-os", str(stage_path),
+                        "-of", "qcow2",
+                        "-on", target_name,
+                        "--root", request.options.get("root_selection", "first"),
+                    ]
+                    if target_network:
+                        command.extend(["--network", target_network])
+                    output = run(
+                        command,
+                        env=virt_v2v_env(),
+                        timeout=int(request.options.get("timeout", 14400)),
+                        pass_fds=(password_fd,),
+                    )
+                if reporter:
+                    reporter.task(
+                        f"{workload.id}-convert-staging",
+                        f"{workload.vm_name}: convert into staging",
+                        "Completed",
+                        70,
+                        f"virt-v2v wrote converted qcow2 artifacts for {target_name} into {stage_path}",
+                    )
+            if not xml_path.exists():
+                raise RuntimeError("virt-v2v did not generate target libvirt XML")
+            root = ET.parse(xml_path)
+            disk_elements = root.findall("./devices/disk[@device='disk']")
+            if not disk_elements:
+                raise RuntimeError("virt-v2v did not generate any converted disk references in the libvirt XML")
+            disk_payload = []
+            for disk in disk_elements:
+                source = disk.find("source")
+                if source is None or not source.get("file"):
+                    continue
+                local_path = Path(source.get("file"))
+                if not local_path.exists():
+                    raise RuntimeError(f"Converted disk is missing from staging: {local_path}")
                 try:
-                    resume_from_stage = bool(request.options.get("resume_from_stage"))
-                    if reporter:
-                        reporter.task(
-                            f"{workload.id}-read-source",
-                            f"{workload.vm_name}: read from vCenter",
-                            "Running",
-                            15,
-                            f"Reading source VM {workload.vm_name} from vCenter and validating target name {target_name}",
-                        )
-                    vm_info = find_vcenter_vm(request.source_connector, workload)
-                    if vm_info["power_state"].lower() != "poweredoff":
-                        raise RuntimeError(f"{workload.vm_name} must be powered off before virt-v2v conversion")
-                    ssh_exec(client, f"! virsh dominfo {shlex.quote(target_name)} >/dev/null 2>&1", timeout=20)
-                    if reporter:
-                        reporter.task(
-                            f"{workload.id}-read-source",
-                            f"{workload.vm_name}: read from vCenter",
-                            "Completed",
-                            25,
-                            f"Read source VM {workload.vm_name} from vCenter and confirmed target name {target_name} is available",
-                        )
-                    if resume_from_stage:
-                        candidate_paths = candidate_stage_directories(request.plan_id, workload.id, workload.vm_name, request.plan_name)
-                        stage_path = next((path for path in candidate_paths if path.exists()), candidate_paths[0])
-                        stage_path.mkdir(parents=True, exist_ok=True)
-                    else:
-                        stage_path = stage_directory(request.plan_id, workload.id, workload.vm_name, request.plan_name)
-                    local_disks = []
-                    output = ""
-                    xml_path = stage_path / f"{target_name}.xml"
-                    if resume_from_stage and xml_path.exists():
-                        if reporter:
-                            reporter.task(
-                                f"{workload.id}-convert-staging",
-                                f"{workload.vm_name}: convert into staging",
-                                "Completed",
-                                70,
-                                f"Reusing preserved converted artifacts from {stage_path}",
-                            )
-                    else:
-                        if resume_from_stage and reporter:
-                            reporter.task(
-                                f"{workload.id}-convert-staging",
-                                f"{workload.vm_name}: convert into staging",
-                                "Running",
-                                28,
-                                f"Preserved converted artifacts are missing from {stage_path}; rebuilding them before continuing",
-                            )
-                        if reporter:
-                            reporter.task(
-                                f"{workload.id}-convert-staging",
-                                f"{workload.vm_name}: convert into staging",
-                                "Running",
-                                55,
-                                f"Reading {workload.vm_name} from vCenter with virt-v2v and writing converted qcow2 artifacts into {stage_path}",
-                            )
-                        with transient_secret_descriptor(password, "vcenter-password") as (password_ref, password_fd):
-                            command = [
-                                "virt-v2v",
-                                "-v",
-                                "-x",
-                                "-ic", vpx_uri(request.source_connector, workload, request.options),
-                                "-ip", password_ref,
-                                workload.vm_name,
-                                "-o", "local",
-                                "-os", str(stage_path),
-                                "-of", "qcow2",
-                                "-on", target_name,
-                                "--root", request.options.get("root_selection", "first"),
-                            ]
-                            if target_network:
-                                command.extend(["--network", target_network])
-                            output = run(
-                                command,
-                                env=virt_v2v_env(),
-                                timeout=int(request.options.get("timeout", 14400)),
-                                pass_fds=(password_fd,),
-                            )
-                        if reporter:
-                            reporter.task(
-                                f"{workload.id}-convert-staging",
-                                f"{workload.vm_name}: convert into staging",
-                                "Completed",
-                                70,
-                                f"virt-v2v wrote converted qcow2 artifacts for {target_name} into {stage_path}",
-                            )
-                    if not xml_path.exists():
-                        raise RuntimeError("virt-v2v did not generate target libvirt XML")
-                    root = ET.parse(xml_path)
-                    rewired_interfaces = normalize_kvm_interfaces(root, target_network)
-                    if target_network and rewired_interfaces == 0:
-                        raise RuntimeError(f"Converted libvirt XML for {target_name} did not contain any interfaces to bind to bridge {target_network}")
-                    if reporter:
-                        reporter.task(
-                            f"{workload.id}-upload-kvm",
-                            f"{workload.vm_name}: upload to KVM",
-                            "Running",
-                            82,
-                            f"Uploading converted disks from {stage_path} into KVM storage pool {target_storage_pool} and binding interfaces to bridge {target_network or 'default XML mapping'}",
-                        )
-                    for disk in root.findall("./devices/disk[@device='disk']"):
-                        source = disk.find("source")
-                        if source is None or not source.get("file"):
-                            continue
-                        local_path = Path(source.get("file"))
-                        remote_path = f"{pool_path.rstrip('/')}/{shifted_artifact_base_name(target_name)}-{local_path.name.rsplit('-', 1)[-1]}.qcow2"
-                        sftp.put(str(local_path), remote_path)
-                        source.set("file", remote_path)
-                        local_disks.append(remote_path)
-                    root.write(xml_path, encoding="unicode")
-                    remote_xml = f"/tmp/ds-shift-{target_name}.xml"
-                    sftp.put(str(xml_path), remote_xml)
-                    if reporter:
-                        reporter.task(
-                            f"{workload.id}-upload-kvm",
-                            f"{workload.vm_name}: upload to KVM",
-                            "Completed",
-                            88,
-                            f"Uploaded converted disks and target XML for {target_name} into KVM storage pool {target_storage_pool}; rewired {rewired_interfaces} interface(s) to bridge {target_network or 'default XML mapping'}",
-                        )
-                    try:
-                        if reporter:
-                            reporter.task(f"{workload.id}-define", f"{workload.vm_name}: define target VM", "Running", 94, f"Defining libvirt domain {target_name}")
-                        ssh_exec(client, f"virsh define {shlex.quote(remote_xml)}", timeout=30)
-                        if request.options.get("autostart"):
-                            ssh_exec(client, f"virsh autostart {shlex.quote(target_name)}", timeout=30)
-                        if request.options.get("power_on"):
-                            ssh_exec(client, f"virsh start {shlex.quote(target_name)}", timeout=60)
-                        if reporter:
-                            reporter.task(f"{workload.id}-define", f"{workload.vm_name}: define target VM", "Completed", 98, f"Defined libvirt domain {target_name}")
-                    except Exception:
-                        for remote_disk in local_disks:
-                            try:
-                                sftp.remove(remote_disk)
-                            except OSError:
-                                pass
-                        raise
-                    finally:
-                        try:
-                            sftp.remove(remote_xml)
-                        except OSError:
-                            pass
-                    results.append({"ok": True, "vm_id": workload.id, "vm_name": workload.vm_name, "target_name": target_name, "target_pool": target_storage_pool, "message": output.strip() or "virt-v2v conversion and libvirt definition completed", "stage_path": str(stage_path), "can_resume": False})
-                except Exception as exc:
-                    if reporter:
-                        reporter.task(f"{workload.id}-define", f"{workload.vm_name}: define target VM", "Failed", 82, str(exc))
-                    results.append(stage_failure_result(workload, target_name, stage_path, str(exc), can_resume=stage_path.exists()))
-        finally:
-            sftp.close()
+                    capacity_bytes = int(json.loads(run(["qemu-img", "info", "--output=json", str(local_path)]))["virtual-size"])
+                except Exception:
+                    capacity_bytes = local_path.stat().st_size
+                disk_payload.append({"local_path": str(local_path), "capacity_bytes": capacity_bytes})
+            if not disk_payload:
+                raise RuntimeError("Converted staging artifacts are missing usable disk files")
+            if reporter:
+                reporter.task(
+                    f"{workload.id}-provision",
+                    f"{workload.vm_name}: provision target VM",
+                    "Running",
+                    82,
+                    f"Sending converted disks and libvirt XML from {stage_path} to LaunchGrid for KVM provisioning on bridge {target_network}",
+                )
+            parsed = parse_domain_xml(ET.tostring(root.getroot(), encoding="unicode"))
+            metadata = {
+                "cpu": max(1, int(root.findtext("./vcpu", "1"))),
+                "memory_bytes": parsed.get("memory_bytes", 1024**3),
+                "boot_firmware": parsed.get("boot_firmware", "bios"),
+                "libvirt_xml_path": str(xml_path),
+            }
+            provisioned = launchgrid_provision(request, workload, target_name, metadata, disk_payload)
+            if reporter:
+                reporter.task(
+                    f"{workload.id}-provision",
+                    f"{workload.vm_name}: provision target VM",
+                    "Completed",
+                    96,
+                    f"Provisioned {target_name} on KVM through LaunchGrid using storage pool {target_storage_pool} and bridge {target_network}",
+                )
+            results.append(
+                {
+                    "ok": True,
+                    "vm_id": workload.id,
+                    "vm_name": workload.vm_name,
+                    "target_name": target_name,
+                    "target_pool": target_storage_pool,
+                    "message": output.strip() or "virt-v2v conversion completed and LaunchGrid provisioned the target VM",
+                    "stage_path": str(stage_path),
+                    "can_resume": False,
+                    "details": provisioned,
+                }
+            )
+        except Exception as exc:
+            if reporter:
+                reporter.task(f"{workload.id}-provision", f"{workload.vm_name}: provision target VM", "Failed", 82, str(exc))
+            results.append(stage_failure_result(workload, target_name, stage_path, str(exc), can_resume=stage_path.exists()))
     if results and all(result.get("ok") for result in results):
         for result, workload in zip(results, request.workloads):
             append_migrated_vm_log(request.plan_id, request.plan_name, workload, result.get("target_name") or workload.vm_name, request.target_connector.connector_type)

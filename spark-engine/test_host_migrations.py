@@ -6,6 +6,7 @@ from host_migrations import (
     append_migrated_vm_log,
     cleanup_plan_stage_directory,
     ensure_libguestfs_ready,
+    launchgrid_provision,
     normalize_kvm_interfaces,
     ovf_descriptor,
     parse_domain_xml,
@@ -164,3 +165,81 @@ def test_normalize_kvm_interfaces_rebinds_to_target_bridge():
     assert source.get("bridge") == "br11"
     assert source.get("network") is None
     assert interface.find("virtualport") is None
+
+
+def test_launchgrid_provision_passes_kvm_connector_scoped_target_settings(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"ok": True}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, url, json):
+            captured["url"] = url
+            captured["payload"] = json
+            return FakeResponse()
+
+    request = type(
+        "Request",
+        (),
+        {
+            "target_connector": type(
+                "Connector",
+                (),
+                {
+                    "id": 9,
+                    "name": "kvm-target",
+                    "connector_category": "target",
+                    "connector_type": "KVM",
+                    "endpoint": "qemu+ssh://root@kvm/system",
+                    "port": 22,
+                    "username": "root",
+                    "target_network": "br11",
+                    "target_datastore": None,
+                    "target_storage_pool": "default",
+                    "target_vdc_name": None,
+                    "target_compute_name": None,
+                    "credential_reference": "env:KVM_PASSWORD",
+                    "credential_payload": {},
+                },
+            )(),
+            "options": {"power_on": True, "autostart": True},
+        },
+    )()
+    workload = type("Workload", (), {"details": {"guest_os_id": "otherGuest64", "boot_firmware": "efi"}})()
+
+    monkeypatch.setattr("host_migrations.httpx.Client", FakeClient)
+
+    result = launchgrid_provision(
+        request,
+        workload,
+        "guest-shifted",
+        {
+            "cpu": 4,
+            "memory_bytes": 8 * 1024**3,
+            "boot_firmware": "efi",
+            "libvirt_xml_path": "/DS-Shift-Staging/Plan-test/guest/guest-shifted.xml",
+        },
+        [{"local_path": "/DS-Shift-Staging/Plan-test/guest/guest-shifted-sda.qcow2", "capacity_bytes": 4096}],
+    )
+
+    assert result == {"ok": True}
+    assert captured["url"].endswith("/provision")
+    assert captured["payload"]["target_connector"]["connector_type"] == "KVM"
+    assert captured["payload"]["target_connector"]["target_storage_pool"] == "default"
+    assert captured["payload"]["target_connector"]["target_network"] == "br11"
+    assert captured["payload"]["power_on"] is True
+    assert captured["payload"]["autostart"] is True
+    assert captured["payload"]["libvirt_xml_path"].endswith("guest-shifted.xml")
