@@ -1,4 +1,6 @@
-from host_migrations import ensure_libguestfs_ready, ovf_descriptor, parse_domain_xml, safe_name, transient_secret_descriptor, virt_v2v_env, vpx_uri
+import xml.etree.ElementTree as ET
+
+from host_migrations import ensure_libguestfs_ready, normalize_kvm_interfaces, ovf_descriptor, parse_domain_xml, safe_name, transient_secret_descriptor, virt_v2v_env, vpx_uri
 
 
 class Connector:
@@ -88,3 +90,34 @@ def test_transient_secret_descriptor_uses_ephemeral_fd():
         assert path == f"/proc/self/fd/{fd}"
         with open(path, encoding="utf-8") as handle:
             assert handle.read() == "TopSecret123"
+
+
+def test_normalize_kvm_interfaces_rebinds_to_target_bridge():
+    root = ET.ElementTree(
+        ET.fromstring(
+            """
+            <domain>
+              <devices>
+                <interface type="network">
+                  <mac address="52:54:00:11:22:33"/>
+                  <source network="MGMT-Services"/>
+                  <model type="e1000"/>
+                  <virtualport type="openvswitch"/>
+                </interface>
+              </devices>
+            </domain>
+            """
+        )
+    )
+
+    rewired = normalize_kvm_interfaces(root, "br11")
+
+    interface = root.find("./devices/interface")
+    source = interface.find("source") if interface is not None else None
+    assert rewired == 1
+    assert interface is not None
+    assert interface.get("type") == "bridge"
+    assert source is not None
+    assert source.get("bridge") == "br11"
+    assert source.get("network") is None
+    assert interface.find("virtualport") is None

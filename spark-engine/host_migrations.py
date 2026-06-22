@@ -115,6 +115,23 @@ def transient_secret_descriptor(secret: str, name: str = "ds-shift-secret"):
         os.close(fd)
 
 
+def normalize_kvm_interfaces(root: ET.ElementTree, target_bridge: str | None) -> int:
+    if not target_bridge:
+        return 0
+    rewired = 0
+    for interface in root.findall("./devices/interface"):
+        interface.set("type", "bridge")
+        for child in list(interface):
+            if child.tag in {"source", "virtualport", "filterref", "backenddomain"}:
+                interface.remove(child)
+        ET.SubElement(interface, "source", {"bridge": target_bridge})
+        model = interface.find("model")
+        if model is None:
+            ET.SubElement(interface, "model", {"type": "virtio"})
+        rewired += 1
+    return rewired
+
+
 def safe_name(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-.")
     if not cleaned:
@@ -832,13 +849,16 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                     if not xml_path.exists():
                         raise RuntimeError("virt-v2v did not generate target libvirt XML")
                     root = ET.parse(xml_path)
+                    rewired_interfaces = normalize_kvm_interfaces(root, target_network)
+                    if target_network and rewired_interfaces == 0:
+                        raise RuntimeError(f"Converted libvirt XML for {target_name} did not contain any interfaces to bind to bridge {target_network}")
                     if reporter:
                         reporter.task(
                             f"{workload.id}-upload-kvm",
                             f"{workload.vm_name}: upload to KVM",
                             "Running",
                             82,
-                            f"Uploading converted disks from {stage_path} into KVM storage pool {target_storage_pool}",
+                            f"Uploading converted disks from {stage_path} into KVM storage pool {target_storage_pool} and binding interfaces to bridge {target_network or 'default XML mapping'}",
                         )
                     for disk in root.findall("./devices/disk[@device='disk']"):
                         source = disk.find("source")
@@ -858,7 +878,7 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                             f"{workload.vm_name}: upload to KVM",
                             "Completed",
                             88,
-                            f"Uploaded converted disks and target XML for {target_name} into KVM storage pool {target_storage_pool}",
+                            f"Uploaded converted disks and target XML for {target_name} into KVM storage pool {target_storage_pool}; rewired {rewired_interfaces} interface(s) to bridge {target_network or 'default XML mapping'}",
                         )
                     try:
                         if reporter:
