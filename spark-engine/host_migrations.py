@@ -16,6 +16,7 @@ import tempfile
 import time
 from urllib.parse import quote, urlparse
 import xml.etree.ElementTree as ET
+from xml.sax.saxutils import escape
 
 import httpx
 import paramiko
@@ -450,6 +451,112 @@ def launchgrid_provision(request, workload, target_name: str, metadata: dict, di
     return response.json()
 
 
+def source_vcenter_environment(connector, workload) -> dict[str, str]:
+    password = connector_password(connector)
+    parsed = urlparse(connector.endpoint if "://" in (connector.endpoint or "") else f"https://{connector.endpoint}")
+    if not parsed.hostname or not connector.username or not password:
+        raise RuntimeError("vCenter connector credentials are unavailable")
+    env = os.environ.copy()
+    env.update(
+        {
+            "GOVC_URL": f"https://{parsed.hostname}:{parsed.port or connector.port or 443}",
+            "GOVC_USERNAME": connector.username,
+            "GOVC_PASSWORD": password,
+            "GOVC_INSECURE": "1",
+        }
+    )
+    datacenter = workload.details.get("datacenter")
+    if datacenter:
+        env["GOVC_DATACENTER"] = str(datacenter)
+    return env
+
+
+def parse_vmware_datastore_path(path: str) -> tuple[str, str]:
+    match = re.match(r"^\[(?P<datastore>[^\]]+)\]\s+(?P<relative>.+)$", (path or "").strip())
+    if not match:
+        raise RuntimeError(f"Unsupported VMware datastore path: {path}")
+    return match.group("datastore").strip(), match.group("relative").strip()
+
+
+def vcenter_vm_disk_layout(connector, workload) -> list[dict]:
+    env = source_vcenter_environment(connector, workload)
+    payload = json.loads(run(["govc", "device.info", "-json", "-vm", workload.vm_name, "disk-*"], env=env, timeout=60))
+    layout = []
+    for index, device in enumerate(payload.get("devices", []), start=1):
+        backing = device.get("backing") or {}
+        backing_file = backing.get("fileName")
+        if not backing_file:
+            continue
+        datastore, relative_path = parse_vmware_datastore_path(backing_file)
+        descriptor_name = Path(relative_path).name
+        if descriptor_name.lower().endswith(".vmdk"):
+            flat_name = f"{descriptor_name[:-5]}-flat.vmdk"
+        else:
+            flat_name = f"{descriptor_name}-flat.vmdk"
+        folder = str(Path(relative_path).parent).replace("\\", "/")
+        if folder == ".":
+            folder = ""
+        flat_relative_path = f"{folder}/{flat_name}".lstrip("/")
+        layout.append(
+            {
+                "index": index,
+                "datastore": datastore,
+                "descriptor_path": relative_path,
+                "descriptor_name": descriptor_name,
+                "flat_path": flat_relative_path,
+                "flat_name": flat_name,
+                "capacity_bytes": int(device.get("capacityInBytes") or 0),
+            }
+        )
+    if not layout:
+        raise RuntimeError(f"{workload.vm_name} does not expose downloadable VMDK backing files")
+    return layout
+
+
+def render_kvm_domain_xml(vm_name: str, cpu: int, memory_bytes: int, disks: list[dict], boot_firmware: str) -> str:
+    loader = ""
+    firmware_attr = ""
+    if str(boot_firmware).lower() in {"efi", "uefi"}:
+        loader = "\n    <loader readonly='yes' type='pflash'>/usr/share/OVMF/OVMF_CODE.fd</loader>"
+        firmware_attr = " firmware='efi'"
+    disk_rows = []
+    for index, disk in enumerate(disks):
+        target_dev = f"vd{chr(97 + index)}"
+        disk_rows.append(
+            f"""    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2'/>
+      <source file='{escape(disk["local_path"])}'/>
+      <target dev='{target_dev}' bus='virtio'/>
+    </disk>"""
+        )
+    memory_kib = max(262144, int(memory_bytes // 1024))
+    return f"""<domain type='kvm'>
+  <name>{escape(vm_name)}</name>
+  <memory unit='KiB'>{memory_kib}</memory>
+  <currentMemory unit='KiB'>{memory_kib}</currentMemory>
+  <vcpu>{max(1, int(cpu))}</vcpu>
+  <os>
+    <type arch='x86_64' machine='pc-q35-8.2'{firmware_attr}>hvm</type>{loader}
+    <boot dev='hd'/>
+  </os>
+  <features>
+    <acpi/>
+    <apic/>
+  </features>
+  <cpu mode='host-model'/>
+  <devices>
+{''.join(disk_rows)}
+    <interface type='bridge'>
+      <source bridge='placeholder'/>
+      <model type='virtio'/>
+    </interface>
+    <graphics type='vnc' autoport='yes' listen='0.0.0.0'/>
+    <console type='pty'/>
+  </devices>
+</domain>
+"""
+
+
 def converted_vmdk_layout(stage_path: Path, target_name: str, disks: list[dict]) -> list[dict]:
     layout = []
     artifact_base = shifted_artifact_base_name(target_name)
@@ -543,10 +650,15 @@ def find_vcenter_vm(connector, workload):
         try:
             for vm_obj in view.view:
                 if vm_obj._moId == workload.external_id or vm_obj.name == workload.vm_name:
+                    memory_mb = int(getattr(vm_obj.config.hardware, "memoryMB", 1024) or 1024) if getattr(vm_obj, "config", None) and getattr(vm_obj.config, "hardware", None) else 1024
                     return {
                         "name": vm_obj.name,
                         "power_state": str(vm_obj.runtime.powerState),
                         "host_name": vm_obj.runtime.host.name if vm_obj.runtime.host else None,
+                        "cpu": int(getattr(vm_obj.config.hardware, "numCPU", 1) or 1) if getattr(vm_obj, "config", None) and getattr(vm_obj.config, "hardware", None) else 1,
+                        "memory_bytes": memory_mb * 1024 * 1024,
+                        "guest_os_id": getattr(vm_obj.config, "guestId", None) if getattr(vm_obj, "config", None) else None,
+                        "boot_firmware": getattr(vm_obj.config, "firmware", None) if getattr(vm_obj, "config", None) else None,
                     }
         finally:
             view.Destroy()
@@ -648,14 +760,13 @@ def preflight_kvm_to_vcenter(request, phase: str | None = None) -> list[dict]:
 def _vcenter_to_kvm_source_checks(request) -> list[dict]:
     checks = []
     try:
-        password = connector_password(request.source_connector)
-        if not password:
-            raise RuntimeError("vCenter password is unavailable")
         for workload in request.workloads:
             vm_info = find_vcenter_vm(request.source_connector, workload)
             stopped = vm_info["power_state"].lower() == "poweredoff"
             checks.append({"phase": "source_reachability", "check": "source_vm_state", "vm_name": workload.vm_name, "ok": stopped, "message": vm_info["power_state"]})
             checks.append({"phase": "source_reachability", "check": "source_vcenter", "vm_name": workload.vm_name, "ok": True, "message": f"Found VM on {request.source_connector.name}"})
+            disks = vcenter_vm_disk_layout(request.source_connector, workload)
+            checks.append({"phase": "source_reachability", "check": "source_vm_disks", "vm_name": workload.vm_name, "ok": bool(disks), "message": f"{len(disks)} downloadable VMware disk(s) found"})
     except Exception as exc:
         checks.append({"phase": "source_reachability", "check": "source_vcenter", "ok": False, "message": str(exc)})
     return checks
@@ -695,16 +806,15 @@ def _vcenter_to_kvm_destination_connector_checks(request) -> list[dict]:
 
 
 def _vcenter_to_kvm_blocker_checks(_request) -> list[dict]:
-    checks = [{"phase": "blockers", "check": "virt_v2v", "ok": bool(shutil.which("virt-v2v")), "message": shutil.which("virt-v2v") or "virt-v2v is not installed"}]
+    checks = [
+        {"phase": "blockers", "check": "govc", "ok": bool(shutil.which("govc")), "message": shutil.which("govc") or "govc is not installed"},
+        {"phase": "blockers", "check": "qemu_img", "ok": bool(shutil.which("qemu-img")), "message": shutil.which("qemu-img") or "qemu-img is not installed"},
+    ]
     try:
         staging_root = ensure_staging_root()
         checks.append({"phase": "blockers", "check": "staging_path", "ok": True, "message": str(staging_root)})
     except Exception as exc:
         checks.append({"phase": "blockers", "check": "staging_path", "ok": False, "message": str(exc)})
-    try:
-        checks.append({"phase": "blockers", "check": "libguestfs_runtime", "ok": True, "message": libguestfs_runtime_summary()})
-    except Exception as exc:
-        checks.append({"phase": "blockers", "check": "libguestfs_runtime", "ok": False, "message": str(exc)})
     return checks
 
 
@@ -898,9 +1008,6 @@ def vpx_uri(connector, workload, options: dict) -> str:
 
 def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
     results = []
-    password = connector_password(request.source_connector)
-    if not password:
-        raise RuntimeError("vCenter password is unavailable")
     target_storage_pool = request.target_connector.target_storage_pool or request.options.get("target_storage_pool")
     target_network = request.target_connector.target_network or request.options.get("target_network")
     if not target_storage_pool:
@@ -920,7 +1027,7 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                 )
             vm_info = find_vcenter_vm(request.source_connector, workload)
             if vm_info["power_state"].lower() != "poweredoff":
-                raise RuntimeError(f"{workload.vm_name} must be powered off before virt-v2v conversion")
+                raise RuntimeError(f"{workload.vm_name} must be powered off before disk download and conversion")
             if reporter:
                 reporter.task(
                     f"{workload.id}-read-source",
@@ -937,7 +1044,9 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                 stage_path = stage_directory(request.plan_id, workload.id, workload.vm_name, request.plan_name)
             output = ""
             xml_path = stage_path / f"{target_name}.xml"
-            if resume_from_stage and xml_path.exists():
+            disk_layout = vcenter_vm_disk_layout(request.source_connector, workload)
+            expected_qcow2 = [stage_path / f"{target_name}-disk{disk['index']}.qcow2" for disk in disk_layout]
+            if resume_from_stage and xml_path.exists() and all(path.exists() for path in expected_qcow2):
                 if reporter:
                     reporter.task(
                         f"{workload.id}-convert-staging",
@@ -961,44 +1070,63 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                         f"{workload.vm_name}: convert into staging",
                         "Running",
                         55,
-                        f"Reading {workload.vm_name} from vCenter with virt-v2v and writing converted qcow2 artifacts into {stage_path}",
+                        f"Downloading {workload.vm_name} source disks from vCenter and converting them into qcow2 artifacts in {stage_path}",
                     )
-                with transient_secret_descriptor(password, "vcenter-password") as (password_ref, password_fd):
-                    command = [
-                        "virt-v2v",
-                        "-v",
-                        "-x",
-                        "-ic", vpx_uri(request.source_connector, workload, request.options),
-                        "-ip", password_ref,
-                        workload.vm_name,
-                        "-o", "local",
-                        "-os", str(stage_path),
-                        "-of", "qcow2",
-                        "-on", target_name,
-                        "--root", request.options.get("root_selection", "first"),
-                    ]
-                    if target_network:
-                        command.extend(["--network", target_network])
-                    output = run(
-                        command,
-                        env=virt_v2v_env(),
-                        timeout=int(request.options.get("timeout", 14400)),
-                        pass_fds=(password_fd,),
-                    )
+                env = source_vcenter_environment(request.source_connector, workload)
+                timeout = int(request.options.get("timeout", 14400))
+                converted_layout = []
+                for disk in disk_layout:
+                    descriptor_local = stage_path / disk["descriptor_name"]
+                    flat_local = stage_path / disk["flat_name"]
+                    if resume_from_stage and descriptor_local.exists() and flat_local.exists():
+                        pass
+                    else:
+                        run(
+                            ["govc", "datastore.download", "-dc", str(workload.details.get("datacenter") or ""), "-ds", disk["datastore"], disk["descriptor_path"], str(descriptor_local)],
+                            env=env,
+                            timeout=timeout,
+                        )
+                        run(
+                            ["govc", "datastore.download", "-dc", str(workload.details.get("datacenter") or ""), "-ds", disk["datastore"], disk["flat_path"], str(flat_local)],
+                            env=env,
+                            timeout=timeout,
+                        )
+                    converted_local = stage_path / f"{target_name}-disk{disk['index']}.qcow2"
+                    if not (resume_from_stage and converted_local.exists()):
+                        run(
+                            ["qemu-img", "convert", "-p", "-f", "vmdk", "-O", "qcow2", str(descriptor_local), str(converted_local)],
+                            timeout=timeout,
+                        )
+                    try:
+                        capacity_bytes = int(json.loads(run(["qemu-img", "info", "--output=json", str(converted_local)]))["virtual-size"])
+                    except Exception:
+                        capacity_bytes = disk["capacity_bytes"] or converted_local.stat().st_size
+                    converted_layout.append({"local_path": str(converted_local), "capacity_bytes": capacity_bytes})
+                metadata = {
+                    "cpu": int(workload.details.get("cpu") or vm_info.get("cpu") or 1),
+                    "memory_bytes": int(vm_info.get("memory_bytes") or int((workload.details.get("memory_gb") or 1) * 1024**3)),
+                    "boot_firmware": str(workload.details.get("boot_firmware") or vm_info.get("boot_firmware") or "bios"),
+                    "guest_os_id": str(workload.details.get("guest_os_id") or vm_info.get("guest_os_id") or "otherGuest64"),
+                }
+                xml_path.write_text(
+                    render_kvm_domain_xml(target_name, metadata["cpu"], metadata["memory_bytes"], converted_layout, metadata["boot_firmware"]),
+                    encoding="utf-8",
+                )
+                output = f"Downloaded {len(disk_layout)} VMware disk(s) and converted them into qcow2 artifacts for {target_name}"
                 if reporter:
                     reporter.task(
                         f"{workload.id}-convert-staging",
                         f"{workload.vm_name}: convert into staging",
                         "Completed",
                         70,
-                        f"virt-v2v wrote converted qcow2 artifacts for {target_name} into {stage_path}",
+                        f"Downloaded VMware VMDK artifacts and converted them into qcow2 for {target_name} in {stage_path}",
                     )
             if not xml_path.exists():
-                raise RuntimeError("virt-v2v did not generate target libvirt XML")
+                raise RuntimeError("Converted staging did not generate target libvirt XML")
             root = ET.parse(xml_path)
             disk_elements = root.findall("./devices/disk[@device='disk']")
             if not disk_elements:
-                raise RuntimeError("virt-v2v did not generate any converted disk references in the libvirt XML")
+                raise RuntimeError("Converted staging did not generate any disk references in the libvirt XML")
             disk_payload = []
             for disk in disk_elements:
                 source = disk.find("source")
@@ -1020,7 +1148,7 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                     f"{workload.vm_name}: provision target VM",
                     "Running",
                     82,
-                    f"Sending converted disks and libvirt XML from {stage_path} to LaunchGrid for KVM provisioning on bridge {target_network}",
+                    f"Sending converted disks and generated libvirt XML from {stage_path} to LaunchGrid for KVM provisioning on bridge {target_network}",
                 )
             parsed = parse_domain_xml(ET.tostring(root.getroot(), encoding="unicode"))
             metadata = {
@@ -1029,6 +1157,7 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                 "boot_firmware": parsed.get("boot_firmware", "bios"),
                 "libvirt_xml_path": str(xml_path),
             }
+            workload.details["guest_os_id"] = workload.details.get("guest_os_id") or vm_info.get("guest_os_id") or "otherGuest64"
             provisioned = launchgrid_provision(request, workload, target_name, metadata, disk_payload)
             if reporter:
                 reporter.task(
@@ -1045,7 +1174,7 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                     "vm_name": workload.vm_name,
                     "target_name": target_name,
                     "target_pool": target_storage_pool,
-                    "message": output.strip() or "virt-v2v conversion completed and LaunchGrid provisioned the target VM",
+                    "message": output.strip() or "VMware disk download and qcow2 conversion completed and LaunchGrid provisioned the target VM",
                     "stage_path": str(stage_path),
                     "can_resume": False,
                     "details": provisioned,
