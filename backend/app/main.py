@@ -358,14 +358,34 @@ def summarize_preflight_checks(checks: list[dict]) -> str:
     return "Preflight blocked: " + "; ".join(messages)
 
 
-def preflight_phase_rows(plan: models.MigrationPlan, checks: list[dict], running: bool = False) -> list[dict]:
-    source_keys = {"source_kvm", "source_vcenter"}
-    destination_keys = {"target_vcenter", "target_kvm"}
-    destination_data_keys = {"target_datastore", "target_network", "target_vdc_name", "target_compute_name", "target_kvm_pool", "target_kvm_network"}
-    blocker_keys = {"qemu_img", "govc", "virt_v2v", "libguestfs_appliance", "source_vm_state", "source_vm_disks", "source_vm_inspection", "virt_v2v_source", "target_kvm"}
+def preflight_check_phase(check: dict) -> str:
+    if not isinstance(check, dict):
+        return "other"
+    phase = str(check.get("phase") or "").strip().lower().replace(" ", "_")
+    if phase in {"source_reachability", "destination_reachability", "destination_connector_data", "blockers"}:
+        return phase
+    name = str(check.get("check") or "").strip().lower()
+    if name in {"source_kvm", "source_vcenter", "source_vm_state", "source_vm_disks", "virt_v2v_source"}:
+        return "source_reachability"
+    if name in {"target_vcenter", "target_kvm"}:
+        return "destination_reachability"
+    if name in {"target_datastore", "target_network", "target_vdc_name", "target_compute_name", "target_kvm_pool", "target_kvm_network"}:
+        return "destination_connector_data"
+    if name in {"qemu_img", "govc", "virt_v2v", "libguestfs_appliance", "staging_path"}:
+        return "blockers"
+    return "other"
 
-    def phase_summary(keys: set[str], title: str, *, progress: int) -> dict:
-        phase_checks = [check for check in checks if str(check.get("check")) in keys]
+
+def preflight_phase_rows(plan: models.MigrationPlan, checks: list[dict], running: bool = False) -> list[dict]:
+    phase_titles = {
+        "source_reachability": ("Source reachability", 20),
+        "destination_reachability": ("Destination reachability", 45),
+        "destination_connector_data": ("Validate destination connector data", 70),
+        "blockers": ("Validate migration blockers", 95),
+    }
+
+    def phase_summary(phase_name: str, title: str, progress: int) -> dict:
+        phase_checks = [check for check in checks if preflight_check_phase(check) == phase_name]
         ok = bool(phase_checks) and all(check.get("ok") for check in phase_checks)
         if running and not phase_checks:
             status = "Running"
@@ -381,7 +401,7 @@ def preflight_phase_rows(plan: models.MigrationPlan, checks: list[dict], running
             message = f"{title} checks were not returned"
         return {
             "kind": "task",
-            "key": title.lower().replace(" ", "-"),
+            "key": phase_name.replace("_", "-"),
             "title": title,
             "status": status,
             "progress": progress,
@@ -389,10 +409,10 @@ def preflight_phase_rows(plan: models.MigrationPlan, checks: list[dict], running
         }
 
     return [
-        phase_summary(source_keys, "Source reachability", progress=20),
-        phase_summary(destination_keys, "Destination reachability", progress=45),
-        phase_summary(destination_data_keys, "Validate destination connector data", progress=70),
-        phase_summary(blocker_keys, "Validate migration blockers", progress=95),
+        phase_summary("source_reachability", *phase_titles["source_reachability"]),
+        phase_summary("destination_reachability", *phase_titles["destination_reachability"]),
+        phase_summary("destination_connector_data", *phase_titles["destination_connector_data"]),
+        phase_summary("blockers", *phase_titles["blockers"]),
         {
             "kind": "task",
             "key": "plan-summary",
