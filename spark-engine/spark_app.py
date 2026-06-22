@@ -355,7 +355,7 @@ def create_job(request: JobRequest):
 
 
 @app.post("/preflight")
-def preflight(request: JobRequest):
+def preflight(request: JobRequest, phase: str | None = None):
     capability = adapter_for(request.source_connector.connector_type, request.target_connector.connector_type)
     if not capability:
         raise HTTPException(400, "No Spark Engine adapter is available for this source and target combination")
@@ -365,9 +365,9 @@ def preflight(request: JobRequest):
     if missing:
         raise HTTPException(400, f"Missing execution options: {', '.join(missing)}")
     if capability["adapter"] == "kvm-vcenter-ova":
-        checks = preflight_kvm_to_vcenter(request)
+        checks = preflight_kvm_to_vcenter(request, phase=phase)
     elif capability["adapter"] == "vcenter-kvm-virt-v2v":
-        checks = preflight_vcenter_to_kvm(request)
+        checks = preflight_vcenter_to_kvm(request, phase=phase)
     else:
         checks = [{"check": "adapter", "ok": True, "message": f"{capability['adapter']} is available"}]
     return {

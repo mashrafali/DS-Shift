@@ -26,8 +26,12 @@ from pyVmomi import vim
 VMWARE_TYPES = {"VMware ESXi / vCenter", "VMware ESXi", "vCenter"}
 STAGING_ROOT = Path(os.getenv("DS_SHIFT_STAGING_ROOT", "/DS-Shift-Staging"))
 LAUNCHGRID_URL = os.getenv("LAUNCHGRID_URL", "http://launchgrid:8300").rstrip("/")
-PREFLIGHT_LIBGUESTFS_TIMEOUT = int(os.getenv("SPARK_PREFLIGHT_LIBGUESTFS_TIMEOUT_SECONDS", "300"))
-PREFLIGHT_VIRT_V2V_SOURCE_TIMEOUT = int(os.getenv("SPARK_PREFLIGHT_VIRT_V2V_SOURCE_TIMEOUT_SECONDS", "300"))
+PREFLIGHT_PHASES = (
+    "source_reachability",
+    "destination_reachability",
+    "destination_connector_data",
+    "blockers",
+)
 _register_child_process = None
 _cancel_requested = None
 
@@ -153,6 +157,19 @@ def ensure_libguestfs_ready(timeout: int = 300) -> None:
     if not tool:
         raise RuntimeError("libguestfs-test-tool is not installed in the Spark Engine container")
     run([tool], env=virt_v2v_env(), timeout=timeout)
+
+
+def libguestfs_runtime_summary() -> str:
+    required = {
+        "virt-v2v": shutil.which("virt-v2v"),
+        "libguestfs-test-tool": shutil.which("libguestfs-test-tool"),
+        "qemu-system-x86_64": shutil.which("qemu-system-x86_64"),
+        "supermin": shutil.which("supermin"),
+    }
+    missing = [name for name, path in required.items() if not path]
+    if missing:
+        raise RuntimeError(f"Missing runtime dependency: {', '.join(missing)}")
+    return ", ".join(f"{name}={path}" for name, path in required.items())
 
 
 @contextmanager
@@ -538,106 +555,127 @@ def find_vcenter_vm(connector, workload):
     raise RuntimeError(f"VM {workload.vm_name} was not found in vCenter")
 
 
-def preflight_kvm_to_vcenter(request) -> list[dict]:
-    target_datastore = request.target_connector.target_datastore
-    target_network = request.options.get("target_network") or request.target_connector.target_network
-    target_vdc_name = request.options.get("target_datacenter") or request.options.get("target_vdc_name") or request.target_connector.target_vdc_name
-    target_compute_name = request.options.get("target_compute_name") or request.target_connector.target_compute_name
-    checks = [
-        {"check": "qemu_img", "ok": bool(shutil.which("qemu-img")), "message": shutil.which("qemu-img") or "qemu-img is not installed"},
-        {"check": "govc", "ok": bool(shutil.which("govc")), "message": shutil.which("govc") or "govc is not installed"},
-    ]
-    try:
-        staging_root = ensure_staging_root()
-        checks.append({"check": "staging_path", "ok": True, "message": str(staging_root)})
-    except Exception as exc:
-        checks.append({"check": "staging_path", "ok": False, "message": str(exc)})
-    try:
-        env = govc_environment(request.target_connector, request.options)
-        about = json.loads(run(["govc", "about", "-json"], env=env, timeout=30))
-        checks.append({"check": "target_vcenter", "ok": True, "message": about.get("About", {}).get("FullName", "vCenter reachable")})
-        if not target_datastore:
-            raise RuntimeError("Target datastore is not configured on the target connector")
-        run(["govc", "datastore.info", target_datastore], env=env, timeout=30)
-        checks.append({"check": "target_datastore", "ok": True, "message": target_datastore})
-        if not target_network:
-            raise RuntimeError("Target network is not configured on the target connector")
-        network = run(["govc", "find", "-type", "n", "-name", target_network], env=env, timeout=30).strip()
-        if not network:
-            raise RuntimeError(f"Target network {target_network} was not found")
-        checks.append({"check": "target_network", "ok": True, "message": target_network})
-        if target_vdc_name:
-            datacenter = run(["govc", "find", "-type", "d", "-name", target_vdc_name], env=env, timeout=30).strip()
-            if not datacenter:
-                raise RuntimeError(f"Target vDC name {target_vdc_name} was not found")
-            checks.append({"check": "target_vdc_name", "ok": True, "message": target_vdc_name})
-        else:
-            raise RuntimeError("Target vDC name is not configured on the target connector")
-        if not target_compute_name:
-            raise RuntimeError("Target Cluster Name or Host Name is not configured on the target connector")
-        compute_kind, compute_path = find_compute_path(env, target_compute_name)
-        checks.append({"check": "target_compute_name", "ok": True, "message": f"{target_compute_name} ({compute_kind}: {compute_path})"})
-    except Exception as exc:
-        checks.append({"check": "target_vcenter", "ok": False, "message": str(exc)})
+def _kvm_to_vcenter_source_checks(request) -> list[dict]:
+    checks = []
     try:
         with ssh_client(request.source_connector) as client:
             for workload in request.workloads:
                 state, _ = ssh_exec(client, f"virsh domstate {shlex.quote(workload.vm_name)}", timeout=20)
                 stopped = state.strip().lower() in {"shut off", "shutoff"}
-                checks.append({"check": "source_vm_state", "vm_name": workload.vm_name, "ok": stopped, "message": state.strip()})
+                checks.append({"phase": "source_reachability", "check": "source_vm_state", "vm_name": workload.vm_name, "ok": stopped, "message": state.strip()})
                 xml_text, _ = ssh_exec(client, f"virsh dumpxml {shlex.quote(workload.vm_name)}", timeout=20)
                 disks = parse_domain_xml(xml_text)["disks"]
-                checks.append({"check": "source_vm_disks", "vm_name": workload.vm_name, "ok": bool(disks), "message": f"{len(disks)} disk(s) found"})
+                checks.append({"phase": "source_reachability", "check": "source_vm_disks", "vm_name": workload.vm_name, "ok": bool(disks), "message": f"{len(disks)} disk(s) found"})
     except Exception as exc:
-        checks.append({"check": "source_kvm", "ok": False, "message": str(exc)})
+        checks.append({"phase": "source_reachability", "check": "source_kvm", "ok": False, "message": str(exc)})
     return checks
 
 
-def preflight_vcenter_to_kvm(request) -> list[dict]:
-    checks = [{"check": "virt_v2v", "ok": bool(shutil.which("virt-v2v")), "message": shutil.which("virt-v2v") or "virt-v2v is not installed"}]
+def _kvm_to_vcenter_destination_reachability_checks(request) -> list[dict]:
+    checks = []
     try:
-        ensure_libguestfs_ready(timeout=PREFLIGHT_LIBGUESTFS_TIMEOUT)
-        checks.append({"check": "libguestfs_appliance", "ok": True, "message": "libguestfs appliance booted successfully"})
+        env = govc_environment(request.target_connector, request.options)
+        about = json.loads(run(["govc", "about", "-json"], env=env, timeout=30))
+        checks.append({"phase": "destination_reachability", "check": "target_vcenter", "ok": True, "message": about.get("About", {}).get("FullName", "vCenter reachable")})
     except Exception as exc:
-        checks.append({"check": "libguestfs_appliance", "ok": False, "message": str(exc)})
-    target_storage_pool = request.target_connector.target_storage_pool or request.options.get("target_storage_pool")
-    target_network = request.target_connector.target_network or request.options.get("target_network")
+        checks.append({"phase": "destination_reachability", "check": "target_vcenter", "ok": False, "message": str(exc)})
+    return checks
+
+
+def _kvm_to_vcenter_destination_connector_checks(request) -> list[dict]:
+    target_datastore = request.target_connector.target_datastore
+    target_network = request.options.get("target_network") or request.target_connector.target_network
+    target_vdc_name = request.options.get("target_datacenter") or request.options.get("target_vdc_name") or request.target_connector.target_vdc_name
+    target_compute_name = request.options.get("target_compute_name") or request.target_connector.target_compute_name
+    checks = []
+    try:
+        env = govc_environment(request.target_connector, request.options)
+        if not target_datastore:
+            raise RuntimeError("Target datastore is not configured on the target connector")
+        run(["govc", "datastore.info", target_datastore], env=env, timeout=30)
+        checks.append({"phase": "destination_connector_data", "check": "target_datastore", "ok": True, "message": target_datastore})
+        if not target_network:
+            raise RuntimeError("Target network is not configured on the target connector")
+        network = run(["govc", "find", "-type", "n", "-name", target_network], env=env, timeout=30).strip()
+        if not network:
+            raise RuntimeError(f"Target network {target_network} was not found")
+        checks.append({"phase": "destination_connector_data", "check": "target_network", "ok": True, "message": target_network})
+        if target_vdc_name:
+            datacenter = run(["govc", "find", "-type", "d", "-name", target_vdc_name], env=env, timeout=30).strip()
+            if not datacenter:
+                raise RuntimeError(f"Target vDC name {target_vdc_name} was not found")
+            checks.append({"phase": "destination_connector_data", "check": "target_vdc_name", "ok": True, "message": target_vdc_name})
+        else:
+            raise RuntimeError("Target vDC name is not configured on the target connector")
+        if not target_compute_name:
+            raise RuntimeError("Target Cluster Name or Host Name is not configured on the target connector")
+        compute_kind, compute_path = find_compute_path(env, target_compute_name)
+        checks.append({"phase": "destination_connector_data", "check": "target_compute_name", "ok": True, "message": f"{target_compute_name} ({compute_kind}: {compute_path})"})
+    except Exception as exc:
+        checks.append({"phase": "destination_connector_data", "check": "target_vcenter", "ok": False, "message": str(exc)})
+    return checks
+
+
+def _kvm_to_vcenter_blocker_checks(_request) -> list[dict]:
+    checks = [
+        {"phase": "blockers", "check": "qemu_img", "ok": bool(shutil.which("qemu-img")), "message": shutil.which("qemu-img") or "qemu-img is not installed"},
+        {"phase": "blockers", "check": "govc", "ok": bool(shutil.which("govc")), "message": shutil.which("govc") or "govc is not installed"},
+    ]
     try:
         staging_root = ensure_staging_root()
-        checks.append({"check": "staging_path", "ok": True, "message": str(staging_root)})
+        checks.append({"phase": "blockers", "check": "staging_path", "ok": True, "message": str(staging_root)})
     except Exception as exc:
-        checks.append({"check": "staging_path", "ok": False, "message": str(exc)})
+        checks.append({"phase": "blockers", "check": "staging_path", "ok": False, "message": str(exc)})
+    return checks
+
+
+def preflight_kvm_to_vcenter(request, phase: str | None = None) -> list[dict]:
+    phase = phase or ""
+    if phase == "source_reachability":
+        return _kvm_to_vcenter_source_checks(request)
+    if phase == "destination_reachability":
+        return _kvm_to_vcenter_destination_reachability_checks(request)
+    if phase == "destination_connector_data":
+        return _kvm_to_vcenter_destination_connector_checks(request)
+    if phase == "blockers":
+        return _kvm_to_vcenter_blocker_checks(request)
+    checks = []
+    for current in PREFLIGHT_PHASES:
+        checks.extend(preflight_kvm_to_vcenter(request, current))
+    return checks
+
+
+def _vcenter_to_kvm_source_checks(request) -> list[dict]:
+    checks = []
     try:
         password = connector_password(request.source_connector)
         if not password:
             raise RuntimeError("vCenter password is unavailable")
-        stage_path = temporary_stage_directory("ds-shift-v2v-preflight-")
-        try:
-            with transient_secret_descriptor(password, "vcenter-password") as (password_ref, password_fd):
-                for workload in request.workloads:
-                    vm_info = find_vcenter_vm(request.source_connector, workload)
-                    stopped = vm_info["power_state"].lower() == "poweredoff"
-                    checks.append({"check": "source_vm_state", "vm_name": workload.vm_name, "ok": stopped, "message": vm_info["power_state"]})
-                    if stopped and shutil.which("virt-v2v"):
-                        run(
-                            [
-                                "virt-v2v",
-                                "-v",
-                                "-x",
-                                "-ic", vpx_uri(request.source_connector, workload, request.options),
-                                "-ip", password_ref,
-                                workload.vm_name,
-                                "--print-source",
-                            ],
-                            env=virt_v2v_env(),
-                            timeout=PREFLIGHT_VIRT_V2V_SOURCE_TIMEOUT,
-                            pass_fds=(password_fd,),
-                        )
-                        checks.append({"check": "virt_v2v_source", "vm_name": workload.vm_name, "ok": True, "message": "virt-v2v read the source VM metadata"})
-        finally:
-            shutil.rmtree(stage_path, ignore_errors=True)
+        for workload in request.workloads:
+            vm_info = find_vcenter_vm(request.source_connector, workload)
+            stopped = vm_info["power_state"].lower() == "poweredoff"
+            checks.append({"phase": "source_reachability", "check": "source_vm_state", "vm_name": workload.vm_name, "ok": stopped, "message": vm_info["power_state"]})
+            checks.append({"phase": "source_reachability", "check": "source_vcenter", "vm_name": workload.vm_name, "ok": True, "message": f"Found VM on {request.source_connector.name}"})
     except Exception as exc:
-        checks.append({"check": "source_vcenter", "ok": False, "message": str(exc)})
+        checks.append({"phase": "source_reachability", "check": "source_vcenter", "ok": False, "message": str(exc)})
+    return checks
+
+
+def _vcenter_to_kvm_destination_reachability_checks(request) -> list[dict]:
+    checks = []
+    try:
+        with ssh_client(request.target_connector) as client:
+            host_name, _ = ssh_exec(client, "hostnamectl --static || hostname", timeout=20)
+            checks.append({"phase": "destination_reachability", "check": "target_kvm", "ok": True, "message": host_name.strip() or request.target_connector.name})
+    except Exception as exc:
+        checks.append({"phase": "destination_reachability", "check": "target_kvm", "ok": False, "message": str(exc)})
+    return checks
+
+
+def _vcenter_to_kvm_destination_connector_checks(request) -> list[dict]:
+    target_storage_pool = request.target_connector.target_storage_pool or request.options.get("target_storage_pool")
+    target_network = request.target_connector.target_network or request.options.get("target_network")
+    checks = []
     try:
         if not target_storage_pool:
             raise RuntimeError("Target KVM storage pool is not configured on the target connector")
@@ -647,12 +685,42 @@ def preflight_vcenter_to_kvm(request) -> list[dict]:
             if not pool_path:
                 raise RuntimeError("Target storage pool has no filesystem path")
             ssh_exec(client, f"test -d {shlex.quote(pool_path)} && test -w {shlex.quote(pool_path)}", timeout=20)
-            checks.append({"check": "target_kvm_pool", "ok": True, "message": f"{target_storage_pool}: {pool_path}"})
+            checks.append({"phase": "destination_connector_data", "check": "target_kvm_pool", "ok": True, "message": f"{target_storage_pool}: {pool_path}"})
             if target_network:
                 ssh_exec(client, f"ip link show {shlex.quote(target_network)}", timeout=20)
-                checks.append({"check": "target_kvm_network", "ok": True, "message": target_network})
+                checks.append({"phase": "destination_connector_data", "check": "target_kvm_network", "ok": True, "message": target_network})
     except Exception as exc:
-        checks.append({"check": "target_kvm", "ok": False, "message": str(exc)})
+        checks.append({"phase": "destination_connector_data", "check": "target_kvm", "ok": False, "message": str(exc)})
+    return checks
+
+
+def _vcenter_to_kvm_blocker_checks(_request) -> list[dict]:
+    checks = [{"phase": "blockers", "check": "virt_v2v", "ok": bool(shutil.which("virt-v2v")), "message": shutil.which("virt-v2v") or "virt-v2v is not installed"}]
+    try:
+        staging_root = ensure_staging_root()
+        checks.append({"phase": "blockers", "check": "staging_path", "ok": True, "message": str(staging_root)})
+    except Exception as exc:
+        checks.append({"phase": "blockers", "check": "staging_path", "ok": False, "message": str(exc)})
+    try:
+        checks.append({"phase": "blockers", "check": "libguestfs_runtime", "ok": True, "message": libguestfs_runtime_summary()})
+    except Exception as exc:
+        checks.append({"phase": "blockers", "check": "libguestfs_runtime", "ok": False, "message": str(exc)})
+    return checks
+
+
+def preflight_vcenter_to_kvm(request, phase: str | None = None) -> list[dict]:
+    phase = phase or ""
+    if phase == "source_reachability":
+        return _vcenter_to_kvm_source_checks(request)
+    if phase == "destination_reachability":
+        return _vcenter_to_kvm_destination_reachability_checks(request)
+    if phase == "destination_connector_data":
+        return _vcenter_to_kvm_destination_connector_checks(request)
+    if phase == "blockers":
+        return _vcenter_to_kvm_blocker_checks(request)
+    checks = []
+    for current in PREFLIGHT_PHASES:
+        checks.extend(preflight_vcenter_to_kvm(request, current))
     return checks
 
 

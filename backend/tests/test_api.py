@@ -312,17 +312,14 @@ def test_discovery_inventory_and_migration_plan_execution(monkeypatch):
         plan.status = "Draft"
         db.commit()
 
-        monkeypatch.setattr(
-            "app.main.preflight_spark_job",
-            lambda payload: {
-                "ok": True,
-                "adapter": "kvm-vcenter-ova",
-                "checks": [
-                    {"check": "adapter", "ok": True, "message": "Migration adapter is ready"},
-                    {"check": "source_vm_state", "vm_name": "vm-01", "ok": True, "message": "shut off"},
-                ],
-            },
-        )
+        phase_checks = {
+            "source_reachability": [{"phase": "source_reachability", "check": "source_vm_state", "vm_name": "vm-01", "ok": True, "message": "shut off"}],
+            "destination_reachability": [{"phase": "destination_reachability", "check": "target_vcenter", "ok": True, "message": "vCenter reachable"}],
+            "destination_connector_data": [{"phase": "destination_connector_data", "check": "target_datastore", "ok": True, "message": "ESX2-SSD"}],
+            "blockers": [{"phase": "blockers", "check": "qemu_img", "ok": True, "message": "/usr/bin/qemu-img"}],
+        }
+
+        monkeypatch.setattr("app.main.preflight_spark_job", lambda payload, phase=None: {"ok": True, "adapter": "kvm-vcenter-ova", "checks": phase_checks[phase]})
         run_migration_plan_preflight(plan.id, "admin", db)
 
         refreshed_plan = db.get(models.MigrationPlan, plan.id)
@@ -331,6 +328,62 @@ def test_discovery_inventory_and_migration_plan_execution(monkeypatch):
         assert "Source reachability" in refreshed_plan.results_json
         assert "Plan summary" in refreshed_plan.results_json
         assert db.get(models.VmInventory, vm.id).current_status == "Ready for migration"
+
+
+def test_run_migration_plan_preflight_stops_on_failed_phase_and_marks_later_phases_skipped(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        source = models.ConnectorProfile(name="vCenter Source", connector_category="host", connector_type="VMware ESXi / vCenter")
+        target = models.ConnectorProfile(name="KVM Target", connector_category="host", connector_type="KVM")
+        db.add_all([source, target])
+        db.flush()
+        vm = models.VmInventory(
+            connector_id=source.id,
+            vm_name="vm-01",
+            source_platform="VMware ESXi / vCenter",
+            target_platform="KVM",
+            cpu=2,
+            memory_gb=4,
+            disk_gb=40,
+            current_status="Discovered",
+        )
+        db.add(vm)
+        db.flush()
+        plan = models.MigrationPlan(
+            name="Blocked Plan",
+            source_connector_id=source.id,
+            target_connector_id=target.id,
+            migration_type="VMware ESXi / vCenter to KVM",
+            vm_ids_json=json.dumps([vm.id]),
+            status="Draft",
+        )
+        db.add(plan)
+        db.commit()
+
+        calls = []
+        phase_checks = {
+            "source_reachability": [{"phase": "source_reachability", "check": "source_vm_state", "vm_name": "vm-01", "ok": True, "message": "poweredOff"}],
+            "destination_reachability": [{"phase": "destination_reachability", "check": "target_kvm", "ok": False, "message": "ssh timeout"}],
+        }
+
+        def fake_preflight(_payload, phase=None):
+            calls.append(phase)
+            return {"ok": all(check["ok"] for check in phase_checks[phase]), "adapter": "vcenter-kvm-virt-v2v", "checks": phase_checks[phase]}
+
+        monkeypatch.setattr("app.main.preflight_spark_job", fake_preflight)
+
+        run_migration_plan_preflight(plan.id, "admin", db)
+
+        refreshed_plan = db.get(models.MigrationPlan, plan.id)
+        rows = json.loads(refreshed_plan.results_json)
+
+        assert calls == ["source_reachability", "destination_reachability"]
+        assert refreshed_plan.status == "Blocked"
+        assert next(row for row in rows if row["key"] == "destination-reachability")["status"] == "Failed"
+        assert next(row for row in rows if row["key"] == "destination-connector-data")["status"] == "Skipped"
+        assert next(row for row in rows if row["key"] == "blockers")["status"] == "Skipped"
 
 
 def test_migration_plan_execution_uses_stored_preflight_summary_without_spark_job():

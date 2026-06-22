@@ -18,10 +18,11 @@ def create_spark_job(payload: dict) -> dict:
         return response.json()
 
 
-def preflight_spark_job(payload: dict) -> dict:
+def preflight_spark_job(payload: dict, phase: str | None = None) -> dict:
     timeout = httpx.Timeout(settings.spark_preflight_timeout_seconds, connect=10.0)
     with httpx.Client(timeout=timeout) as client:
-        response = client.post(f"{settings.spark_engine_url}/preflight", json=payload)
+        params = {"phase": phase} if phase else None
+        response = client.post(f"{settings.spark_engine_url}/preflight", json=payload, params=params)
         if response.status_code >= 400:
             raise ValueError(response.text)
         return response.json()
