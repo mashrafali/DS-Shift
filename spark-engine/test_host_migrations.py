@@ -1,6 +1,21 @@
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
-from host_migrations import ensure_libguestfs_ready, normalize_kvm_interfaces, ovf_descriptor, parse_domain_xml, safe_name, shifted_artifact_base_name, transient_secret_descriptor, virt_v2v_env, vpx_uri
+from host_migrations import (
+    STAGING_ROOT,
+    append_migrated_vm_log,
+    cleanup_plan_stage_directory,
+    ensure_libguestfs_ready,
+    normalize_kvm_interfaces,
+    ovf_descriptor,
+    parse_domain_xml,
+    safe_name,
+    shifted_artifact_base_name,
+    shifted_target_name,
+    transient_secret_descriptor,
+    virt_v2v_env,
+    vpx_uri,
+)
 
 
 class Connector:
@@ -95,6 +110,29 @@ def test_transient_secret_descriptor_uses_ephemeral_fd():
 def test_shifted_artifact_base_name_replaces_migrated_suffix():
     assert shifted_artifact_base_name("test-vm-migrated") == "test-vm-shifted"
     assert shifted_artifact_base_name("test-vm") == "test-vm-shifted"
+    assert shifted_artifact_base_name("test-vm-shifted") == "test-vm-shifted"
+
+
+def test_shifted_target_name_defaults_to_shifted_suffix():
+    assert shifted_target_name("test-vm") == "test-vm-shifted"
+    assert shifted_target_name("test-vm", "custom-name") == "custom-name"
+
+
+def test_append_migrated_vm_log_and_cleanup_plan_stage_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr("host_migrations.STAGING_ROOT", tmp_path)
+    stage_dir = tmp_path / "Plan-Test-Plan" / "vm-01"
+    stage_dir.mkdir(parents=True)
+
+    workload = type("Workload", (), {"id": 7, "vm_name": "vm-01"})()
+
+    append_migrated_vm_log(11, "Test Plan", workload, "vm-01-shifted", "VMware ESXi / vCenter")
+    cleanup_plan_stage_directory(11, "Test Plan")
+
+    log_path = tmp_path / "migrated-vms.log"
+    assert log_path.exists()
+    assert "plan=Test Plan" in log_path.read_text(encoding="utf-8")
+    assert "target=vm-01-shifted" in log_path.read_text(encoding="utf-8")
+    assert not (tmp_path / "Plan-Test-Plan").exists()
 
 
 def test_normalize_kvm_interfaces_rebinds_to_target_bridge():

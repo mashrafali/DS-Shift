@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime
 import json
 import math
 import os
@@ -142,7 +143,15 @@ def safe_name(value: str) -> str:
 def shifted_artifact_base_name(target_name: str) -> str:
     if target_name.endswith("-migrated"):
         return f"{target_name[:-9]}-shifted"
+    if target_name.endswith("-shifted"):
+        return target_name
     return f"{target_name}-shifted"
+
+
+def shifted_target_name(vm_name: str, override: str | None = None) -> str:
+    if override:
+        return safe_name(override)
+    return safe_name(f"{vm_name}-shifted")
 
 
 def stage_plan_directory_name(plan_id: int, plan_name: str | None = None) -> str:
@@ -416,6 +425,21 @@ def stage_failure_result(workload, target_name: str, stage_path: Path, message: 
     }
 
 
+def append_migrated_vm_log(plan_id: int, plan_name: str | None, workload, target_name: str, migration_type: str) -> None:
+    ensure_staging_root()
+    log_path = STAGING_ROOT / "migrated-vms.log"
+    timestamp = datetime.utcnow().isoformat() + "Z"
+    plan_label = plan_name or f"plan-{plan_id}"
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            f"{timestamp} | plan={plan_label} | vm_id={workload.id} | vm={workload.vm_name} | target={target_name} | migration={migration_type}\n"
+        )
+
+
+def cleanup_plan_stage_directory(plan_id: int, plan_name: str | None) -> None:
+    shutil.rmtree(ensure_staging_root() / stage_plan_directory_name(plan_id, plan_name), ignore_errors=True)
+
+
 def remove_source_kvm_vm(client: paramiko.SSHClient, vm_name: str) -> None:
     quoted = shlex.quote(vm_name)
     try:
@@ -584,7 +608,7 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
         sftp = client.open_sftp()
         try:
             for workload in request.workloads:
-                target_name = safe_name(request.options.get("target_name") or f"{workload.vm_name}-migrated")
+                target_name = shifted_target_name(workload.vm_name, request.options.get("target_name"))
                 stage_path = preserved_stage_directory(request.plan_id, workload.id, workload.vm_name, request.plan_name)
                 converted_disks = []
                 try:
@@ -727,6 +751,10 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                     results.append(stage_failure_result(workload, target_name, stage_path, str(exc), can_resume=stage_path.exists()))
         finally:
             sftp.close()
+    if results and all(result.get("ok") for result in results):
+        for result, workload in zip(results, request.workloads):
+            append_migrated_vm_log(request.plan_id, request.plan_name, workload, result.get("target_name") or workload.vm_name, request.target_connector.connector_type)
+        cleanup_plan_stage_directory(request.plan_id, request.plan_name)
     return results
 
 
@@ -764,7 +792,7 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
         sftp = client.open_sftp()
         try:
             for workload in request.workloads:
-                target_name = safe_name(request.options.get("target_name") or f"{workload.vm_name}-migrated")
+                target_name = shifted_target_name(workload.vm_name, request.options.get("target_name"))
                 stage_path = preserved_stage_directory(request.plan_id, workload.id, workload.vm_name, request.plan_name)
                 try:
                     resume_from_stage = bool(request.options.get("resume_from_stage"))
@@ -916,4 +944,8 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                     results.append(stage_failure_result(workload, target_name, stage_path, str(exc), can_resume=stage_path.exists()))
         finally:
             sftp.close()
+    if results and all(result.get("ok") for result in results):
+        for result, workload in zip(results, request.workloads):
+            append_migrated_vm_log(request.plan_id, request.plan_name, workload, result.get("target_name") or workload.vm_name, request.target_connector.connector_type)
+        cleanup_plan_stage_directory(request.plan_id, request.plan_name)
     return results
