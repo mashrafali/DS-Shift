@@ -27,6 +27,7 @@ from app.main import (
     continue_migration_plan,
     execute_migration_plan,
     execute_wave,
+    force_stop_migration_plan,
     hash_password,
     launch_migration_plan,
     seed_defaults,
@@ -559,6 +560,104 @@ def test_apply_spark_job_logs_completed_migrations_and_cleans_plan_staging(monke
         assert "plan=Prod Wave 1" in log_text
         assert "vm=vm-01" in log_text
         assert not (tmp_path / "Plan-Prod-Wave-1").exists()
+
+
+def test_apply_spark_job_marks_plan_canceled_without_mutating_vm_status():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        source = models.ConnectorProfile(name="VMware Source", connector_category="host", connector_type="VMware ESXi / vCenter")
+        target = models.ConnectorProfile(name="KVM Target", connector_category="host", connector_type="KVM")
+        db.add_all([source, target])
+        db.flush()
+        vm = models.VmInventory(
+            vm_name="vm-01",
+            source_platform="VMware ESXi / vCenter",
+            target_platform="KVM",
+            cpu=2,
+            memory_gb=4,
+            disk_gb=50,
+            connector_id=source.id,
+            current_status="Migration in progress",
+        )
+        db.add(vm)
+        db.flush()
+        plan = models.MigrationPlan(
+            name="Canceled Plan",
+            source_connector_id=source.id,
+            target_connector_id=target.id,
+            migration_type="VMware ESXi / vCenter to KVM",
+            vm_ids_json=json.dumps([vm.id]),
+            status="Running",
+            spark_job_id=555,
+        )
+        db.add(plan)
+        db.commit()
+
+        apply_spark_job(
+            db,
+            plan,
+            {
+                "id": 555,
+                "status": "Canceled",
+                "message": "Execution was force-stopped by an operator",
+                "result": [{"kind": "vm_result", "ok": False, "message": "Execution was force-stopped by an operator"}],
+            },
+        )
+        db.commit()
+        db.refresh(plan)
+        db.refresh(vm)
+
+        assert plan.status == "Canceled"
+        assert vm.current_status == "Migration in progress"
+
+
+def test_force_stop_migration_plan_cancels_running_spark_job(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        source = models.ConnectorProfile(name="KVM Source", connector_category="host", connector_type="KVM")
+        target = models.ConnectorProfile(name="vCenter Target", connector_category="host", connector_type="VMware ESXi / vCenter")
+        db.add_all([source, target])
+        db.flush()
+        vm = models.VmInventory(vm_name="vm-01", source_platform="KVM", target_platform="VMware ESXi / vCenter", cpu=4, memory_gb=8, disk_gb=80, connector_id=source.id, current_status="Migration in progress")
+        db.add(vm)
+        db.flush()
+        plan = models.MigrationPlan(
+            name="Running Plan",
+            source_connector_id=source.id,
+            target_connector_id=target.id,
+            migration_type="KVM to VMware ESXi / vCenter",
+            vm_ids_json=json.dumps([vm.id]),
+            status="Running",
+            spark_job_id=77,
+        )
+        db.add(plan)
+        db.commit()
+        db.refresh(plan)
+
+        monkeypatch.setattr(
+            "app.main.cancel_spark_job",
+            lambda job_id: {
+                "id": job_id,
+                "status": "Canceled",
+                "message": "Execution was force-stopped by an operator",
+                "result": [{"kind": "vm_result", "ok": False, "message": "Execution was force-stopped by an operator"}],
+            },
+        )
+
+        response = force_stop_migration_plan(
+            plan.id,
+            schemas.MigrationForceStop(confirmation=plan.name),
+            db,
+            models.LocalUser(username="admin", password_hash="unused", role="admin", is_active="true"),
+        )
+
+        assert response["job"]["status"] == "Canceled"
+        assert response["stopped_by"] == "admin"
+        assert db.get(models.MigrationPlan, plan.id).status == "Canceled"
 
 
 def test_connector_defaults_and_wave_creation():

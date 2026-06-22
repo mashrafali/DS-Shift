@@ -29,7 +29,7 @@ from .connector_client import (
 from .database import Base, engine, get_db
 from .engines import build_kvm_to_esxi_preflight
 from .service_status import get_service_statuses
-from .spark_client import create_spark_job, get_spark_job, preflight_spark_job, spark_capabilities
+from .spark_client import cancel_spark_job, create_spark_job, get_spark_job, preflight_spark_job, spark_capabilities
 
 MIGRATION_STATUSES = {
     "Discovered",
@@ -1470,7 +1470,9 @@ def apply_spark_job(db: Session, plan: models.MigrationPlan, job: dict) -> None:
     plan.results_json = json.dumps(results)
     completed_at = datetime.utcnow()
     plan.executed_at = completed_at
-    plan.status = spark_status if spark_status in {"Succeeded", "Failed"} else ("Completed" if spark_status == "Succeeded" else "Failed")
+    plan.status = spark_status if spark_status in {"Succeeded", "Failed", "Canceled"} else ("Completed" if spark_status == "Succeeded" else "Failed")
+    if spark_status == "Canceled":
+        return
     vm_ids = {row.get("vm_id") for row in results if row.get("vm_id")}
     vms = db.query(models.VmInventory).filter(models.VmInventory.id.in_(vm_ids)).all() if vm_ids else []
     result_by_vm = {row.get("vm_id"): row for row in results}
@@ -1531,6 +1533,32 @@ def continue_migration_plan(
     db.commit()
     db.refresh(plan)
     return {"plan": schemas.MigrationPlan.model_validate(plan), "job": job, "resume": resume}
+
+
+@app.post("/api/migration-plans/{plan_id}/force-stop")
+def force_stop_migration_plan(
+    plan_id: int,
+    payload: schemas.MigrationForceStop,
+    db: Session = Depends(get_db),
+    admin: models.LocalUser = Depends(admin_user),
+):
+    plan = db.get(models.MigrationPlan, plan_id)
+    if not plan:
+        raise HTTPException(404, "Migration plan not found")
+    if payload.confirmation != plan.name:
+        raise HTTPException(400, "Type the exact migration plan name to force-stop execution")
+    if not plan.spark_job_id:
+        raise HTTPException(404, "Migration plan has no Spark Engine execution")
+    try:
+        job = cancel_spark_job(plan.spark_job_id)
+    except ValueError as exc:
+        raise HTTPException(409, f"Spark Engine rejected force-stop: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(503, f"Spark Engine unavailable: {exc}") from exc
+    apply_spark_job(db, plan, job)
+    db.commit()
+    db.refresh(plan)
+    return {"plan": schemas.MigrationPlan.model_validate(plan), "job": job, "stopped_by": admin.username}
 
 
 @app.get("/api/migration-plans/{plan_id}/execution")

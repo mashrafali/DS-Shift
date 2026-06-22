@@ -31,3 +31,11 @@ def get_spark_job(job_id: int) -> dict:
         response = client.get(f"{settings.spark_engine_url}/jobs/{job_id}")
         response.raise_for_status()
         return response.json()
+
+
+def cancel_spark_job(job_id: int) -> dict:
+    with httpx.Client(timeout=20) as client:
+        response = client.post(f"{settings.spark_engine_url}/jobs/{job_id}/cancel")
+        if response.status_code >= 400:
+            raise ValueError(response.text)
+        return response.json()

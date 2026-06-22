@@ -315,6 +315,10 @@ class MigrationContinue(BaseModel):
     confirmation: str
 
 
+class MigrationForceStop(BaseModel):
+    confirmation: str
+
+
 class MigrationPlan(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int

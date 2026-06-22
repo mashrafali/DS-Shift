@@ -7,11 +7,13 @@ import math
 import os
 from pathlib import Path
 import re
+import signal
 import shlex
 import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 from urllib.parse import quote, urlparse
 import xml.etree.ElementTree as ET
 
@@ -24,6 +26,14 @@ from pyVmomi import vim
 VMWARE_TYPES = {"VMware ESXi / vCenter", "VMware ESXi", "vCenter"}
 STAGING_ROOT = Path(os.getenv("DS_SHIFT_STAGING_ROOT", "/DS-Shift-Staging"))
 LAUNCHGRID_URL = os.getenv("LAUNCHGRID_URL", "http://launchgrid:8300").rstrip("/")
+_register_child_process = None
+_cancel_requested = None
+
+
+def set_execution_hooks(register_child_process=None, cancel_requested=None) -> None:
+    global _register_child_process, _cancel_requested
+    _register_child_process = register_child_process
+    _cancel_requested = cancel_requested
 
 
 def credential_value(reference: str | None) -> str | None:
@@ -83,10 +93,48 @@ def ssh_exec(client: paramiko.SSHClient, command: str, timeout: int = 60) -> tup
 
 
 def run(command: list[str], *, env: dict | None = None, timeout: int = 7200, pass_fds: tuple[int, ...] = ()) -> str:
-    completed = subprocess.run(command, capture_output=True, text=True, env=env, timeout=timeout, check=False, pass_fds=pass_fds)
-    if completed.returncode:
-        raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or f"{command[0]} exited with status {completed.returncode}")
-    return completed.stdout
+    if _cancel_requested and _cancel_requested():
+        raise RuntimeError("Execution cancelled by operator")
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        pass_fds=pass_fds,
+        start_new_session=True,
+    )
+    if _register_child_process:
+        _register_child_process(process.pid)
+    started = time.monotonic()
+    while True:
+        if _cancel_requested and _cancel_requested():
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=10)
+            except Exception:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except Exception:
+                    pass
+            raise RuntimeError("Execution cancelled by operator")
+        if timeout and time.monotonic() - started > timeout:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=10)
+            except Exception:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except Exception:
+                    pass
+            raise RuntimeError(f"{command[0]} timed out after {timeout} seconds")
+        code = process.poll()
+        if code is not None:
+            stdout, stderr = process.communicate()
+            if code:
+                raise RuntimeError(stderr.strip() or stdout.strip() or f"{command[0]} exited with status {code}")
+            return stdout
+        time.sleep(0.5)
 
 
 def virt_v2v_env() -> dict[str, str]:

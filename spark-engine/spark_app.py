@@ -5,6 +5,7 @@ from datetime import datetime
 import json
 import logging
 import os
+import signal
 import shlex
 import socket
 import threading
@@ -43,6 +44,7 @@ from host_migrations import (
     execute_vcenter_to_kvm,
     preflight_kvm_to_vcenter,
     preflight_vcenter_to_kvm,
+    set_execution_hooks,
 )
 
 
@@ -72,6 +74,8 @@ jobs = Table(
 )
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 stop_event = threading.Event()
+active_jobs_lock = threading.Lock()
+active_jobs: dict[int, dict] = {}
 
 
 CAPABILITIES = [
@@ -263,6 +267,8 @@ def row_dict(row) -> dict:
     result["vm_results"] = [entry for entry in result["result"] if isinstance(entry, dict) and entry.get("kind") != "task"]
     if result.get("status") == "Succeeded":
         progress = 100
+    elif result.get("status") == "Canceled":
+        progress = max((int(task.get("progress", 0)) for task in tasks), default=0)
     elif result.get("status") == "Failed":
         progress = max(
             (
@@ -381,6 +387,79 @@ def get_job(job_id: int):
     return row_dict(row)
 
 
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: int):
+    with engine.begin() as connection:
+        row = connection.execute(select(jobs).where(jobs.c.id == job_id)).first()
+        if not row:
+            raise HTTPException(404, "Spark execution job not found")
+        current = dict(row._mapping)
+        if current["status"] in {"Succeeded", "Failed", "Canceled"}:
+            return row_dict(row)
+        if current["status"] == "Queued":
+            result = [
+                {
+                    "kind": "task",
+                    "key": "cancelled",
+                    "title": "Execution cancelled",
+                    "status": "Canceled",
+                    "progress": 0,
+                    "message": "Execution was force-stopped before a worker claimed the job",
+                    "completed_at": datetime.utcnow().isoformat(),
+                }
+            ]
+            connection.execute(
+                update(jobs)
+                .where(jobs.c.id == job_id)
+                .values(status="Canceled", message="Execution was force-stopped", result_json=json.dumps(result), completed_at=datetime.utcnow())
+            )
+            updated = connection.execute(select(jobs).where(jobs.c.id == job_id)).one()
+            return row_dict(updated)
+    control = None
+    with active_jobs_lock:
+        control = active_jobs.get(job_id)
+        if control:
+            control["cancel_event"].set()
+            for pid in list(control["child_pids"]):
+                try:
+                    os.killpg(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    continue
+                except Exception:
+                    logger.exception("Failed to signal child process group for Spark job %s", job_id)
+    if not control:
+        with engine.begin() as connection:
+            result = [
+                {
+                    "kind": "task",
+                    "key": "cancelled",
+                    "title": "Execution cancelled",
+                    "status": "Canceled",
+                    "progress": 0,
+                    "message": "Execution was force-stopped after worker state was lost",
+                    "completed_at": datetime.utcnow().isoformat(),
+                }
+            ]
+            connection.execute(
+                update(jobs)
+                .where(jobs.c.id == job_id)
+                .values(status="Canceled", message="Execution was force-stopped after worker state was lost", result_json=json.dumps(result), completed_at=datetime.utcnow())
+            )
+            updated = connection.execute(select(jobs).where(jobs.c.id == job_id)).one()
+            return row_dict(updated)
+    deadline = time.time() + 8
+    latest = None
+    while time.time() < deadline:
+        with engine.connect() as connection:
+            latest = connection.execute(select(jobs).where(jobs.c.id == job_id)).first()
+        if latest and latest.status in {"Failed", "Succeeded", "Canceled"}:
+            return row_dict(latest)
+        time.sleep(0.2)
+    if latest:
+        return row_dict(latest)
+    raise HTTPException(500, "Spark execution job disappeared during cancellation")
+
+
 def worker_loop() -> None:
     while not stop_event.wait(POLL_SECONDS):
         try:
@@ -415,6 +494,20 @@ def claim_job() -> dict | None:
 def execute_job(job: dict) -> None:
     request = JobRequest.model_validate_json(job["request_json"])
     reporter = JobProgressReporter(job["id"])
+    cancel_event = threading.Event()
+
+    def register_child_process(pid: int) -> None:
+        with active_jobs_lock:
+            control = active_jobs.get(job["id"])
+            if control:
+                control["child_pids"].add(pid)
+
+    def cancelled() -> bool:
+        return cancel_event.is_set()
+
+    with active_jobs_lock:
+        active_jobs[job["id"]] = {"cancel_event": cancel_event, "child_pids": set()}
+    set_execution_hooks(register_child_process=register_child_process, cancel_requested=cancelled)
     try:
         reporter.task("prepare", "Prepare execution", "Running", 5, f"Starting {job['adapter']} for {len(request.workloads)} workload(s)")
         if job["adapter"] == "aws-ec2-copy":
@@ -443,10 +536,20 @@ def execute_job(job: dict) -> None:
             merged_result = reporter.finalize(result)
             status = "Succeeded"
     except Exception as exc:
-        reporter.task("failed", "Execution failed", "Failed", current_task_progress(job["id"]), str(exc))
-        merged_result = reporter.finalize([{"kind": "vm_result", "ok": False, "message": str(exc)}])
-        status = "Failed"
-        message = str(exc)
+        if cancel_event.is_set() or "cancelled by operator" in str(exc).lower():
+            message = "Execution was force-stopped by an operator"
+            reporter.task("cancelled", "Execution cancelled", "Canceled", current_task_progress(job["id"]), message)
+            merged_result = reporter.finalize([{"kind": "vm_result", "ok": False, "message": message}])
+            status = "Canceled"
+        else:
+            reporter.task("failed", "Execution failed", "Failed", current_task_progress(job["id"]), str(exc))
+            merged_result = reporter.finalize([{"kind": "vm_result", "ok": False, "message": str(exc)}])
+            status = "Failed"
+            message = str(exc)
+    finally:
+        set_execution_hooks(register_child_process=None, cancel_requested=None)
+        with active_jobs_lock:
+            active_jobs.pop(job["id"], None)
     with engine.begin() as connection:
         connection.execute(
             update(jobs)
