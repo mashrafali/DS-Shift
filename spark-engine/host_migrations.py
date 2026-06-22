@@ -901,7 +901,6 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
     password = connector_password(request.source_connector)
     if not password:
         raise RuntimeError("vCenter password is unavailable")
-    ensure_libguestfs_ready(timeout=180)
     target_storage_pool = request.target_connector.target_storage_pool or request.options.get("target_storage_pool")
     target_network = request.target_connector.target_network or request.options.get("target_network")
     if not target_storage_pool:
