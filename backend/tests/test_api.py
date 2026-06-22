@@ -438,6 +438,92 @@ def test_sync_discovered_vms_adopts_legacy_vm_row_when_external_id_was_missing()
         assert db.query(models.VmInventory).count() == 1
 
 
+def test_sync_discovered_vms_prunes_stale_inventory_for_connector():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        connector = models.ConnectorProfile(
+            name="vCenter Source",
+            connector_category="host",
+            connector_type="VMware ESXi / vCenter",
+            endpoint="https://vcsa.test.local/sdk",
+        )
+        other_connector = models.ConnectorProfile(
+            name="Other Source",
+            connector_category="host",
+            connector_type="KVM",
+            endpoint="qemu+ssh://root@kvm/system",
+        )
+        db.add_all([connector, other_connector])
+        db.flush()
+        stale_vm = models.VmInventory(
+            connector_id=connector.id,
+            external_id="vm-100",
+            host_name="esx01.test.local",
+            vm_name="deleted-vm",
+            source_platform="VMware ESXi / vCenter",
+            target_platform="Unassigned",
+            cpu=2,
+            memory_gb=4,
+            disk_gb=40,
+            os_type="Linux",
+            current_status="Discovered",
+        )
+        renamed_vm = models.VmInventory(
+            connector_id=connector.id,
+            external_id="vm-200",
+            host_name="esx01.test.local",
+            vm_name="old-name",
+            source_platform="VMware ESXi / vCenter",
+            target_platform="Unassigned",
+            cpu=4,
+            memory_gb=8,
+            disk_gb=120,
+            os_type="Ubuntu Linux (64-bit)",
+            current_status="Discovered",
+        )
+        unaffected_vm = models.VmInventory(
+            connector_id=other_connector.id,
+            external_id="vm-300",
+            host_name="kvm",
+            vm_name="other-connector-vm",
+            source_platform="KVM",
+            target_platform="Unassigned",
+            cpu=2,
+            memory_gb=4,
+            disk_gb=40,
+            os_type="Linux",
+            current_status="Discovered",
+        )
+        db.add_all([stale_vm, renamed_vm, unaffected_vm])
+        db.commit()
+
+        assert sync_discovered_vms(
+            db,
+            connector,
+            [{
+                "external_id": "vm-200",
+                "vm_name": "new-name",
+                "host_name": "esx01.test.local",
+                "source_platform": "VMware ESXi / vCenter",
+                "cpu": 4,
+                "memory_gb": 8,
+                "disk_gb": 120,
+                "os_type": "Ubuntu Linux (64-bit)",
+                "ip_address": "192.168.12.40",
+                "path": "/Datacenter/vm/new-name",
+            }],
+        ) == 1
+
+        assert db.get(models.VmInventory, stale_vm.id) is None
+        refreshed_vm = db.get(models.VmInventory, renamed_vm.id)
+        assert refreshed_vm is not None
+        assert refreshed_vm.vm_name == "new-name"
+        assert db.get(models.VmInventory, unaffected_vm.id) is not None
+        assert db.query(models.VmInventory).count() == 2
+
+
 def test_continue_migration_plan_reuses_preserved_staging(monkeypatch, tmp_path):
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)

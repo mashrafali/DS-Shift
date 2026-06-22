@@ -987,17 +987,24 @@ def list_hosts(db: Session = Depends(get_db), _user: models.LocalUser = Depends(
 
 def sync_discovered_vms(db: Session, connector: models.ConnectorProfile, records: list[dict]) -> int:
     count = 0
+    seen_external_ids: set[str] = set()
+    seen_fallback_keys: set[tuple[str | None, str]] = set()
     for record in records:
         name = record.get("vm_name")
         if not name:
             continue
         external_id = record.get("external_id") or record.get("instance_id") or record.get("vm_id")
         host_name = record.get("host_name")
+        normalized_external_id = str(external_id) if external_id else None
+        if normalized_external_id:
+            seen_external_ids.add(normalized_external_id)
+        else:
+            seen_fallback_keys.add((host_name, name))
         existing = None
-        if external_id:
+        if normalized_external_id:
             existing = db.query(models.VmInventory).filter(
                 models.VmInventory.connector_id == connector.id,
-                models.VmInventory.external_id == str(external_id),
+                models.VmInventory.external_id == normalized_external_id,
             ).first()
             if not existing:
                 existing = db.query(models.VmInventory).filter(
@@ -1012,12 +1019,12 @@ def sync_discovered_vms(db: Session, connector: models.ConnectorProfile, records
                 models.VmInventory.host_name == host_name,
                 models.VmInventory.vm_name == name,
             ).first()
-        if not existing and external_id:
+        if not existing and normalized_external_id:
             existing = adopt_legacy_discovered_vm(db, connector, record)
         values = {
             "project_id": None,
             "connector_id": connector.id,
-            "external_id": str(external_id) if external_id else None,
+            "external_id": normalized_external_id,
             "host_name": host_name,
             "source_platform": record.get("source_platform") or connector.connector_type,
             "cpu": record.get("cpu") or 0,
@@ -1043,6 +1050,18 @@ def sync_discovered_vms(db: Session, connector: models.ConnectorProfile, records
             db.flush()
             db.add(models.VmStatusHistory(vm_id=vm.id, status="Discovered", note=f"Discovered through connector {connector.name}"))
         count += 1
+
+    stale_vms = db.query(models.VmInventory).filter(
+        models.VmInventory.connector_id == connector.id,
+    ).all()
+    for stale_vm in stale_vms:
+        if stale_vm.external_id:
+            if stale_vm.external_id in seen_external_ids:
+                continue
+        elif (stale_vm.host_name, stale_vm.vm_name) in seen_fallback_keys:
+            continue
+        db.delete(stale_vm)
+
     db.commit()
     return count
 
