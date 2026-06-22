@@ -333,7 +333,7 @@ function App() {
 
   useEffect(() => {
     if (!token) return undefined;
-    const activePlans = migrationPlans.filter((plan) => plan.spark_job_id && ['Queued', 'Running'].includes(plan.status));
+    const activePlans = migrationPlans.filter((plan) => (plan.spark_job_id && ['Queued', 'Running'].includes(plan.status)) || plan.status === 'Preflight running');
     if (!activePlans.length) return undefined;
     const timer = window.setInterval(async () => {
       try {
@@ -576,6 +576,8 @@ function App() {
     try {
       const updated = await api(`/migration-plans/${plan.id}/execute`, { method: 'POST' });
       setSelectedPlanId(updated.id);
+      setTaskPlanId(updated.id);
+      await loadPlanExecution(updated.id);
       await load();
     } catch (err) {
       setError(err.message);
@@ -672,7 +674,7 @@ function App() {
   const openPlanTask = async (plan) => {
     setError('');
     setTaskPlanId(plan.id);
-    if (!plan.spark_job_id) return;
+    if (!plan.spark_job_id && plan.status !== 'Preflight running' && plan.status !== 'Preflight ready' && plan.status !== 'Blocked') return;
     try {
       await loadPlanExecution(plan.id);
       await load();
@@ -1171,10 +1173,11 @@ function MigrationTaskModal({ plan, execution, connectors, onClose, onContinue, 
   const taskRows = job?.tasks?.length ? job.tasks : storedResults.filter((row) => row.kind === 'task');
   const vmResults = job?.vm_results?.length ? job.vm_results : storedResults.filter((row) => row.vm_id);
   const progressPercent = normalizeProgress(job?.progress_percent ?? taskRows.reduce((current, row) => Math.max(current, taskPercent(row)), 0));
-  const summaryMessage = job?.message || vmResults.find((row) => row.message)?.message || 'Not executed yet';
+  const summaryMessage = job?.message || vmResults.find((row) => row.message)?.message || (plan.status === 'Preflight running' ? 'Preflight running' : 'Not executed yet');
   const canContinue = taskCanContinue(plan, user);
   const canForceStop = user?.role === 'admin' && plan?.spark_job_id && ['Queued', 'Running'].includes(plan?.status);
-  return <Modal title={`Task: ${plan.name}`} onClose={onClose} wide><div className="plan-detail"><dl className="host-facts"><div><dt>Status</dt><dd>{plan.status}</dd></div><div><dt>Migration</dt><dd>{source?.name || plan.source_connector_id} → {target?.name || plan.target_connector_id}</dd></div><div><dt>Spark job</dt><dd>{plan.spark_job_id || '-'}</dd></div><div><dt>Progress</dt><dd>{progressPercent}%</dd></div><div><dt>Executed</dt><dd>{formatDateTime(plan.executed_at)}</dd></div></dl><div className="task-summary"><div className="task-progress"><div className={`task-progress-bar ${taskProgressTone(plan.status)}`}><span style={{ width: `${progressPercent}%` }} /></div><strong>{progressPercent}%</strong></div><p>{summaryMessage}</p>{(canContinue || canForceStop) && <div className="button-row">{canContinue && <button className="primary" type="button" disabled={continuingPlanId === plan.id} onClick={() => onContinue(plan)}><Play size={16} /> {continuingPlanId === plan.id ? 'Continuing...' : 'Continue from staging'}</button>}{canForceStop && <button className="danger-button" type="button" disabled={forceStoppingPlanId === plan.id} onClick={() => onForceStop(plan)}><Square size={16} /> {forceStoppingPlanId === plan.id ? 'Force stopping...' : 'Force stop task'}</button>}</div>}</div>{!plan.spark_job_id && <div className="about"><h2>Not executed yet</h2><p>This migration plan has not been sent to the Spark Engine. Run Preflight or Launch first to generate task telemetry.</p></div>}{Boolean(taskRows.length) && <div className="table-wrap"><table><thead><tr><th>Step</th><th>Status</th><th>Reached</th><th>Detail</th><th>Updated</th></tr></thead><tbody>{taskRows.map((task, index) => <tr key={`${task.key || task.task_code || 'task'}-${index}`}><td>{taskTitle(task, index)}</td><td><Badge value={taskStatusLabel(task.status)} /></td><td>{taskPercent(task)}%</td><td>{task.message || '-'}</td><td>{formatDateTime(taskUpdatedAt(task))}</td></tr>)}</tbody></table></div>}{plan.spark_job_id && !taskRows.length && <div className="about"><h2>Task stream pending</h2><p>The Spark Engine job exists, but it has not published task entries yet. Refresh after a few seconds if this persists.</p></div>}{Boolean(vmResults.length) && <div className="table-wrap"><table><thead><tr><th>VM ID</th><th>Status</th><th>Detail</th></tr></thead><tbody>{vmResults.map((row, index) => <tr key={`${row.vm_id || 'result'}-${index}`}><td>{row.vm_id || '-'}</td><td><Badge value={row.ok ? 'Completed' : row.message?.toLowerCase().includes('force-stop') || row.message?.toLowerCase().includes('cancel') ? 'Canceled' : 'Failed'} /></td><td>{row.message || preflightDetail(row)}</td></tr>)}</tbody></table></div>}</div></Modal>;
+  const isTaskMode = Boolean(plan.spark_job_id) || plan.status === 'Preflight running' || plan.status === 'Preflight ready' || plan.status === 'Blocked';
+  return <Modal title={`Task: ${plan.name}`} onClose={onClose} wide><div className="plan-detail"><dl className="host-facts"><div><dt>Status</dt><dd>{plan.status}</dd></div><div><dt>Migration</dt><dd>{source?.name || plan.source_connector_id} → {target?.name || plan.target_connector_id}</dd></div><div><dt>Spark job</dt><dd>{plan.spark_job_id || '-'}</dd></div><div><dt>Progress</dt><dd>{progressPercent}%</dd></div><div><dt>Executed</dt><dd>{formatDateTime(plan.executed_at)}</dd></div></dl><div className="task-summary"><div className="task-progress"><div className={`task-progress-bar ${taskProgressTone(plan.status)}`}><span style={{ width: `${progressPercent}%` }} /></div><strong>{progressPercent}%</strong></div><p>{summaryMessage}</p>{(canContinue || canForceStop) && <div className="button-row">{canContinue && <button className="primary" type="button" disabled={continuingPlanId === plan.id} onClick={() => onContinue(plan)}><Play size={16} /> {continuingPlanId === plan.id ? 'Continuing...' : 'Continue from staging'}</button>}{canForceStop && <button className="danger-button" type="button" disabled={forceStoppingPlanId === plan.id} onClick={() => onForceStop(plan)}><Square size={16} /> {forceStoppingPlanId === plan.id ? 'Force stopping...' : 'Force stop task'}</button>}</div>}</div>{!isTaskMode && <div className="about"><h2>Not executed yet</h2><p>This migration plan has not been sent to the Spark Engine. Run Preflight or Launch first to generate task telemetry.</p></div>}{Boolean(taskRows.length) && <div className="table-wrap"><table><thead><tr><th>Step</th><th>Status</th><th>Reached</th><th>Detail</th><th>Updated</th></tr></thead><tbody>{taskRows.map((task, index) => <tr key={`${task.key || task.task_code || 'task'}-${index}`}><td>{taskTitle(task, index)}</td><td><Badge value={taskStatusLabel(task.status)} /></td><td>{taskPercent(task)}%</td><td>{task.message || '-'}</td><td>{formatDateTime(taskUpdatedAt(task))}</td></tr>)}</tbody></table></div>}{plan.spark_job_id && !taskRows.length && <div className="about"><h2>Task stream pending</h2><p>The Spark Engine job exists, but it has not published task entries yet. Refresh after a few seconds if this persists.</p></div>}{Boolean(vmResults.length) && <div className="table-wrap"><table><thead><tr><th>VM ID</th><th>Status</th><th>Detail</th></tr></thead><tbody>{vmResults.map((row, index) => <tr key={`${row.vm_id || 'result'}-${index}`}><td>{row.vm_id || '-'}</td><td><Badge value={row.ok ? 'Completed' : row.message?.toLowerCase().includes('force-stop') || row.message?.toLowerCase().includes('cancel') ? 'Canceled' : 'Failed'} /></td><td>{row.message || preflightDetail(row)}</td></tr>)}</tbody></table></div>}</div></Modal>;
 }
 
 function WaveModal({ mode, plans, form, setForm, save, close }) {

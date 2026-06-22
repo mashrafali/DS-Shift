@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import shutil
+import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -26,7 +27,7 @@ from .connector_client import (
     connector_engine_status,
     validate_connector_platform,
 )
-from .database import Base, engine, get_db
+from .database import Base, SessionLocal, engine, get_db
 from .engines import build_kvm_to_esxi_preflight
 from .service_status import get_service_statuses
 from .spark_client import cancel_spark_job, create_spark_job, get_spark_job, preflight_spark_job, spark_capabilities
@@ -355,6 +356,166 @@ def summarize_preflight_checks(checks: list[dict]) -> str:
     if len(blocking) > 4:
         messages.append(f"{len(blocking) - 4} more blocking check(s)")
     return "Preflight blocked: " + "; ".join(messages)
+
+
+def preflight_phase_rows(plan: models.MigrationPlan, checks: list[dict], running: bool = False) -> list[dict]:
+    source_keys = {"source_kvm", "source_vcenter"}
+    destination_keys = {"target_vcenter", "target_kvm"}
+    destination_data_keys = {"target_datastore", "target_network", "target_vdc_name", "target_compute_name", "target_kvm_pool", "target_kvm_network"}
+    blocker_keys = {"qemu_img", "govc", "virt_v2v", "libguestfs_appliance", "source_vm_state", "source_vm_disks", "source_vm_inspection", "virt_v2v_source", "target_kvm"}
+
+    def phase_summary(keys: set[str], title: str, *, progress: int) -> dict:
+        phase_checks = [check for check in checks if str(check.get("check")) in keys]
+        ok = bool(phase_checks) and all(check.get("ok") for check in phase_checks)
+        if running and not phase_checks:
+            status = "Running"
+            message = f"Checking {title.lower()}..."
+        elif ok:
+            status = "Succeeded"
+            message = f"{title} passed"
+        elif phase_checks:
+            status = "Failed"
+            message = summarize_preflight_checks(phase_checks)
+        else:
+            status = "Running" if running else "Failed"
+            message = f"{title} checks were not returned"
+        return {
+            "kind": "task",
+            "key": title.lower().replace(" ", "-"),
+            "title": title,
+            "status": status,
+            "progress": progress,
+            "message": message,
+        }
+
+    return [
+        phase_summary(source_keys, "Source reachability", progress=20),
+        phase_summary(destination_keys, "Destination reachability", progress=45),
+        phase_summary(destination_data_keys, "Validate destination connector data", progress=70),
+        phase_summary(blocker_keys, "Validate migration blockers", progress=95),
+        {
+            "kind": "task",
+            "key": "plan-summary",
+            "title": "Plan summary",
+            "status": "Running" if running else ("Succeeded" if checks and all(check.get("ok") for check in checks) else "Failed"),
+            "progress": 100 if not running else 10,
+            "message": summarize_preflight_checks(checks) if checks else "Preflight running",
+        },
+    ]
+
+
+def preflight_vm_rows(vms: list[models.VmInventory], checks: list[dict]) -> list[dict]:
+    rows = []
+    for vm in vms:
+        vm_checks = [check for check in checks if check.get("vm_name") == vm.vm_name]
+        ok = bool(vm_checks) and all(check.get("ok") for check in vm_checks)
+        rows.append(
+            {
+                "kind": "vm_result",
+                "vm_id": vm.id,
+                "vm_name": vm.vm_name,
+                "ok": ok,
+                "message": summarize_preflight_checks(vm_checks) if vm_checks else "No VM-specific checks were returned",
+                "checks": vm_checks,
+            }
+        )
+    return rows
+
+
+def preflight_execution_snapshot(plan: models.MigrationPlan, checks: list[dict], vms: list[models.VmInventory], adapter: str | None = None) -> dict:
+    checks_by_vm: dict[str, list[dict]] = {}
+    shared_checks: list[dict] = []
+    for check in checks:
+        if check.get("vm_name"):
+            checks_by_vm.setdefault(check["vm_name"], []).append(check)
+        else:
+            shared_checks.append(check)
+    vm_results = []
+    for vm in vms:
+        vm_checks = shared_checks + checks_by_vm.get(vm.vm_name, [])
+        ok = bool(vm_checks) and all(check.get("ok") for check in vm_checks)
+        vm_results.append(
+            {
+                "vm_id": vm.id,
+                "vm_name": vm.vm_name,
+                "ok": ok,
+                "message": summarize_preflight_checks(vm_checks),
+                "checks": vm_checks,
+                "adapter": adapter,
+            }
+        )
+    return {
+        "status": "Preflight ready" if checks and all(check.get("ok") for check in checks) else "Blocked",
+        "rows": preflight_phase_rows(plan, checks, running=False) + vm_results,
+        "vm_results": vm_results,
+    }
+
+
+def run_migration_plan_preflight(plan_id: int, requested_by: str, db: Session | None = None) -> None:
+    owns_session = db is None
+    db = db or SessionLocal()
+    try:
+        plan = db.get(models.MigrationPlan, plan_id)
+        if not plan:
+            return
+        source, target, vms = validate_live_migration_plan(plan, db)
+        if not vms:
+            plan.status = "Blocked"
+            plan.results_json = json.dumps(preflight_phase_rows(plan, [], running=False) + [])
+            plan.executed_at = datetime.utcnow()
+            db.commit()
+            return
+        plan.status = "Preflight running"
+        plan.executed_at = datetime.utcnow()
+        plan.results_json = json.dumps(preflight_phase_rows(plan, [], running=True))
+        db.commit()
+        try:
+            preflight = preflight_spark_job(
+                migration_plan_execution_payload(
+                    plan,
+                    source,
+                    target,
+                    vms,
+                    requested_by,
+                    live=False,
+                )
+            )
+        except ValueError as exc:
+            checks = [{"check": "spark_preflight", "ok": False, "message": str(exc)}]
+            plan.status = "Blocked"
+            plan.results_json = json.dumps(preflight_phase_rows(plan, checks, running=False))
+            plan.executed_at = datetime.utcnow()
+            for vm in vms:
+                vm.current_status = "Blocked"
+                db.add(models.VmStatusHistory(vm_id=vm.id, status="Blocked", note=f"Migration plan {plan.name} Spark preflight failed: {exc}"))
+            db.commit()
+            return
+        except Exception as exc:
+            checks = [{"check": "spark_preflight", "ok": False, "message": str(exc)}]
+            plan.status = "Blocked"
+            plan.results_json = json.dumps(preflight_phase_rows(plan, checks, running=False))
+            plan.executed_at = datetime.utcnow()
+            for vm in vms:
+                vm.current_status = "Blocked"
+                db.add(models.VmStatusHistory(vm_id=vm.id, status="Blocked", note=f"Migration plan {plan.name} Spark preflight unavailable: {exc}"))
+            db.commit()
+            return
+        checks = preflight.get("checks", [])
+        snapshot = preflight_execution_snapshot(plan, checks, vms, preflight.get("adapter"))
+        db_vm_by_id = {vm.id: vm for vm in vms}
+        for vm_result in snapshot["vm_results"]:
+            vm = db_vm_by_id.get(vm_result["vm_id"])
+            if not vm:
+                continue
+            vm.current_status = "Ready for migration" if vm_result["ok"] else "Blocked"
+            db.add(models.VmStatusHistory(vm_id=vm.id, status=vm.current_status, note=f"Migration plan {plan.name} Spark preflight"))
+        plan.status = snapshot["status"]
+        plan.results_json = json.dumps(snapshot["rows"])
+        plan.executed_at = datetime.utcnow()
+        db.commit()
+    finally:
+        if owns_session:
+            db.close()
 
 
 def validate_plan_vm_selection(vm_ids: list[int], db: Session) -> tuple[list[models.VmInventory], int]:
@@ -1585,13 +1746,25 @@ def migration_plan_execution(plan_id: int, db: Session = Depends(get_db), _user:
     plan = db.get(models.MigrationPlan, plan_id)
     if not plan:
         raise HTTPException(404, "Migration plan not found")
-    if not plan.spark_job_id:
-        raise HTTPException(404, "Migration plan has no Spark Engine execution")
-    try:
-        job = get_spark_job(plan.spark_job_id)
-    except Exception as exc:
-        raise HTTPException(503, f"Spark Engine unavailable: {exc}") from exc
-    apply_spark_job(db, plan, job)
+    if plan.spark_job_id:
+        try:
+            job = get_spark_job(plan.spark_job_id)
+        except Exception as exc:
+            raise HTTPException(503, f"Spark Engine unavailable: {exc}") from exc
+        apply_spark_job(db, plan, job)
+    else:
+        stored = parsed_json_array(plan.results_json)
+        task_rows = [row for row in stored if row.get("kind") == "task"]
+        vm_rows = [row for row in stored if row.get("kind") == "vm_result"]
+        job = {
+            "id": None,
+            "status": plan.status,
+            "adapter": None,
+            "message": "Preflight running" if plan.status == "Preflight running" else summarize_preflight_checks(task_rows),
+            "tasks": task_rows,
+            "vm_results": vm_rows,
+            "progress_percent": max([row.get("progress", 0) for row in task_rows], default=0),
+        }
     db.commit()
     db.refresh(plan)
     return {"plan": schemas.MigrationPlan.model_validate(plan), "job": job}
@@ -1621,49 +1794,14 @@ def execute_migration_plan(plan_id: int, db: Session = Depends(get_db), _user: m
         raise HTTPException(404, "Source or target connector not found")
     if len(vms) != len(vm_ids):
         raise HTTPException(409, "One or more migration plan VMs no longer exist")
-    try:
-        preflight = preflight_spark_job(
-            migration_plan_execution_payload(
-                plan,
-                source,
-                target,
-                vms,
-                _user.username if _user else "system",
-                live=False,
-            )
-        )
-    except ValueError as exc:
-        raise HTTPException(409, f"Spark Engine rejected preflight: {exc}") from exc
-    except Exception as exc:
-        raise HTTPException(503, f"Spark Engine unavailable: {exc}") from exc
-    checks_by_vm = {}
-    shared_checks = []
-    for check in preflight.get("checks", []):
-        if check.get("vm_name"):
-            checks_by_vm.setdefault(check["vm_name"], []).append(check)
-        else:
-            shared_checks.append(check)
-    results = []
-    for vm in vms:
-        checks = shared_checks + checks_by_vm.get(vm.vm_name, [])
-        ok = bool(checks) and all(check.get("ok") for check in checks)
-        vm.current_status = "Ready for migration" if ok else "Blocked"
-        db.add(models.VmStatusHistory(vm_id=vm.id, status=vm.current_status, note=f"Migration plan {plan.name} Spark preflight"))
-        results.append(
-            {
-                "vm_id": vm.id,
-                "vm_name": vm.vm_name,
-                "ok": ok,
-                "message": summarize_preflight_checks(checks),
-                "checks": checks,
-                "adapter": preflight.get("adapter"),
-            }
-        )
-    plan.status = "Preflight ready" if preflight.get("ok") else "Blocked"
-    plan.results_json = json.dumps(results)
+    if plan.status in {"Queued", "Running", "Preflight running"}:
+        raise HTTPException(409, "Cannot run preflight while the migration plan has an active task")
+    plan.status = "Preflight running"
+    plan.results_json = json.dumps(preflight_phase_rows(plan, [], running=True))
     plan.executed_at = datetime.utcnow()
     db.commit()
     db.refresh(plan)
+    threading.Thread(target=run_migration_plan_preflight, args=(plan.id, _user.username if _user else "system"), daemon=True).start()
     return plan
 
 

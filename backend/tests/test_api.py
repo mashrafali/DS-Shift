@@ -31,6 +31,7 @@ from app.main import (
     hash_password,
     launch_migration_plan,
     seed_defaults,
+    run_migration_plan_preflight,
     sync_discovered_hosts,
     sync_discovered_vms,
     update_user,
@@ -321,10 +322,13 @@ def test_discovery_inventory_and_migration_plan_execution(monkeypatch):
                 ],
             },
         )
-        executed = execute_migration_plan(plan.id, db, None)
+        run_migration_plan_preflight(plan.id, "admin", db)
 
-        assert executed.status == "Preflight ready"
-        assert executed.executed_at is not None
+        refreshed_plan = db.get(models.MigrationPlan, plan.id)
+        assert refreshed_plan.status == "Preflight ready"
+        assert refreshed_plan.executed_at is not None
+        assert "Source reachability" in refreshed_plan.results_json
+        assert "Plan summary" in refreshed_plan.results_json
         assert db.get(models.VmInventory, vm.id).current_status == "Ready for migration"
 
 
