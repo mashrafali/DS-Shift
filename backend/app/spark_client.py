@@ -19,7 +19,8 @@ def create_spark_job(payload: dict) -> dict:
 
 
 def preflight_spark_job(payload: dict) -> dict:
-    with httpx.Client(timeout=120) as client:
+    timeout = httpx.Timeout(settings.spark_preflight_timeout_seconds, connect=10.0)
+    with httpx.Client(timeout=timeout) as client:
         response = client.post(f"{settings.spark_engine_url}/preflight", json=payload)
         if response.status_code >= 400:
             raise ValueError(response.text)

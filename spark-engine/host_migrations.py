@@ -26,6 +26,8 @@ from pyVmomi import vim
 VMWARE_TYPES = {"VMware ESXi / vCenter", "VMware ESXi", "vCenter"}
 STAGING_ROOT = Path(os.getenv("DS_SHIFT_STAGING_ROOT", "/DS-Shift-Staging"))
 LAUNCHGRID_URL = os.getenv("LAUNCHGRID_URL", "http://launchgrid:8300").rstrip("/")
+PREFLIGHT_LIBGUESTFS_TIMEOUT = int(os.getenv("SPARK_PREFLIGHT_LIBGUESTFS_TIMEOUT_SECONDS", "300"))
+PREFLIGHT_VIRT_V2V_SOURCE_TIMEOUT = int(os.getenv("SPARK_PREFLIGHT_VIRT_V2V_SOURCE_TIMEOUT_SECONDS", "300"))
 _register_child_process = None
 _cancel_requested = None
 
@@ -594,7 +596,7 @@ def preflight_kvm_to_vcenter(request) -> list[dict]:
 def preflight_vcenter_to_kvm(request) -> list[dict]:
     checks = [{"check": "virt_v2v", "ok": bool(shutil.which("virt-v2v")), "message": shutil.which("virt-v2v") or "virt-v2v is not installed"}]
     try:
-        ensure_libguestfs_ready(timeout=180)
+        ensure_libguestfs_ready(timeout=PREFLIGHT_LIBGUESTFS_TIMEOUT)
         checks.append({"check": "libguestfs_appliance", "ok": True, "message": "libguestfs appliance booted successfully"})
     except Exception as exc:
         checks.append({"check": "libguestfs_appliance", "ok": False, "message": str(exc)})
@@ -628,7 +630,7 @@ def preflight_vcenter_to_kvm(request) -> list[dict]:
                                 "--print-source",
                             ],
                             env=virt_v2v_env(),
-                            timeout=120,
+                            timeout=PREFLIGHT_VIRT_V2V_SOURCE_TIMEOUT,
                             pass_fds=(password_fd,),
                         )
                         checks.append({"check": "virt_v2v_source", "vm_name": workload.vm_name, "ok": True, "message": "virt-v2v read the source VM metadata"})

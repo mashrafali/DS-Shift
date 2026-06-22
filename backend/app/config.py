@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://dsshift:dsshift@database:5432/dsshift"
     cors_origins: str = "*"
     spark_engine_url: str = "http://spark-engine:8200"
+    spark_preflight_timeout_seconds: int = 900
 
     class Config:
         env_file = ".env"
