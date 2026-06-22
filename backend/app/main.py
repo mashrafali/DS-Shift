@@ -1776,11 +1776,12 @@ def migration_plan_execution(plan_id: int, db: Session = Depends(get_db), _user:
         stored = parsed_json_array(plan.results_json)
         task_rows = [row for row in stored if row.get("kind") == "task"]
         vm_rows = [row for row in stored if row.get("kind") == "vm_result"]
+        summary_row = next((row for row in task_rows if row.get("key") == "plan-summary"), None)
         job = {
             "id": None,
             "status": plan.status,
             "adapter": None,
-            "message": "Preflight running" if plan.status == "Preflight running" else summarize_preflight_checks(task_rows),
+            "message": "Preflight running" if plan.status == "Preflight running" else summary_row.get("message") if summary_row else (vm_rows[0].get("message") if vm_rows else "Preflight completed"),
             "tasks": task_rows,
             "vm_results": vm_rows,
             "progress_percent": max([row.get("progress", 0) for row in task_rows], default=0),

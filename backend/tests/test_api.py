@@ -14,6 +14,7 @@ from app.database import Base
 from app.main import (
     apply_spark_job,
     app,
+    migration_plan_execution,
     migration_plan_execution_payload,
     raw_dashboard_summary,
     create_migration_plan,
@@ -330,6 +331,36 @@ def test_discovery_inventory_and_migration_plan_execution(monkeypatch):
         assert "Source reachability" in refreshed_plan.results_json
         assert "Plan summary" in refreshed_plan.results_json
         assert db.get(models.VmInventory, vm.id).current_status == "Ready for migration"
+
+
+def test_migration_plan_execution_uses_stored_preflight_summary_without_spark_job():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        source = models.ConnectorProfile(name="vCenter Source", connector_category="host", connector_type="VMware ESXi / vCenter")
+        target = models.ConnectorProfile(name="KVM Target", connector_category="host", connector_type="KVM")
+        db.add_all([source, target])
+        db.flush()
+        plan = models.MigrationPlan(
+            name="Plan preflight",
+            source_connector_id=source.id,
+            target_connector_id=target.id,
+            migration_type="VMware ESXi / vCenter to KVM",
+            vm_ids_json="[]",
+            status="Blocked",
+            results_json=json.dumps([
+                {"kind": "task", "key": "source-reachability", "title": "Source reachability", "status": "Succeeded", "progress": 20, "message": "Source reachability passed"},
+                {"kind": "task", "key": "plan-summary", "title": "Plan summary", "status": "Failed", "progress": 100, "message": "Preflight blocked: source vm state: poweredOn"},
+            ]),
+        )
+        db.add(plan)
+        db.commit()
+        db.refresh(plan)
+
+        execution = migration_plan_execution(plan.id, db, None)
+
+        assert execution["job"]["message"] == "Preflight blocked: source vm state: poweredOn"
 
 
 def test_sync_discovered_vms_updates_vm_name_when_external_id_matches():
