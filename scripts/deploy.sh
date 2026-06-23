@@ -104,11 +104,55 @@ fi
 
 mkdir -p ops/certs
 mkdir -p /DS-Shift-Staging
-if [[ ! -f ops/certs/ds-shift.crt || ! -f ops/certs/ds-shift.key ]]; then
+
+find ops/certs -maxdepth 1 -type f ! -name 'ds-shift.crt' ! -name 'ds-shift.key' -delete
+
+certificate_has_san() {
+  [[ -f ops/certs/ds-shift.crt ]] && openssl x509 -in ops/certs/ds-shift.crt -noout -ext subjectAltName 2>/dev/null | grep -q 'Subject Alternative Name'
+}
+
+generate_certificate() {
+  local cert_conf
+  local alt_index=1
+  local name
+  local ip
+  cert_conf="$(mktemp)"
+  {
+    printf '[req]\n'
+    printf 'distinguished_name = req_distinguished_name\n'
+    printf 'x509_extensions = v3_req\n'
+    printf 'prompt = no\n'
+    printf '[req_distinguished_name]\n'
+    printf 'CN = ds-shift-app\n'
+    printf 'O = Defined Solutions\n'
+    printf '[v3_req]\n'
+    printf 'subjectAltName = @alt_names\n'
+    printf '[alt_names]\n'
+    printf 'DNS.%d = ds-shift-app\n' "${alt_index}"
+    alt_index=$((alt_index + 1))
+    for name in "$(hostname -s 2>/dev/null || true)" "$(hostname -f 2>/dev/null || true)" ${DS_SHIFT_TLS_DNS_NAMES:-}; do
+      if [[ -n "${name}" && "${name}" != "(none)" ]]; then
+        printf 'DNS.%d = %s\n' "${alt_index}" "${name}"
+        alt_index=$((alt_index + 1))
+      fi
+    done
+    for ip in $(hostname -I 2>/dev/null || true) ${DS_SHIFT_TLS_IPS:-}; do
+      if [[ -n "${ip}" ]]; then
+        printf 'IP.%d = %s\n' "${alt_index}" "${ip}"
+        alt_index=$((alt_index + 1))
+      fi
+    done
+  } > "${cert_conf}"
   openssl req -x509 -nodes -newkey rsa:4096 -days 825 \
     -keyout ops/certs/ds-shift.key \
     -out ops/certs/ds-shift.crt \
-    -subj "/CN=ds-shift-app/O=Defined Solutions"
+    -config "${cert_conf}"
+  rm -f "${cert_conf}"
+}
+
+if [[ ! -f ops/certs/ds-shift.crt || ! -f ops/certs/ds-shift.key ]] || ! certificate_has_san; then
+  rm -f ops/certs/ds-shift.crt ops/certs/ds-shift.key
+  generate_certificate
 fi
 
 load_env
