@@ -34,8 +34,6 @@ Optional installer environment overrides:
 ```bash
 DS_SHIFT_INSTALL_DIR=/opt/ds-shift
 DS_SHIFT_BRANCH=main
-DS_SHIFT_ADMIN_INITIAL_USERNAME=admin
-DS_SHIFT_ADMIN_INITIAL_PASSWORD=<set-a-password>
 DS_SHIFT_POSTGRES_PASSWORD=<set-a-password>
 DS_SHIFT_SKIP_VALIDATE=true
 ```
@@ -44,14 +42,14 @@ Example:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mashrafali/DS-Shift/main/install-ds-shift.sh | \
-  sudo DS_SHIFT_ADMIN_INITIAL_PASSWORD='<set-a-password>' DS_SHIFT_POSTGRES_PASSWORD='<set-a-password>' bash
+  sudo DS_SHIFT_POSTGRES_PASSWORD='<set-a-password>' bash
 ```
 
 If `.env` already exists in the install directory, the installer preserves the
 current values unless you explicitly override them through `DS_SHIFT_*`
 environment variables.
 
-Set `ADMIN_INITIAL_USERNAME` and `ADMIN_INITIAL_PASSWORD` before the first startup. If omitted, the backend seeds `admin` with the lab default requested for the MVP.
+After the first startup, open the GUI. If no local users exist, DS Shift asks you to set the initial `admin` password before normal login is available.
 
 The deploy script creates a self-signed certificate in `ops/certs/` if one is not already present.
 

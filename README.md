@@ -5,7 +5,7 @@ Defined Solutions platform for VM migration planning, controlled execution, trac
 DS Shift 1.0 RC1 is an MVP focused on assessment, source/target inventory,
 migration planning, migration waves, VM workflow state tracking, dashboard
 metrics, discovery runs, and migration execution jobs. Live execution is
-approval-gated and disabled by default.
+approval-gated and enabled by default.
 
 ## Architecture
 
@@ -39,7 +39,7 @@ Useful overrides:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mashrafali/DS-Shift/main/install-ds-shift.sh | \
-  sudo DS_SHIFT_INSTALL_DIR=/opt/ds-shift DS_SHIFT_BRANCH=main DS_SHIFT_ADMIN_INITIAL_PASSWORD='StrongPasswordHere' bash
+  sudo DS_SHIFT_INSTALL_DIR=/opt/ds-shift DS_SHIFT_BRANCH=main DS_SHIFT_POSTGRES_PASSWORD='StrongDatabaseSecretHere' bash
 ```
 
 Access:
@@ -48,11 +48,11 @@ Access:
 - API health: `https://<host>/api/health`
 - API docs: `https://<host>/docs`
 
-Default MVP login:
+First login:
 
-- Username: `admin`
-- Initial password: set with `ADMIN_INITIAL_PASSWORD`; lab bootstrap may use `P@ssw0rd`.
-- Change the environment value before production use.
+- Open the GUI after the first deployment.
+- DS Shift asks for the initial `admin` password when no local users exist.
+- That password is hashed and used for later `admin` sign-ins.
 
 ## Services
 
@@ -84,7 +84,7 @@ Administrators manage local users from `Settings Control` in the web UI. The Set
 - `POST /api/users`
 - `PUT /api/users/{user_id}`
 
-The seeded lab admin is `admin` with the configured `ADMIN_INITIAL_PASSWORD`.
+The `admin` user is created by the first-run GUI setup when the local user table is empty.
 
 ## Discovery and Migration Engine
 
@@ -95,8 +95,9 @@ The seeded lab admin is `admin` with the configured `ADMIN_INITIAL_PASSWORD`.
   GCP-to-GCP using machine images, Azure-to-Azure within one subscription, and
   KVM-to-KVM using `virsh migrate`.
 - KVM-to-vCenter uses `qemu-img` plus an OVA import through `govc`.
-- vCenter-to-KVM uses `virt-v2v`, transfers converted disks to the selected
-  KVM storage pool, and defines the generated libvirt domain.
+- vCenter-to-KVM downloads VMware disk artifacts into staging, converts them
+  with `qemu-img`, transfers converted disks to the selected KVM storage pool,
+  and defines the generated libvirt domain through LaunchGrid.
 - Other cross-provider execution remains blocked until its required packaging,
   staging, network mapping, and import pipeline exists.
 - Spark Engine accepts live jobs only when

@@ -17,6 +17,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import models, schemas
@@ -190,16 +191,17 @@ def active_admin_count(db: Session) -> int:
 
 
 def seed_defaults(db: Session) -> None:
-    admin_username = os.getenv("ADMIN_INITIAL_USERNAME", "admin")
-    admin_password = os.getenv("ADMIN_INITIAL_PASSWORD", "P@ssw0rd")
-    if not db.query(models.LocalUser).filter(models.LocalUser.username == admin_username).first():
-        db.add(models.LocalUser(username=admin_username, password_hash=hash_password(admin_password), role="admin"))
     app_settings = db.query(models.AppSetting).first()
     if not app_settings:
         db.add(models.AppSetting())
-    elif app_settings.product_name.strip().lower() == "ds replace":
-        app_settings.product_name = "DS Shift"
     db.commit()
+
+
+def issue_login_response(db: Session, user: models.LocalUser) -> schemas.LoginResponse:
+    token = secrets.token_urlsafe(32)
+    db.add(models.AuthSession(user_id=user.id, token_hash=hash_token(token), expires_at=datetime.utcnow() + timedelta(hours=12)))
+    db.commit()
+    return schemas.LoginResponse(access_token=token, username=user.username, role=user.role)
 
 
 def parsed_json_object(value: str | None) -> dict:
@@ -819,15 +821,33 @@ def about():
     }
 
 
+@app.get("/api/bootstrap/status", response_model=schemas.BootstrapStatus)
+def bootstrap_status(db: Session = Depends(get_db)):
+    return schemas.BootstrapStatus(required=db.query(models.LocalUser).count() == 0)
+
+
+@app.post("/api/bootstrap/admin", response_model=schemas.LoginResponse)
+def bootstrap_admin(payload: schemas.BootstrapAdminRequest, db: Session = Depends(get_db)):
+    if db.query(models.LocalUser).count() > 0:
+        raise HTTPException(409, "Initial administrator has already been configured")
+    if len(payload.password) < 8:
+        raise HTTPException(400, "Admin password must be at least 8 characters")
+    user = models.LocalUser(username="admin", password_hash=hash_password(payload.password), role="admin", is_active="true")
+    try:
+        db.add(user)
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, "Initial administrator has already been configured") from exc
+    return issue_login_response(db, user)
+
+
 @app.post("/api/auth/login", response_model=schemas.LoginResponse)
 def login(payload: schemas.LoginRequest, db: Session = Depends(get_db)):
     user = db.query(models.LocalUser).filter(models.LocalUser.username == payload.username).first()
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(401, "Invalid username or password")
-    token = secrets.token_urlsafe(32)
-    db.add(models.AuthSession(user_id=user.id, token_hash=hash_token(token), expires_at=datetime.utcnow() + timedelta(hours=12)))
-    db.commit()
-    return schemas.LoginResponse(access_token=token, username=user.username, role=user.role)
+    return issue_login_response(db, user)
 
 
 @app.post("/api/auth/logout", status_code=204)

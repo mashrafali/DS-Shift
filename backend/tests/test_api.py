@@ -14,6 +14,8 @@ from app.database import Base
 from app.main import (
     apply_spark_job,
     app,
+    bootstrap_admin,
+    bootstrap_status,
     migration_plan_execution,
     migration_plan_execution_payload,
     raw_dashboard_summary,
@@ -38,6 +40,7 @@ from app.main import (
     update_user,
     update_wave,
     validate_profile_photo,
+    verify_password,
 )
 from app.service_status import display_name, unavailable_statuses
 
@@ -60,17 +63,34 @@ def test_profile_photo_validation():
         validate_profile_photo(f"data:image/png;base64,{base64.b64encode(b'not-an-image').decode()}")
 
 
-def test_seed_defaults_rebrands_existing_settings():
+def test_seed_defaults_does_not_create_admin_user():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
 
     with Session(engine) as db:
-        db.add(models.AppSetting(product_name="DS Replace"))
-        db.commit()
-
         seed_defaults(db)
 
+        assert db.query(models.LocalUser).count() == 0
         assert db.query(models.AppSetting).one().product_name == "DS Shift"
+
+
+def test_bootstrap_admin_creates_first_admin_and_then_locks():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        assert bootstrap_status(db).required is True
+
+        response = bootstrap_admin(schemas.BootstrapAdminRequest(password="initial-secret"), db)
+
+        user = db.query(models.LocalUser).one()
+        assert response.username == "admin"
+        assert response.role == "admin"
+        assert user.username == "admin"
+        assert verify_password("initial-secret", user.password_hash)
+        assert bootstrap_status(db).required is False
+        with pytest.raises(HTTPException, match="already been configured"):
+            bootstrap_admin(schemas.BootstrapAdminRequest(password="another-secret"), db)
 
 
 def test_connector_platform_validation_and_aliases():
@@ -93,7 +113,7 @@ def test_connector_secret_storage_and_public_shape():
             connector_type="VMware ESXi / vCenter",
             endpoint="https://vcsa.test.local/sdk",
             username="administrator@vsphere.local",
-            password="P@ssw0rd",
+            password="connector-secret",
         )
         created = create_connector(payload, db, None)
         stored = db.query(models.ConnectorProfile).one()
@@ -101,7 +121,7 @@ def test_connector_secret_storage_and_public_shape():
         assert created.has_stored_secret is True
         assert created.credential_reference is None
         assert created.username == "administrator@vsphere.local"
-        assert decrypt_connector_secret(stored)["password"] == "P@ssw0rd"
+        assert decrypt_connector_secret(stored)["password"] == "connector-secret"
         assert connector_public(stored).has_stored_secret is True
 
 

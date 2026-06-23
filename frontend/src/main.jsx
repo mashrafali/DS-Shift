@@ -30,7 +30,6 @@ import {
 import './styles.css';
 
 const tokenKey = 'ds_shift_token';
-const legacyTokenKey = 'ds_replace_token';
 let displayTimezone = 'Asia/Riyadh';
 
 const timezoneOptions = [
@@ -50,10 +49,7 @@ const timezoneOptions = [
 ];
 
 function loadStoredToken() {
-  const token = localStorage.getItem(tokenKey) || localStorage.getItem(legacyTokenKey) || '';
-  if (token) localStorage.setItem(tokenKey, token);
-  localStorage.removeItem(legacyTokenKey);
-  return token;
+  return localStorage.getItem(tokenKey) || '';
 }
 
 const fallbackConnectorPlatforms = {
@@ -241,6 +237,9 @@ function App() {
   const [editingUserId, setEditingUserId] = useState(null);
   const [editUserForm, setEditUserForm] = useState(blankUser);
   const [loginForm, setLoginForm] = useState({ username: 'admin', password: '' });
+  const [bootstrapChecked, setBootstrapChecked] = useState(false);
+  const [bootstrapRequired, setBootstrapRequired] = useState(false);
+  const [bootstrapForm, setBootstrapForm] = useState({ password: '', confirm_password: '' });
   const [error, setError] = useState('');
 
   const api = async (path, options = {}) => {
@@ -254,7 +253,6 @@ function App() {
     });
     if (response.status === 401) {
       localStorage.removeItem(tokenKey);
-      localStorage.removeItem(legacyTokenKey);
       setToken('');
       setUser(null);
       throw new Error('Authentication required');
@@ -319,7 +317,35 @@ function App() {
     }
   };
 
-  useEffect(() => { load(); }, [token]);
+  useEffect(() => {
+    if (token) {
+      setBootstrapChecked(true);
+      setBootstrapRequired(false);
+      load();
+      return;
+    }
+    let current = true;
+    const checkBootstrap = async () => {
+      try {
+        const response = await fetch('/api/bootstrap/status');
+        if (!response.ok) throw new Error('Unable to read first-run setup status');
+        const result = await response.json();
+        if (current) {
+          setBootstrapRequired(Boolean(result.required));
+          setBootstrapChecked(true);
+        }
+      } catch (err) {
+        if (current) {
+          setError(err.message);
+          setBootstrapChecked(true);
+        }
+      }
+    };
+    checkBootstrap();
+    return () => {
+      current = false;
+    };
+  }, [token]);
 
   useEffect(() => {
     const currentPlanIds = new Set(migrationPlans.map((plan) => plan.id));
@@ -387,6 +413,31 @@ function App() {
     }
   };
 
+  const bootstrapAdmin = async (event) => {
+    event.preventDefault();
+    setError('');
+    if (bootstrapForm.password !== bootstrapForm.confirm_password) {
+      setError('Passwords do not match');
+      return;
+    }
+    try {
+      const response = await fetch('/api/bootstrap/admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: bootstrapForm.password }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const data = await response.json();
+      localStorage.setItem(tokenKey, data.access_token);
+      setBootstrapRequired(false);
+      setBootstrapForm({ password: '', confirm_password: '' });
+      setToken(data.access_token);
+      setUser({ username: data.username, role: data.role });
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   const logout = async () => {
     try {
       if (token) await api('/auth/logout', { method: 'POST' });
@@ -394,7 +445,6 @@ function App() {
       // Session may already be expired.
     }
     localStorage.removeItem(tokenKey);
-    localStorage.removeItem(legacyTokenKey);
     setToken('');
     setUser(null);
   };
@@ -807,7 +857,11 @@ function App() {
     return rows.map((r) => r.map((c) => `"${String(c ?? '').replaceAll('"', '""')}"`).join(',')).join('\n');
   }, [vms]);
 
-  if (!token) return <Login form={loginForm} setForm={setLoginForm} submit={login} error={error} />;
+  if (!token) {
+    if (!bootstrapChecked) return <AuthLoading error={error} />;
+    if (bootstrapRequired) return <BootstrapSetup form={bootstrapForm} setForm={setBootstrapForm} submit={bootstrapAdmin} error={error} />;
+    return <Login form={loginForm} setForm={setLoginForm} submit={login} error={error} />;
+  }
 
   const selectedPlan = migrationPlans.find((plan) => plan.id === selectedPlanId) || null;
   const taskPlan = migrationPlans.find((plan) => plan.id === taskPlanId) || null;
@@ -890,6 +944,14 @@ function App() {
 
 function Login({ form, setForm, submit, error }) {
   return <div className="login-screen"><form className="login-panel" onSubmit={submit}><BrandLogo className="login-brand-logo" /><div className="login-copy"><h1>DS Shift</h1><p>Defined Solutions migration command center</p></div>{error && <div className="alert">{error}</div>}<Input label="Username" value={form.username} onChange={(v) => setForm({ ...form, username: v })} required /><Input label="Password" type="password" value={form.password} onChange={(v) => setForm({ ...form, password: v })} required /><button className="primary"><KeyRound size={16} /> Sign in</button></form></div>;
+}
+
+function BootstrapSetup({ form, setForm, submit, error }) {
+  return <div className="login-screen"><form className="login-panel" onSubmit={submit}><BrandLogo className="login-brand-logo" /><div className="login-copy"><h1>Set admin password</h1><p>Create the first DS Shift administrator account.</p></div>{error && <div className="alert">{error}</div>}<Input label="Username" value="admin" onChange={() => {}} disabled /><Input label="Admin password" type="password" value={form.password} onChange={(v) => setForm({ ...form, password: v })} required /><Input label="Confirm password" type="password" value={form.confirm_password} onChange={(v) => setForm({ ...form, confirm_password: v })} required /><button className="primary"><KeyRound size={16} /> Create admin account</button></form></div>;
+}
+
+function AuthLoading({ error }) {
+  return <div className="login-screen"><div className="login-panel"><BrandLogo className="login-brand-logo" /><div className="login-copy"><h1>DS Shift</h1><p>Checking first-run setup</p></div>{error && <div className="alert">{error}</div>}</div></div>;
 }
 
 function titleFor(active) {

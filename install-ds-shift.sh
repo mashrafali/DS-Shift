@@ -7,8 +7,6 @@ INSTALL_DIR="${DS_SHIFT_INSTALL_DIR:-/opt/ds-shift}"
 SKIP_DOCKER_INSTALL="${DS_SHIFT_SKIP_DOCKER_INSTALL:-false}"
 SKIP_DEPLOY="${DS_SHIFT_SKIP_DEPLOY:-false}"
 SKIP_VALIDATE="${DS_SHIFT_SKIP_VALIDATE:-false}"
-ADMIN_USERNAME="${DS_SHIFT_ADMIN_INITIAL_USERNAME:-}"
-ADMIN_PASSWORD="${DS_SHIFT_ADMIN_INITIAL_PASSWORD:-}"
 POSTGRES_PASSWORD="${DS_SHIFT_POSTGRES_PASSWORD:-}"
 
 log() {
@@ -130,15 +128,11 @@ set_env_value() {
 ensure_env_file() {
   local env_file="${INSTALL_DIR}/.env"
   local current_postgres_password
-  local current_admin_username
-  local current_admin_password
   if [[ ! -f "${env_file}" ]]; then
     cp "${INSTALL_DIR}/.env.example" "${env_file}"
   fi
 
   current_postgres_password="$(current_env_value "${env_file}" "POSTGRES_PASSWORD")"
-  current_admin_username="$(current_env_value "${env_file}" "ADMIN_INITIAL_USERNAME")"
-  current_admin_password="$(current_env_value "${env_file}" "ADMIN_INITIAL_PASSWORD")"
 
   if [[ -z "${POSTGRES_PASSWORD}" && ( -z "${current_postgres_password}" || "${current_postgres_password}" == "change-me-to-a-random-local-secret" ) ]]; then
     POSTGRES_PASSWORD="$(random_secret)"
@@ -147,23 +141,9 @@ ensure_env_file() {
     POSTGRES_PASSWORD="${current_postgres_password}"
   fi
 
-  if [[ -z "${ADMIN_PASSWORD}" && ( -z "${current_admin_password}" || "${current_admin_password}" == "change-me-before-production" ) ]]; then
-    ADMIN_PASSWORD="$(random_secret)"
-  fi
-  if [[ -z "${ADMIN_PASSWORD}" ]]; then
-    ADMIN_PASSWORD="${current_admin_password}"
-  fi
-  if [[ -z "${current_admin_username}" ]]; then
-    current_admin_username="admin"
-  fi
-  if [[ -z "${ADMIN_USERNAME}" ]]; then
-    ADMIN_USERNAME="${current_admin_username}"
-  fi
-
   set_env_value "${env_file}" "POSTGRES_PASSWORD" "${POSTGRES_PASSWORD}"
   set_env_value "${env_file}" "POSTGRES_PASSWORD_URLENCODED" "$(urlencode "${POSTGRES_PASSWORD}")"
-  set_env_value "${env_file}" "ADMIN_INITIAL_USERNAME" "${ADMIN_USERNAME}"
-  set_env_value "${env_file}" "ADMIN_INITIAL_PASSWORD" "${ADMIN_PASSWORD}"
+  sed -i '/^ADMIN_/d' "${env_file}"
   if ! grep -q '^SPARK_LIVE_EXECUTION_ENABLED=' "${env_file}"; then
     printf 'SPARK_LIVE_EXECUTION_ENABLED=true\n' >> "${env_file}"
   fi
@@ -189,8 +169,7 @@ print_summary() {
   printf '\n'
   log "Installation complete"
   printf 'Install directory: %s\n' "${INSTALL_DIR}"
-  printf 'Admin username: %s\n' "${ADMIN_USERNAME}"
-  printf 'Admin password: %s\n' "${ADMIN_PASSWORD}"
+  printf 'Initial admin setup: open the GUI and create the admin password on first launch.\n'
   if [[ -n "${host_ip}" ]]; then
     printf 'GUI: https://%s/\n' "${host_ip}"
     printf 'API health: https://%s/api/health\n' "${host_ip}"
