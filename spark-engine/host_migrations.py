@@ -114,34 +114,57 @@ def run(command: list[str], *, env: dict | None = None, timeout: int = 7200, pas
     if _register_child_process:
         _register_child_process(process.pid)
     started = time.monotonic()
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
     while True:
         if _cancel_requested and _cancel_requested():
             try:
                 os.killpg(process.pid, signal.SIGTERM)
-                process.wait(timeout=10)
+                stdout, stderr = process.communicate(timeout=10)
+                stdout_chunks.append(stdout or "")
+                stderr_chunks.append(stderr or "")
             except Exception:
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
+                except Exception:
+                    pass
+                try:
+                    stdout, stderr = process.communicate(timeout=10)
+                    stdout_chunks.append(stdout or "")
+                    stderr_chunks.append(stderr or "")
                 except Exception:
                     pass
             raise RuntimeError("Execution cancelled by operator")
         if timeout and time.monotonic() - started > timeout:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
-                process.wait(timeout=10)
+                stdout, stderr = process.communicate(timeout=10)
+                stdout_chunks.append(stdout or "")
+                stderr_chunks.append(stderr or "")
             except Exception:
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
                 except Exception:
                     pass
+                try:
+                    stdout, stderr = process.communicate(timeout=10)
+                    stdout_chunks.append(stdout or "")
+                    stderr_chunks.append(stderr or "")
+                except Exception:
+                    pass
             raise RuntimeError(f"{command[0]} timed out after {timeout} seconds")
-        code = process.poll()
-        if code is not None:
-            stdout, stderr = process.communicate()
+        try:
+            stdout, stderr = process.communicate(timeout=0.5)
+            stdout_chunks.append(stdout or "")
+            stderr_chunks.append(stderr or "")
+            code = process.returncode
             if code:
-                raise RuntimeError(stderr.strip() or stdout.strip() or f"{command[0]} exited with status {code}")
-            return stdout
-        time.sleep(0.5)
+                combined_stderr = "".join(stderr_chunks).strip()
+                combined_stdout = "".join(stdout_chunks).strip()
+                raise RuntimeError(combined_stderr or combined_stdout or f"{command[0]} exited with status {code}")
+            return "".join(stdout_chunks)
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def virt_v2v_env() -> dict[str, str]:

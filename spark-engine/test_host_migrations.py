@@ -1,5 +1,6 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
+import sys
 
 from host_migrations import (
     STAGING_ROOT,
@@ -10,6 +11,7 @@ from host_migrations import (
     normalize_kvm_interfaces,
     ovf_descriptor,
     parse_domain_xml,
+    run,
     safe_name,
     shifted_artifact_base_name,
     shifted_target_name,
@@ -106,6 +108,19 @@ def test_transient_secret_descriptor_uses_ephemeral_fd():
         assert path == f"/proc/self/fd/{fd}"
         with open(path, encoding="utf-8") as handle:
             assert handle.read() == "TopSecret123"
+
+
+def test_run_drains_child_output_while_process_is_running():
+    output = run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.stderr.write('e' * 200000); sys.stderr.flush(); sys.stdout.write('done')",
+        ],
+        timeout=10,
+    )
+
+    assert output == "done"
 
 
 def test_shifted_artifact_base_name_replaces_migrated_suffix():
