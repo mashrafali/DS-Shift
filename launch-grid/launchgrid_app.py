@@ -111,6 +111,46 @@ def ssh_exec(client: paramiko.SSHClient, command: str, timeout: int = 1800) -> t
     return output, error
 
 
+def discover_kvm_machine_types(client: paramiko.SSHClient) -> list[str]:
+    output, _ = ssh_exec(client, "virsh capabilities", timeout=30)
+    machines: list[str] = []
+    try:
+        root = ET.fromstring(output)
+        for machine in root.findall(".//machine"):
+            if machine.text:
+                value = machine.text.strip()
+                if value and value not in machines:
+                    machines.append(value)
+            canonical = machine.get("canonical")
+            if canonical and canonical not in machines:
+                machines.append(canonical)
+    except ET.ParseError:
+        pass
+    if machines:
+        return machines
+    fallback, _ = ssh_exec(client, "qemu-kvm -machine help 2>/dev/null || /usr/libexec/qemu-kvm -machine help", timeout=30)
+    for line in fallback.splitlines():
+        name = line.split(maxsplit=1)[0] if line.strip() else ""
+        if name and name not in {"Supported", "machines"} and name not in machines:
+            machines.append(name)
+    return machines
+
+
+def select_kvm_machine_type(requested: str | None, supported: list[str]) -> str | None:
+    if requested and requested in supported:
+        return requested
+    for candidate in ("q35", "pc-q35-rhel9.8.0", "pc-q35-rhel9.6.0", "pc-q35-rhel9.4.0", "pc-q35-rhel9.2.0", "pc-q35-rhel9.0.0"):
+        if candidate in supported:
+            return candidate
+    for candidate in supported:
+        if candidate.startswith("pc-q35"):
+            return candidate
+    for candidate in ("pc", "pc-i440fx-rhel7.6.0"):
+        if candidate in supported:
+            return candidate
+    return supported[0] if supported else requested
+
+
 def run(command: list[str], *, env: dict[str, str], timeout: int = 1800) -> str:
     completed = subprocess.run(command, capture_output=True, text=True, env=env, timeout=timeout, check=False)
     if completed.returncode:
@@ -286,7 +326,14 @@ def ovf_descriptor(
 """
 
 
-def normalize_kvm_xml(xml_path: Path, vm_name: str, disks: list[ConvertedDisk], remote_pool_path: str, target_bridge: str) -> str:
+def normalize_kvm_xml(
+    xml_path: Path,
+    vm_name: str,
+    disks: list[ConvertedDisk],
+    remote_pool_path: str,
+    target_bridge: str,
+    supported_machine_types: list[str] | None = None,
+) -> str:
     tree = ET.parse(xml_path)
     root = tree.getroot()
     name_node = root.find("./name")
@@ -298,6 +345,11 @@ def normalize_kvm_xml(xml_path: Path, vm_name: str, disks: list[ConvertedDisk], 
         root.remove(uuid_node)
     os_node = root.find("./os")
     if os_node is not None:
+        type_node = os_node.find("./type")
+        if type_node is not None and supported_machine_types:
+            selected_machine = select_kvm_machine_type(type_node.get("machine"), supported_machine_types)
+            if selected_machine:
+                type_node.set("machine", selected_machine)
         nvram = os_node.find("./nvram")
         if nvram is not None:
             os_node.remove(nvram)
@@ -426,7 +478,9 @@ def provision_kvm(request: ProvisionRequest) -> dict:
         if not pool_path:
             raise RuntimeError("Target storage pool has no filesystem path")
         ssh_exec(client, f"! virsh dominfo {shlex.quote(request.vm_name)} >/dev/null 2>&1", timeout=20)
-        rendered_xml = normalize_kvm_xml(local_xml, request.vm_name, request.disks, pool_path, connector.target_network)
+        supported_machine_types = discover_kvm_machine_types(client)
+        rendered_xml = normalize_kvm_xml(local_xml, request.vm_name, request.disks, pool_path, connector.target_network, supported_machine_types)
+        command_log.append(f"selected KVM machine type from target capabilities: {select_kvm_machine_type(None, supported_machine_types) or 'unchanged'}")
         for disk in request.disks:
             local_path = Path(disk.local_path)
             remote_path = f"{pool_path.rstrip('/')}/{local_path.name}"

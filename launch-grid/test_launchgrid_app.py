@@ -1,6 +1,18 @@
 from pathlib import Path
 
-from launchgrid_app import Connector, ConvertedDisk, ProvisionRequest, absolute_inventory_path, import_placement, normalize_kvm_xml, ovf_descriptor, request_memory_mb, validate_request
+from launchgrid_app import (
+    Connector,
+    ConvertedDisk,
+    ProvisionRequest,
+    absolute_inventory_path,
+    discover_kvm_machine_types,
+    import_placement,
+    normalize_kvm_xml,
+    ovf_descriptor,
+    request_memory_mb,
+    select_kvm_machine_type,
+    validate_request,
+)
 
 
 def test_request_memory_mb_rounds_down_to_whole_megabytes():
@@ -122,3 +134,71 @@ def test_normalize_kvm_xml_rewrites_disks_and_bridge(tmp_path):
     assert 'type="bridge"' in rendered
     assert 'bridge="br12"' in rendered
     assert "MGMT-Services" not in rendered
+
+
+def test_normalize_kvm_xml_rewrites_unsupported_machine_type(tmp_path):
+    xml_path = tmp_path / "source.xml"
+    xml_path.write_text(
+        """
+        <domain>
+          <os>
+            <type arch="x86_64" machine="pc-q35-8.2">hvm</type>
+          </os>
+          <devices>
+            <disk type="file" device="disk"><source file="/tmp/source.qcow2"/></disk>
+          </devices>
+        </domain>
+        """,
+        encoding="utf-8",
+    )
+    disk_path = tmp_path / "guest.qcow2"
+    disk_path.write_bytes(b"qcow2")
+
+    rendered = normalize_kvm_xml(
+        xml_path,
+        "guest-shifted",
+        [ConvertedDisk(local_path=str(disk_path), capacity_bytes=4096)],
+        "/var/lib/libvirt/images",
+        "br12",
+        ["pc", "pc-i440fx-rhel7.6.0", "q35", "pc-q35-rhel9.8.0"],
+    )
+
+    assert 'machine="q35"' in rendered
+    assert "pc-q35-8.2" not in rendered
+
+
+def test_select_kvm_machine_type_preserves_supported_requested_type():
+    assert select_kvm_machine_type("pc-q35-rhel9.8.0", ["q35", "pc-q35-rhel9.8.0"]) == "pc-q35-rhel9.8.0"
+
+
+def test_discover_kvm_machine_types_from_virsh_capabilities():
+    class FakeClient:
+        def exec_command(self, command, timeout=1800):
+            assert command == "virsh capabilities"
+
+            class Channel:
+                def recv_exit_status(self):
+                    return 0
+
+            class Stream:
+                channel = Channel()
+
+                def __init__(self, payload):
+                    self.payload = payload
+
+                def read(self):
+                    return self.payload.encode()
+
+            xml = """
+            <capabilities>
+              <guest>
+                <arch>
+                  <machine canonical="pc-q35-rhel9.8.0">q35</machine>
+                  <machine>pc-q35-rhel9.8.0</machine>
+                </arch>
+              </guest>
+            </capabilities>
+            """
+            return None, Stream(xml), Stream("")
+
+    assert discover_kvm_machine_types(FakeClient()) == ["q35", "pc-q35-rhel9.8.0"]
