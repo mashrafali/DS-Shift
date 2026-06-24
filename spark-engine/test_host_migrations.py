@@ -15,6 +15,7 @@ from host_migrations import (
     parse_domain_xml,
     remove_source_vcenter_vm,
     run,
+    run_with_file_size_progress,
     run_with_percent_progress,
     safe_name,
     sftp_get_with_progress,
@@ -155,6 +156,36 @@ def test_run_with_percent_progress_reports_qemu_style_updates():
     assert calls
     assert calls[-1][3] == 70
     assert "100.0%" in calls[-1][4]
+
+
+def test_run_with_file_size_progress_reports_download_growth(tmp_path):
+    calls = []
+    target = tmp_path / "download.vmdk"
+
+    class Reporter:
+        def task(self, *args):
+            calls.append(args)
+
+    run_with_file_size_progress(
+        [
+            sys.executable,
+            "-c",
+            f"from pathlib import Path; p=Path({str(target)!r}); p.write_bytes(b'x' * 100)",
+        ],
+        progress_path=target,
+        expected_bytes=100,
+        reporter=Reporter(),
+        task_id="download",
+        task_name="download disk",
+        start_progress=30,
+        end_progress=50,
+        detail_prefix="Downloading",
+        timeout=5,
+    )
+
+    assert target.exists()
+    assert calls[-1][3] == 50
+    assert "MiB" in calls[-1][4]
 
 
 def test_sftp_get_with_progress_reports_byte_progress(tmp_path):

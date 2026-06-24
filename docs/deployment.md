@@ -111,7 +111,7 @@ queue. Fresh installations enable live execution by default:
 ```bash
 SPARK_LIVE_EXECUTION_ENABLED=true
 docker compose up -d --build
-docker compose ps spark-engine
+docker compose ps spark-engine launchgrid
 ```
 
 If you need a maintenance window where launch requests are blocked, set
@@ -119,10 +119,11 @@ If you need a maintenance window where launch requests are blocked, set
 not bypass the admin-only launch and exact plan-name confirmation.
 
 The Spark image includes `virt-v2v`, `qemu-img`, libvirt clients, and `govc`.
-KVM-to-vCenter plans require a target datastore and network. vCenter-to-KVM
-plans require a target libvirt storage pool and discovered datacenter/compute
-resource metadata. Both source VM types must be powered off for these cold
-conversion adapters.
+LaunchGrid receives converted artifacts from Spark Engine and provisions the
+target VM on VMware or KVM. KVM-to-vCenter plans require a target datastore and
+network. vCenter-to-KVM plans require a target libvirt storage pool and
+discovered datacenter/compute resource metadata. Both source VM types must be
+powered off for these cold conversion adapters.
 
 Compose does not contain host-specific DNS or IP mappings. Connector endpoints
 must be addresses resolvable and reachable from the connector and Spark

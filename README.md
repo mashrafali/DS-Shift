@@ -64,6 +64,7 @@ First login:
 - `host-connector`
 - `cloud-connector`
 - `spark-engine` (three replicas)
+- `launchgrid` (three replicas)
 - `service-status-monitor`
 
 PostgreSQL is internal to the Docker network and is not exposed publicly.

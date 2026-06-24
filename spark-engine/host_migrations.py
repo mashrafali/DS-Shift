@@ -247,6 +247,79 @@ def run_with_percent_progress(
         return output
 
 
+def run_with_file_size_progress(
+    command: list[str],
+    *,
+    progress_path: Path,
+    expected_bytes: int,
+    reporter=None,
+    task_id: str,
+    task_name: str,
+    start_progress: int,
+    end_progress: int,
+    detail_prefix: str,
+    env: dict | None = None,
+    timeout: int = 7200,
+) -> str:
+    if _cancel_requested and _cancel_requested():
+        raise RuntimeError("Execution cancelled by operator")
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        start_new_session=True,
+    )
+    if _register_child_process:
+        _register_child_process(process.pid)
+    started = time.monotonic()
+    last_reached = -1
+    last_report_time = 0.0
+    while True:
+        if _cancel_requested and _cancel_requested():
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=10)
+            except Exception:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except Exception:
+                    pass
+            raise RuntimeError("Execution cancelled by operator")
+        if timeout and time.monotonic() - started > timeout:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=10)
+            except Exception:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except Exception:
+                    pass
+            raise RuntimeError(f"{command[0]} timed out after {timeout} seconds")
+        current_size = progress_path.stat().st_size if progress_path.exists() else 0
+        if expected_bytes > 0:
+            reached = min(end_progress, start_progress + int((end_progress - start_progress) * min(current_size, expected_bytes) / expected_bytes))
+        else:
+            reached = start_progress
+        now = time.monotonic()
+        if reporter and (reached > last_reached or now - last_report_time >= 5):
+            last_reached = reached
+            last_report_time = now
+            reporter.task(task_id, task_name, "Running", reached, f"{detail_prefix}: {progress_detail(current_size, expected_bytes)}")
+        code = process.poll()
+        if code is None:
+            time.sleep(1)
+            continue
+        stdout, stderr = process.communicate()
+        if code:
+            detail = (stderr or "").strip() or (stdout or "").strip() or f"{command[0]} exited with status {code}"
+            raise RuntimeError(detail)
+        if reporter:
+            reporter.task(task_id, task_name, "Running", end_progress, f"{detail_prefix}: {progress_detail(progress_path.stat().st_size if progress_path.exists() else current_size, expected_bytes)}")
+        return stdout or ""
+
+
 def progress_detail(done_bytes: int, total_bytes: int) -> str:
     if total_bytes <= 0:
         return f"{done_bytes / 1024 / 1024:.1f} MiB copied"
@@ -1269,27 +1342,71 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                 env = source_vcenter_environment(request.source_connector, workload)
                 timeout = int(request.options.get("timeout", 14400))
                 converted_layout = []
-                for disk in disk_layout:
+                total_disks = max(1, len(disk_layout))
+                for disk_position, disk in enumerate(disk_layout):
+                    disk_start = 30 + int(40 * disk_position / total_disks)
+                    disk_end = 30 + int(40 * (disk_position + 1) / total_disks)
+                    download_start = disk_start
+                    download_end = disk_start + max(1, (disk_end - disk_start) // 2)
+                    convert_start = download_end
+                    convert_end = disk_end
                     descriptor_local = stage_path / disk["descriptor_name"]
                     flat_local = stage_path / disk["flat_name"]
                     if resume_from_stage and descriptor_local.exists() and flat_local.exists():
-                        pass
+                        if reporter:
+                            reporter.task(
+                                f"{workload.id}-convert-staging",
+                                f"{workload.vm_name}: convert into staging",
+                                "Running",
+                                download_end,
+                                f"Reusing downloaded VMware VMDK artifacts for disk {disk['index']} from {stage_path}",
+                            )
                     else:
+                        if reporter:
+                            reporter.task(
+                                f"{workload.id}-convert-staging",
+                                f"{workload.vm_name}: convert into staging",
+                                "Running",
+                                download_start,
+                                f"Downloading VMware descriptor for disk {disk['index']} from datastore {disk['datastore']}",
+                            )
                         run(
                             ["govc", "datastore.download", "-dc", str(workload.details.get("datacenter") or ""), "-ds", disk["datastore"], disk["descriptor_path"], str(descriptor_local)],
                             env=env,
                             timeout=timeout,
                         )
-                        run(
+                        run_with_file_size_progress(
                             ["govc", "datastore.download", "-dc", str(workload.details.get("datacenter") or ""), "-ds", disk["datastore"], disk["flat_path"], str(flat_local)],
+                            progress_path=flat_local,
+                            expected_bytes=int(disk.get("capacity_bytes") or 0),
+                            reporter=reporter,
+                            task_id=f"{workload.id}-convert-staging",
+                            task_name=f"{workload.vm_name}: convert into staging",
+                            start_progress=download_start,
+                            end_progress=download_end,
+                            detail_prefix=f"Downloading VMware flat disk {disk['index']} from datastore {disk['datastore']}",
                             env=env,
                             timeout=timeout,
                         )
                     converted_local = stage_path / f"{target_name}-disk{disk['index']}.qcow2"
                     if not (resume_from_stage and converted_local.exists()):
-                        run(
+                        run_with_percent_progress(
                             ["qemu-img", "convert", "-p", "-f", "vmdk", "-O", "qcow2", str(descriptor_local), str(converted_local)],
+                            reporter=reporter,
+                            task_id=f"{workload.id}-convert-staging",
+                            task_name=f"{workload.vm_name}: convert into staging",
+                            start_progress=convert_start,
+                            end_progress=convert_end,
+                            detail_prefix=f"Converting VMware disk {disk['index']} to qcow2",
                             timeout=timeout,
+                        )
+                    elif reporter:
+                        reporter.task(
+                            f"{workload.id}-convert-staging",
+                            f"{workload.vm_name}: convert into staging",
+                            "Running",
+                            convert_end,
+                            f"Reusing converted qcow2 disk {disk['index']} from {converted_local}",
                         )
                     try:
                         capacity_bytes = int(json.loads(run(["qemu-img", "info", "--output=json", str(converted_local)]))["virtual-size"])

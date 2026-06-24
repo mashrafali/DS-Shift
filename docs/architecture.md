@@ -64,11 +64,25 @@ DS Shift uses a service-oriented application architecture deployed with Docker C
 - Executes AWS-to-AWS, GCP-to-GCP, Azure-to-Azure, KVM-to-KVM,
   KVM-to-vCenter, and vCenter-to-KVM adapters.
 - Contains `virt-v2v`, `qemu-img`, libvirt clients, and pinned `govc` for host
-  conversion, packaging, import, and target definition.
+  conversion, staging, and artifact preparation.
+- Hands converted host-migration artifacts to LaunchGrid for target VM
+  provisioning.
 - Enables live execution by default and can be paused by setting
   `SPARK_LIVE_EXECUTION_ENABLED=false`.
 - Rejects unsupported source and target combinations instead of generating
   commands that the underlying tools cannot execute.
+
+`launchgrid`
+
+- Runs as three stateless provisioning replicas.
+- Provisions target VMs after Spark Engine prepares converted migration
+  artifacts.
+- Imports KVM-to-vCenter OVF bundles through `govc import.ovf` using
+  thin-provisioned VMware disks.
+- Defines vCenter-to-KVM guests with libvirt using the storage pool and bridge
+  configured on the target KVM connector.
+- Performs target-side rollback if provisioning fails before cutover is
+  finalized.
 
 `service-status-monitor`
 
