@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import shlex
 from pathlib import Path
@@ -235,6 +236,19 @@ def rollback_kvm_vm(client: paramiko.SSHClient, vm_name: str, remote_disk_paths:
             pass
 
 
+def import_options_path(ovf_path: Path, network_name: str) -> Path:
+    options_path = ovf_path.with_suffix(".options.json")
+    options = {
+        "DiskProvisioning": "thin",
+        "IPAllocationPolicy": "dhcpPolicy",
+        "IPProtocol": "IPv4",
+        "NetworkMapping": [{"Name": network_name, "Network": network_name}],
+        "PropertyMapping": [],
+    }
+    options_path.write_text(json.dumps(options, indent=2), encoding="utf-8")
+    return options_path
+
+
 def request_memory_mb(memory_bytes: int) -> int:
     return max(1, memory_bytes // 1024 // 1024)
 
@@ -428,12 +442,15 @@ def provision_vmware(request: ProvisionRequest) -> dict:
         if not local_path.exists():
             raise RuntimeError(f"Converted disk is missing: {local_path}")
     ovf_path = write_ovf_bundle(request)
+    options_path = import_options_path(ovf_path, request.target_connector.target_network or "VM Network")
     command_log.append(f"generated OVF bundle {ovf_path}")
+    command_log.append(f"generated thin-provisioned import options {options_path}")
     import_command = [
         "govc",
         "import.ovf",
         "-name",
         request.vm_name,
+        f"-options={options_path}",
         *import_placement(env, request.target_connector.target_compute_name),
         str(ovf_path),
     ]

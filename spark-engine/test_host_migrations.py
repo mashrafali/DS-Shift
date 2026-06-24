@@ -15,7 +15,9 @@ from host_migrations import (
     parse_domain_xml,
     remove_source_vcenter_vm,
     run,
+    run_with_percent_progress,
     safe_name,
+    sftp_get_with_progress,
     shifted_artifact_base_name,
     shifted_target_name,
     transient_secret_descriptor,
@@ -126,6 +128,64 @@ def test_run_drains_child_output_while_process_is_running():
     )
 
     assert output == "done"
+
+
+def test_run_with_percent_progress_reports_qemu_style_updates():
+    calls = []
+
+    class Reporter:
+        def task(self, *args):
+            calls.append(args)
+
+    run_with_percent_progress(
+        [
+            sys.executable,
+            "-c",
+            "import sys,time; sys.stdout.write('(25.00/100%)\\r'); sys.stdout.flush(); time.sleep(0.1); sys.stdout.write('(100.00/100%)\\n'); sys.stdout.flush()",
+        ],
+        reporter=Reporter(),
+        task_id="convert",
+        task_name="convert disk",
+        start_progress=60,
+        end_progress=70,
+        detail_prefix="Converting",
+        timeout=5,
+    )
+
+    assert calls
+    assert calls[-1][3] == 70
+    assert "100.0%" in calls[-1][4]
+
+
+def test_sftp_get_with_progress_reports_byte_progress(tmp_path):
+    calls = []
+    target = tmp_path / "disk.img"
+
+    class Reporter:
+        def task(self, *args):
+            calls.append(args)
+
+    class FakeSftp:
+        def get(self, remote_path, local_path, callback=None):
+            if callback:
+                callback(50, 100)
+                callback(100, 100)
+            Path(local_path).write_bytes(b"x" * 100)
+
+    sftp_get_with_progress(
+        FakeSftp(),
+        "/remote/disk.img",
+        str(target),
+        reporter=Reporter(),
+        task_id="stage",
+        task_name="stage disk",
+        start_progress=35,
+        end_progress=45,
+    )
+
+    assert target.exists()
+    assert calls[-1][3] == 45
+    assert "MiB" in calls[-1][4]
 
 
 def test_shifted_artifact_base_name_replaces_migrated_suffix():

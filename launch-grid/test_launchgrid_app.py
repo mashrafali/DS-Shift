@@ -6,6 +6,7 @@ from launchgrid_app import (
     ProvisionRequest,
     absolute_inventory_path,
     discover_kvm_machine_types,
+    import_options_path,
     import_placement,
     normalize_kvm_xml,
     ovf_descriptor,
@@ -62,6 +63,18 @@ def test_ovf_descriptor_includes_stream_optimized_disks_and_efi_config(tmp_path)
     assert "<rasd:Connection>Prod-Network</rasd:Connection>" in descriptor
     assert 'vmw:key="firmware" vmw:value="efi"' in descriptor
     assert "<rasd:ResourceSubType>LsiLogic</rasd:ResourceSubType>" in descriptor
+
+
+def test_import_options_force_thin_disk_provisioning(tmp_path):
+    ovf_path = tmp_path / "target-vm.ovf"
+    ovf_path.write_text("<Envelope/>", encoding="utf-8")
+
+    options_path = import_options_path(ovf_path, "Prod-Network")
+
+    options = options_path.read_text(encoding="utf-8")
+    assert '"DiskProvisioning": "thin"' in options
+    assert '"Name": "Prod-Network"' in options
+    assert '"Network": "Prod-Network"' in options
 
 
 def test_validate_request_accepts_kvm_target_with_connector_scoped_settings(tmp_path):

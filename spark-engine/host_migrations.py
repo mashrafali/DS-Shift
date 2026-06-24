@@ -7,6 +7,7 @@ import math
 import os
 from pathlib import Path
 import re
+import select
 import signal
 import shlex
 import shutil
@@ -165,6 +166,120 @@ def run(command: list[str], *, env: dict | None = None, timeout: int = 7200, pas
             return "".join(stdout_chunks)
         except subprocess.TimeoutExpired:
             continue
+
+
+def run_with_percent_progress(
+    command: list[str],
+    *,
+    reporter=None,
+    task_id: str,
+    task_name: str,
+    start_progress: int,
+    end_progress: int,
+    detail_prefix: str,
+    env: dict | None = None,
+    timeout: int = 7200,
+) -> str:
+    if _cancel_requested and _cancel_requested():
+        raise RuntimeError("Execution cancelled by operator")
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+        start_new_session=True,
+    )
+    if _register_child_process:
+        _register_child_process(process.pid)
+    started = time.monotonic()
+    output_chunks: list[str] = []
+    last_reported = -1
+    progress_pattern = re.compile(r"(?:\(|\s)(\d+(?:\.\d+)?)\s*/\s*100%|(\d+(?:\.\d+)?)%")
+    while True:
+        if _cancel_requested and _cancel_requested():
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=10)
+            except Exception:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except Exception:
+                    pass
+            raise RuntimeError("Execution cancelled by operator")
+        if timeout and time.monotonic() - started > timeout:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=10)
+            except Exception:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except Exception:
+                    pass
+            raise RuntimeError(f"{command[0]} timed out after {timeout} seconds")
+        if process.stdout:
+            readable, _, _ = select.select([process.stdout], [], [], 0.2)
+        else:
+            readable = []
+        if readable:
+            chunk = process.stdout.read() or ""
+            if chunk:
+                output_chunks.append(chunk)
+                matches = progress_pattern.findall("".join(output_chunks)[-500:])
+                if matches:
+                    match = matches[-1]
+                    percent = float(match[0] or match[1] or 0)
+                    reached = min(end_progress, start_progress + int((end_progress - start_progress) * percent / 100))
+                    if reporter and reached > last_reported:
+                        last_reported = reached
+                        reporter.task(task_id, task_name, "Running", reached, f"{detail_prefix}: {percent:.1f}%")
+                continue
+        code = process.poll()
+        if code is None:
+            time.sleep(0.2)
+            continue
+        remaining = process.stdout.read() if process.stdout else ""
+        if remaining:
+            output_chunks.append(remaining)
+        output = "".join(output_chunks).strip()
+        if code:
+            raise RuntimeError(output or f"{command[0]} exited with status {code}")
+        return output
+
+
+def progress_detail(done_bytes: int, total_bytes: int) -> str:
+    if total_bytes <= 0:
+        return f"{done_bytes / 1024 / 1024:.1f} MiB copied"
+    return f"{done_bytes / 1024 / 1024:.1f} MiB of {total_bytes / 1024 / 1024:.1f} MiB"
+
+
+def sftp_get_with_progress(
+    sftp,
+    remote_path: str,
+    local_path: str,
+    *,
+    reporter=None,
+    task_id: str,
+    task_name: str,
+    start_progress: int,
+    end_progress: int,
+) -> None:
+    last_reached = -1
+    last_report_time = 0.0
+
+    def callback(done: int, total: int) -> None:
+        nonlocal last_reached, last_report_time
+        if total > 0:
+            reached = min(end_progress, start_progress + int((end_progress - start_progress) * done / total))
+        else:
+            reached = start_progress
+        now = time.monotonic()
+        if reporter and (reached > last_reached or now - last_report_time >= 5):
+            last_reached = reached
+            last_report_time = now
+            reporter.task(task_id, task_name, "Running", reached, f"Copying source disk into staging: {progress_detail(done, total)}")
+
+    sftp.get(remote_path, local_path, callback=callback)
 
 
 def virt_v2v_env() -> dict[str, str]:
@@ -977,7 +1092,16 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                                         35,
                                         f"Copying {disk['path']} into host staging {stage_path}",
                                     )
-                                sftp.get(disk["path"], str(source_path))
+                                sftp_get_with_progress(
+                                    sftp,
+                                    disk["path"],
+                                    str(source_path),
+                                    reporter=reporter,
+                                    task_id=f"{workload.id}-stage-{index}",
+                                    task_name=f"{workload.vm_name}: stage source disk {index}",
+                                    start_progress=35,
+                                    end_progress=45,
+                                )
                                 if reporter:
                                     reporter.task(
                                         f"{workload.id}-stage-{index}",
@@ -995,7 +1119,7 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                                     60,
                                     f"Converting source disk {index} to stream-optimized VMDK in shared staging",
                                 )
-                            run(
+                            run_with_percent_progress(
                                 [
                                     "qemu-img",
                                     "convert",
@@ -1006,7 +1130,13 @@ def execute_kvm_to_vcenter(request, reporter=None) -> list[dict]:
                                     "adapter_type=lsilogic,subformat=streamOptimized,hwversion=13",
                                     str(source_path),
                                     str(target_path),
-                                ]
+                                ],
+                                reporter=reporter,
+                                task_id=f"{workload.id}-convert-{index}",
+                                task_name=f"{workload.vm_name}: convert disk {index}",
+                                start_progress=60,
+                                end_progress=70,
+                                detail_prefix=f"Converting source disk {index} to VMDK",
                             )
                             converted_disks.append({"local_path": str(target_path), "capacity_bytes": int(info["virtual-size"])})
                             if reporter:
