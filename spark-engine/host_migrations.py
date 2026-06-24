@@ -654,12 +654,12 @@ def remove_source_kvm_vm(client: paramiko.SSHClient, vm_name: str) -> None:
             raise RuntimeError(f"Provisioning completed, but source cleanup failed for {vm_name}: {primary_error}") from primary_error
 
 
-def find_vcenter_vm(connector, workload):
+def connect_vcenter(connector):
     password = connector_password(connector)
     parsed = urlparse(connector.endpoint if "://" in (connector.endpoint or "") else f"https://{connector.endpoint}")
     if not parsed.hostname or not connector.username or not password:
         raise RuntimeError("vCenter connector credentials are unavailable")
-    service_instance = SmartConnect(
+    return SmartConnect(
         host=parsed.hostname,
         port=parsed.port or connector.port or 443,
         user=connector.username,
@@ -667,24 +667,65 @@ def find_vcenter_vm(connector, workload):
         disableSslCertValidation=True,
         connectionPoolTimeout=30,
     )
+
+
+def iter_vcenter_vms(service_instance):
+    content = service_instance.RetrieveContent()
+    view = content.viewManager.CreateContainerView(content.rootFolder, [vim.VirtualMachine], True)
     try:
-        content = service_instance.RetrieveContent()
-        view = content.viewManager.CreateContainerView(content.rootFolder, [vim.VirtualMachine], True)
-        try:
-            for vm_obj in view.view:
-                if vm_obj._moId == workload.external_id or vm_obj.name == workload.vm_name:
-                    memory_mb = int(getattr(vm_obj.config.hardware, "memoryMB", 1024) or 1024) if getattr(vm_obj, "config", None) and getattr(vm_obj.config, "hardware", None) else 1024
-                    return {
-                        "name": vm_obj.name,
-                        "power_state": str(vm_obj.runtime.powerState),
-                        "host_name": vm_obj.runtime.host.name if vm_obj.runtime.host else None,
-                        "cpu": int(getattr(vm_obj.config.hardware, "numCPU", 1) or 1) if getattr(vm_obj, "config", None) and getattr(vm_obj.config, "hardware", None) else 1,
-                        "memory_bytes": memory_mb * 1024 * 1024,
-                        "guest_os_id": getattr(vm_obj.config, "guestId", None) if getattr(vm_obj, "config", None) else None,
-                        "boot_firmware": getattr(vm_obj.config, "firmware", None) if getattr(vm_obj, "config", None) else None,
-                    }
-        finally:
-            view.Destroy()
+        for vm_obj in view.view:
+            yield vm_obj
+    finally:
+        view.Destroy()
+
+
+def vcenter_vm_matches(vm_obj, workload) -> bool:
+    external_id = getattr(workload, "external_id", None)
+    return (external_id and getattr(vm_obj, "_moId", None) == external_id) or vm_obj.name == workload.vm_name
+
+
+def wait_for_vcenter_task(task, timeout: int = 600) -> None:
+    started = time.monotonic()
+    while task.info.state not in {vim.TaskInfo.State.success, vim.TaskInfo.State.error}:
+        if timeout and time.monotonic() - started > timeout:
+            raise RuntimeError(f"vCenter task timed out after {timeout} seconds")
+        time.sleep(2)
+    if task.info.state == vim.TaskInfo.State.error:
+        error = getattr(task.info, "error", None)
+        raise RuntimeError(getattr(error, "msg", None) or str(error) or "vCenter task failed")
+
+
+def remove_source_vcenter_vm(connector, workload) -> None:
+    service_instance = connect_vcenter(connector)
+    try:
+        for vm_obj in iter_vcenter_vms(service_instance):
+            if not vcenter_vm_matches(vm_obj, workload):
+                continue
+            power_state = str(vm_obj.runtime.powerState).lower()
+            if power_state != "poweredoff":
+                raise RuntimeError(f"Provisioning completed, but source cleanup failed for {vm_obj.name}: VM is {vm_obj.runtime.powerState}")
+            wait_for_vcenter_task(vm_obj.Destroy_Task(), timeout=600)
+            return
+    finally:
+        Disconnect(service_instance)
+    raise RuntimeError(f"Provisioning completed, but source cleanup failed: VM {workload.vm_name} was not found in vCenter")
+
+
+def find_vcenter_vm(connector, workload):
+    service_instance = connect_vcenter(connector)
+    try:
+        for vm_obj in iter_vcenter_vms(service_instance):
+            if vcenter_vm_matches(vm_obj, workload):
+                memory_mb = int(getattr(vm_obj.config.hardware, "memoryMB", 1024) or 1024) if getattr(vm_obj, "config", None) and getattr(vm_obj.config, "hardware", None) else 1024
+                return {
+                    "name": vm_obj.name,
+                    "power_state": str(vm_obj.runtime.powerState),
+                    "host_name": vm_obj.runtime.host.name if vm_obj.runtime.host else None,
+                    "cpu": int(getattr(vm_obj.config.hardware, "numCPU", 1) or 1) if getattr(vm_obj, "config", None) and getattr(vm_obj.config, "hardware", None) else 1,
+                    "memory_bytes": memory_mb * 1024 * 1024,
+                    "guest_os_id": getattr(vm_obj.config, "guestId", None) if getattr(vm_obj, "config", None) else None,
+                    "boot_firmware": getattr(vm_obj.config, "firmware", None) if getattr(vm_obj, "config", None) else None,
+                }
     finally:
         Disconnect(service_instance)
     raise RuntimeError(f"VM {workload.vm_name} was not found in vCenter")
@@ -1190,6 +1231,24 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                     96,
                     f"Provisioned {target_name} on KVM through LaunchGrid using storage pool {target_storage_pool} and bridge {target_network}",
                 )
+            if not request.keep_source_vm:
+                if reporter:
+                    reporter.task(
+                        f"{workload.id}-cleanup",
+                        f"{workload.vm_name}: remove source VM",
+                        "Running",
+                        98,
+                        f"Removing source vCenter VM {workload.vm_name} because Keep Source VM is disabled",
+                    )
+                remove_source_vcenter_vm(request.source_connector, workload)
+                if reporter:
+                    reporter.task(
+                        f"{workload.id}-cleanup",
+                        f"{workload.vm_name}: remove source VM",
+                        "Completed",
+                        100,
+                        f"Removed source vCenter VM {workload.vm_name}",
+                    )
             results.append(
                 {
                     "ok": True,
@@ -1197,7 +1256,8 @@ def execute_vcenter_to_kvm(request, reporter=None) -> list[dict]:
                     "vm_name": workload.vm_name,
                     "target_name": target_name,
                     "target_pool": target_storage_pool,
-                    "message": output.strip() or "VMware disk download and qcow2 conversion completed and LaunchGrid provisioned the target VM",
+                    "message": (output.strip() or "VMware disk download and qcow2 conversion completed and LaunchGrid provisioned the target VM")
+                    + ("" if request.keep_source_vm else " and removed the source vCenter VM"),
                     "stage_path": str(stage_path),
                     "can_resume": False,
                     "details": provisioned,

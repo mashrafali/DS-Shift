@@ -1,7 +1,9 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
+import host_migrations
 from host_migrations import (
     STAGING_ROOT,
     append_migrated_vm_log,
@@ -11,6 +13,7 @@ from host_migrations import (
     normalize_kvm_interfaces,
     ovf_descriptor,
     parse_domain_xml,
+    remove_source_vcenter_vm,
     run,
     safe_name,
     shifted_artifact_base_name,
@@ -28,7 +31,9 @@ class Connector:
 
 
 class Workload:
+    id = 1
     vm_name = "source-vm"
+    external_id = "vm-101"
     host_name = "esxi01.example.test"
     details = {"datacenter": "Primary DC", "compute_resource": "Compute Cluster"}
 
@@ -258,3 +263,102 @@ def test_launchgrid_provision_passes_kvm_connector_scoped_target_settings(monkey
     assert captured["payload"]["power_on"] is True
     assert captured["payload"]["autostart"] is True
     assert captured["payload"]["libvirt_xml_path"].endswith("guest-shifted.xml")
+
+
+def test_remove_source_vcenter_vm_destroys_powered_off_match(monkeypatch):
+    destroyed = {"called": False}
+
+    class FakeTask:
+        info = SimpleNamespace(state=host_migrations.vim.TaskInfo.State.success, error=None)
+
+    class FakeVM:
+        _moId = "vm-101"
+        name = "source-vm"
+        runtime = SimpleNamespace(powerState="poweredOff")
+
+        def Destroy_Task(self):
+            destroyed["called"] = True
+            return FakeTask()
+
+    class FakeView:
+        view = [FakeVM()]
+
+        def Destroy(self):
+            pass
+
+    class FakeContent:
+        rootFolder = object()
+        viewManager = SimpleNamespace(CreateContainerView=lambda *args: FakeView())
+
+    class FakeServiceInstance:
+        def RetrieveContent(self):
+            return FakeContent()
+
+    connector = type(
+        "Connector",
+        (),
+        {
+            "endpoint": "https://vcenter.example.test/sdk",
+            "port": 443,
+            "username": "administrator@vsphere.local",
+            "credential_reference": None,
+            "credential_payload": {"password": "secret"},
+        },
+    )()
+
+    monkeypatch.setattr("host_migrations.SmartConnect", lambda **kwargs: FakeServiceInstance())
+    monkeypatch.setattr("host_migrations.Disconnect", lambda service_instance: None)
+
+    remove_source_vcenter_vm(connector, Workload())
+
+    assert destroyed["called"] is True
+
+
+def test_remove_source_vcenter_vm_rejects_powered_on_source(monkeypatch):
+    destroyed = {"called": False}
+
+    class FakeVM:
+        _moId = "vm-101"
+        name = "source-vm"
+        runtime = SimpleNamespace(powerState="poweredOn")
+
+        def Destroy_Task(self):
+            destroyed["called"] = True
+
+    class FakeView:
+        view = [FakeVM()]
+
+        def Destroy(self):
+            pass
+
+    class FakeContent:
+        rootFolder = object()
+        viewManager = SimpleNamespace(CreateContainerView=lambda *args: FakeView())
+
+    class FakeServiceInstance:
+        def RetrieveContent(self):
+            return FakeContent()
+
+    connector = type(
+        "Connector",
+        (),
+        {
+            "endpoint": "https://vcenter.example.test/sdk",
+            "port": 443,
+            "username": "administrator@vsphere.local",
+            "credential_reference": None,
+            "credential_payload": {"password": "secret"},
+        },
+    )()
+
+    monkeypatch.setattr("host_migrations.SmartConnect", lambda **kwargs: FakeServiceInstance())
+    monkeypatch.setattr("host_migrations.Disconnect", lambda service_instance: None)
+
+    try:
+        remove_source_vcenter_vm(connector, Workload())
+    except RuntimeError as exc:
+        assert "VM is poweredOn" in str(exc)
+    else:
+        raise AssertionError("powered-on source VM should not be destroyed")
+
+    assert destroyed["called"] is False
