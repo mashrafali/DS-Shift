@@ -100,6 +100,8 @@ const blankSettings = {
   company_name: 'Defined Solutions',
   default_timezone: 'Asia/Riyadh',
   banner_message: '',
+  max_active_migrations: 3,
+  max_active_migrations_per_connector: 3,
 };
 
 const blankAbout = {
@@ -511,7 +513,15 @@ function App() {
 
   const saveSettings = async (event) => {
     event.preventDefault();
-    await api('/settings', { method: 'PUT', body: JSON.stringify({ default_timezone: settings.default_timezone, banner_message: settings.banner_message || null }) });
+    await api('/settings', {
+      method: 'PUT',
+      body: JSON.stringify({
+        default_timezone: settings.default_timezone,
+        banner_message: settings.banner_message || null,
+        max_active_migrations: Number(settings.max_active_migrations) || 3,
+        max_active_migrations_per_connector: Number(settings.max_active_migrations_per_connector) || 3,
+      }),
+    });
     await load();
   };
 
@@ -885,7 +895,7 @@ function App() {
     ['waves', CalendarClock, 'Waves'],
     ['reports', FileText, 'Reports'],
     ...(user?.role === 'admin' ? [['users', Users, 'Users']] : []),
-    ['settings', Settings, 'Settings'],
+    ...(user?.role === 'admin' ? [['settings', Settings, 'Settings']] : []),
   ];
   displayTimezone = settings.default_timezone || 'Asia/Riyadh';
 
@@ -942,7 +952,7 @@ function App() {
         {active === 'waves' && <Waves waves={waves} plans={migrationPlans} user={user} editingWaveId={editingWaveId} executingWaveId={executingWaveId} openCreate={() => { setEditingWaveId(null); setWaveForm(blankWave); setShowWaveModal(true); }} editWave={editWave} deleteWave={deleteWave} executeWave={executeWave} />}
         {active === 'reports' && <Reports csv={csv} vms={vms} />}
         {active === 'users' && user?.role === 'admin' && <UsersView currentUser={user} users={users} form={userForm} setForm={setUserForm} save={saveUser} editForm={editUserForm} setEditForm={setEditUserForm} saveEdit={saveUserEdit} edit={editUser} remove={deleteUser} editingUserId={editingUserId} cancelEdit={cancelUserEdit} setError={setError} />}
-        {active === 'settings' && <SettingsView settings={settings} setSettings={setSettings} save={saveSettings} serviceStatus={serviceStatus} serviceStatusLoading={serviceStatusLoading} about={about} />}
+        {active === 'settings' && user?.role === 'admin' && <SettingsView settings={settings} setSettings={setSettings} save={saveSettings} serviceStatus={serviceStatus} serviceStatusLoading={serviceStatusLoading} about={about} />}
         {showPlanModal && <MigrationPlanModal mode="create" title="Create executable migration plan" submitLabel="Save plan" selectedVmIds={selectedVmIds} vms={vms} connectors={connectors} form={migrationPlanForm} setForm={setMigrationPlanForm} save={createMigrationPlan} close={() => setShowPlanModal(false)} />}
         {editingPlan && <MigrationPlanModal mode="edit" title={`Edit migration plan: ${editingPlan.name}`} submitLabel="Save changes" selectedVmIds={parseJsonArray(editingPlan.vm_ids_json)} sourceConnectorIdOverride={editingPlan.source_connector_id} vms={vms} connectors={connectors} form={editPlanForm} setForm={setEditPlanForm} save={saveMigrationPlanEdit} close={cancelMigrationPlanEdit} />}
         {showWaveModal && <WaveModal mode={editingWaveId ? 'edit' : 'create'} plans={migrationPlans} form={waveForm} setForm={setWaveForm} save={saveWave} close={editingWaveId ? cancelWaveEdit : () => setShowWaveModal(false)} />}
@@ -1197,7 +1207,7 @@ function UsersView({ currentUser, users, form, setForm, save, editForm, setEditF
 }
 
 function SettingsView({ settings, setSettings, save, serviceStatus, serviceStatusLoading, about }) {
-  return <section className="split"><FormPanel title="Application settings" onSubmit={save}><div className="settings-identity-card"><div className="settings-identity-copy"><span className="settings-identity-label">System identity</span><strong>{settings.product_name || about.product || 'DS Shift'}</strong><p>{settings.company_name || about.brand || 'Defined Solutions'}</p></div></div><Select label="Default timezone" value={settings.default_timezone || 'Asia/Riyadh'} options={timezoneOptions} onChange={(v) => setSettings({ ...settings, default_timezone: v })} /><TextArea label="Banner message" value={settings.banner_message || ''} onChange={(v) => setSettings({ ...settings, banner_message: v })} /><div className="tip">Product name and company name are fixed system identity values. The selected timezone is used across GUI date and log timestamp rendering.</div><div className="button-row"><button className="primary"><Save size={16} /> Save settings</button></div></FormPanel><div className="stack"><ServiceStatusPanel data={serviceStatus} loading={serviceStatusLoading} /></div></section>;
+  return <section className="split"><FormPanel title="Application settings" onSubmit={save}><div className="settings-identity-card"><div className="settings-identity-copy"><span className="settings-identity-label">System identity</span><strong>{settings.product_name || about.product || 'DS Shift'}</strong><p>{settings.company_name || about.brand || 'Defined Solutions'}</p></div></div><Select label="Default timezone" value={settings.default_timezone || 'Asia/Riyadh'} options={timezoneOptions} onChange={(v) => setSettings({ ...settings, default_timezone: v })} /><TextArea label="Banner message" value={settings.banner_message || ''} onChange={(v) => setSettings({ ...settings, banner_message: v })} /><div className="tip">Product name and company name are fixed system identity values. The selected timezone is used across GUI date and log timestamp rendering.</div><div className="settings-section"><h3>Migration concurrency</h3><Input label="Global active VM migrations" type="number" value={settings.max_active_migrations ?? 3} onChange={(v) => setSettings({ ...settings, max_active_migrations: v })} required /><Input label="Active VM migrations per connector" type="number" value={settings.max_active_migrations_per_connector ?? 3} onChange={(v) => setSettings({ ...settings, max_active_migrations_per_connector: v })} required /><div className="tip">These are application-wide scheduler limits. They control how many per-VM Spark jobs DS Shift starts globally and per source/target connector.</div></div><div className="button-row"><button className="primary"><Save size={16} /> Save settings</button></div></FormPanel><div className="stack"><ServiceStatusPanel data={serviceStatus} loading={serviceStatusLoading} /></div></section>;
 }
 
 function ServiceStatusPanel({ data, loading }) {

@@ -37,6 +37,7 @@ from app.main import (
     run_migration_plan_preflight,
     sync_discovered_hosts,
     sync_discovered_vms,
+    update_settings,
     update_user,
     update_wave,
     validate_profile_photo,
@@ -91,6 +92,29 @@ def test_bootstrap_admin_creates_first_admin_and_then_locks():
         assert bootstrap_status(db).required is False
         with pytest.raises(HTTPException, match="already been configured"):
             bootstrap_admin(schemas.BootstrapAdminRequest(password="another-secret"), db)
+
+
+def test_settings_update_persists_migration_concurrency_limits():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        updated = update_settings(
+            schemas.SettingsUpdate(
+                default_timezone="Asia/Riyadh",
+                banner_message="",
+                max_active_migrations=5,
+                max_active_migrations_per_connector=2,
+            ),
+            db,
+            None,
+        )
+
+        assert updated.max_active_migrations == 5
+        assert updated.max_active_migrations_per_connector == 2
+        row = db.query(models.AppSetting).one()
+        assert row.max_active_migrations == 5
+        assert row.max_active_migrations_per_connector == 2
 
 
 def test_connector_platform_validation_and_aliases():
@@ -716,6 +740,7 @@ def test_bulk_plan_launch_schedules_per_vm_jobs_with_global_limit(monkeypatch):
             status="Preflight ready",
         )
         db.add(plan)
+        db.add(models.AppSetting(max_active_migrations=2, max_active_migrations_per_connector=2))
         db.commit()
         db.refresh(plan)
         job_ids = iter([101, 102, 103, 104])
@@ -736,9 +761,9 @@ def test_bulk_plan_launch_schedules_per_vm_jobs_with_global_limit(monkeypatch):
 
         entries = json.loads(db.get(models.MigrationPlan, plan.id).results_json)
         assert launched["job"]["status"] == "Queued"
-        assert [entry["status"] for entry in entries].count("Queued") == 3
-        assert [entry["status"] for entry in entries].count("Pending") == 1
-        assert [entry.get("spark_job_id") for entry in entries[:3]] == [101, 102, 103]
+        assert [entry["status"] for entry in entries].count("Queued") == 2
+        assert [entry["status"] for entry in entries].count("Pending") == 2
+        assert [entry.get("spark_job_id") for entry in entries[:2]] == [101, 102]
 
         def fake_get_spark_job(job_id):
             if job_id == 101:
@@ -758,7 +783,7 @@ def test_bulk_plan_launch_schedules_per_vm_jobs_with_global_limit(monkeypatch):
         entries = json.loads(execution["plan"].results_json)
 
         assert any(entry["vm_id"] == vms[0].id and entry["status"] == "Succeeded" for entry in entries)
-        assert [entry.get("spark_job_id") for entry in entries if entry["status"] in {"Queued", "Running"}] == [102, 103, 104]
+        assert [entry.get("spark_job_id") for entry in entries if entry["status"] in {"Queued", "Running"}] == [102, 103]
         assert db.get(models.VmInventory, vms[0].id).current_status == "Cutover completed"
 
 

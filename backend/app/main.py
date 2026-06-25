@@ -195,7 +195,12 @@ def active_admin_count(db: Session) -> int:
 def seed_defaults(db: Session) -> None:
     app_settings = db.query(models.AppSetting).first()
     if not app_settings:
-        db.add(models.AppSetting())
+        db.add(
+            models.AppSetting(
+                max_active_migrations=settings.max_active_migrations,
+                max_active_migrations_per_connector=settings.max_active_migrations_per_connector,
+            )
+        )
     db.commit()
 
 
@@ -808,6 +813,8 @@ def startup() -> None:
         connection.execute(text("ALTER TABLE connector_profiles ADD COLUMN IF NOT EXISTS target_storage_pool VARCHAR(160)"))
         connection.execute(text("ALTER TABLE connector_profiles ADD COLUMN IF NOT EXISTS target_vdc_name VARCHAR(160)"))
         connection.execute(text("ALTER TABLE connector_profiles ADD COLUMN IF NOT EXISTS target_compute_name VARCHAR(160)"))
+        connection.execute(text("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS max_active_migrations INTEGER NOT NULL DEFAULT 3"))
+        connection.execute(text("ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS max_active_migrations_per_connector INTEGER NOT NULL DEFAULT 3"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_vm_inventory_external_id ON vm_inventory (external_id)"))
         connection.execute(text("ALTER TABLE migration_plans ADD COLUMN IF NOT EXISTS execution_options_json TEXT NOT NULL DEFAULT '{}'"))
         connection.execute(text("ALTER TABLE migration_plans ADD COLUMN IF NOT EXISTS keep_source_vm BOOLEAN NOT NULL DEFAULT true"))
@@ -1579,7 +1586,7 @@ def service_status(_user: models.LocalUser = Depends(current_user)):
 
 
 @app.put("/api/settings", response_model=schemas.AppSettings)
-def update_settings(payload: schemas.SettingsUpdate, db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
+def update_settings(payload: schemas.SettingsUpdate, db: Session = Depends(get_db), _admin: models.LocalUser = Depends(admin_user)):
     settings_row = db.query(models.AppSetting).first()
     if not settings_row:
         settings_row = models.AppSetting()
@@ -1764,6 +1771,17 @@ def active_child_entries(db: Session) -> list[tuple[models.MigrationPlan, dict]]
     return entries
 
 
+def migration_concurrency_limits(db: Session) -> tuple[int, int]:
+    settings_row = db.query(models.AppSetting).first()
+    global_limit = settings_row.max_active_migrations if settings_row and settings_row.max_active_migrations else settings.max_active_migrations
+    connector_limit = (
+        settings_row.max_active_migrations_per_connector
+        if settings_row and settings_row.max_active_migrations_per_connector
+        else settings.max_active_migrations_per_connector
+    )
+    return max(1, int(global_limit)), max(1, int(connector_limit))
+
+
 def scheduler_counts(db: Session) -> tuple[int, Counter[int]]:
     active_entries = active_child_entries(db)
     connector_counts: Counter[int] = Counter()
@@ -1916,8 +1934,7 @@ def schedule_plan_vm_jobs(
         entries = initial_child_job_entries(plan, vms)
     vm_by_id = {vm.id: vm for vm in vms}
     total_active, connector_counts = scheduler_counts(db)
-    global_limit = max(1, settings.max_active_migrations)
-    connector_limit = max(1, settings.max_active_migrations_per_connector)
+    global_limit, connector_limit = migration_concurrency_limits(db)
     now = datetime.utcnow().isoformat()
     for entry in entries:
         if entry.get("status") != "Pending":

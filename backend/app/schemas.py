@@ -221,11 +221,15 @@ class SettingsBase(BaseModel):
     default_timezone: str = "Asia/Riyadh"
     maintenance_window: Optional[str] = None
     banner_message: Optional[str] = None
+    max_active_migrations: int = 3
+    max_active_migrations_per_connector: int = 3
 
 
 class SettingsUpdate(BaseModel):
     default_timezone: str = "Asia/Riyadh"
     banner_message: Optional[str] = None
+    max_active_migrations: int = Field(default=3, ge=1, le=100)
+    max_active_migrations_per_connector: int = Field(default=3, ge=1, le=100)
 
 
 class AppSettings(SettingsBase):

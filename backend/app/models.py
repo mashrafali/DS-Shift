@@ -148,6 +148,8 @@ class AppSetting(TimestampMixin, Base):
     default_timezone: Mapped[str] = mapped_column(String(80), default="Asia/Riyadh")
     maintenance_window: Mapped[str | None] = mapped_column(String(160), nullable=True)
     banner_message: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    max_active_migrations: Mapped[int] = mapped_column(Integer, default=3)
+    max_active_migrations_per_connector: Mapped[int] = mapped_column(Integer, default=3)
 
 
 class DiscoveryRun(TimestampMixin, Base):
