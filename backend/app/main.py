@@ -29,7 +29,7 @@ from .connector_client import (
     validate_connector_platform,
 )
 from .database import Base, SessionLocal, engine, get_db
-from .engines import build_kvm_to_esxi_preflight
+from .engines import build_kvm_to_esxi_preflight, summarize_discovery_commands
 from .service_status import get_service_statuses
 from .spark_client import cancel_spark_job, create_spark_job, get_spark_job, preflight_spark_job, spark_capabilities
 
@@ -650,9 +650,16 @@ def sync_wave_vm_membership(db: Session, wave: models.MigrationWave, plans: list
             vm.migration_wave = None
 
 
-def validate_live_migration_plan(plan: models.MigrationPlan, db: Session) -> tuple[models.ConnectorProfile, models.ConnectorProfile, list[models.VmInventory]]:
+def validate_live_migration_plan(
+    plan: models.MigrationPlan,
+    db: Session,
+    *,
+    require_preflight: bool = False,
+) -> tuple[models.ConnectorProfile, models.ConnectorProfile, list[models.VmInventory]]:
     if plan.status in {"Queued", "Running"}:
         raise HTTPException(409, f'Migration plan "{plan.name}" already has an active Spark Engine job')
+    if require_preflight and plan.status != "Preflight ready":
+        raise HTTPException(409, f'Run and pass Preflight before launching migration plan "{plan.name}"')
     source = db.get(models.ConnectorProfile, plan.source_connector_id)
     target = db.get(models.ConnectorProfile, plan.target_connector_id)
     if not source or not target:
@@ -667,11 +674,18 @@ def validate_live_migration_plan(plan: models.MigrationPlan, db: Session) -> tup
 
 
 def queue_live_migration_plan(plan: models.MigrationPlan, db: Session, admin: models.LocalUser) -> dict:
-    return queue_live_migration_plan_with_options(plan, db, admin)
+    return queue_live_migration_plan_with_options(plan, db, admin, require_preflight=True)
 
 
-def queue_live_migration_plan_with_options(plan: models.MigrationPlan, db: Session, admin: models.LocalUser, *, extra_options: dict | None = None) -> dict:
-    source, target, vms = validate_live_migration_plan(plan, db)
+def queue_live_migration_plan_with_options(
+    plan: models.MigrationPlan,
+    db: Session,
+    admin: models.LocalUser,
+    *,
+    extra_options: dict | None = None,
+    require_preflight: bool = False,
+) -> dict:
+    source, target, vms = validate_live_migration_plan(plan, db, require_preflight=require_preflight)
     request = migration_plan_execution_payload(plan, source, target, vms, admin.username, live=True, extra_options=extra_options)
     try:
         job = create_spark_job(request)
@@ -1132,12 +1146,13 @@ def discover_connector(connector_id: int, payload: schemas.DiscoveryRequest, db:
             message += f"; synchronized {synced_vms} VM inventory record(s)"
         if imported:
             message += f"; imported {imported} VMs"
+        commands = summarize_discovery_commands(connector.connector_type, result.get("commands", []))
         run = models.DiscoveryRun(
             connector_id=connector.id,
             status="Completed" if result.get("ok") else "Failed",
             message=message,
             records_json=json.dumps(records),
-            commands_json=json.dumps(result.get("commands", [])),
+            commands_json=json.dumps(commands),
         )
     except Exception as exc:
         connector.status = "Discovery failed"
@@ -1472,7 +1487,7 @@ def execute_wave(
         raise HTTPException(409, "Migration wave has no migration plans to execute")
     plans = plans_for_wave(db, plan_ids)
     for plan in plans:
-        validate_live_migration_plan(plan, db)
+        validate_live_migration_plan(plan, db, require_preflight=True)
     jobs = []
     for plan in plans:
         job = queue_live_migration_plan(plan, db, admin)

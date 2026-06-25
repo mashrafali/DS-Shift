@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import math
 import re
 import ssl
 from urllib.parse import urlparse
@@ -145,7 +147,6 @@ def discover_kvm(request: ConnectorRequest) -> EngineResult:
                 f"echo __BLK__; virsh domblklist --details {name!r}; "
                 f"echo __ADDR__; virsh domifaddr {name!r} || true"
             )
-            commands.append(command)
             code, text, _ = _ssh_exec(client, command)
             if code:
                 continue
@@ -156,6 +157,7 @@ def discover_kvm(request: ConnectorRequest) -> EngineResult:
                 fields = line.split()
                 if len(fields) >= 4 and fields[0] in {"file", "block", "network"} and fields[1] == "disk":
                     disks.append({"type": fields[0], "target": fields[2], "source": " ".join(fields[3:])})
+            _populate_kvm_disk_sizes(client, disks, commands)
             records.append(
                 {
                     "vm_name": name,
@@ -163,7 +165,7 @@ def discover_kvm(request: ConnectorRequest) -> EngineResult:
                     "source_platform": "KVM",
                     "cpu": _match_int(text, r"CPU\(s\):\s+(\d+)") or 0,
                     "memory_gb": round((_match_int(text, r"Max memory:\s+(\d+) KiB") or 0) / 1024 / 1024),
-                    "disk_gb": 0,
+                    "disk_gb": sum(disk.get("size_gb", 0) for disk in disks),
                     "os_type": os_type,
                     "ip_address": _match_text(_section(text, "__ADDR__", None), r"ipv4\s+([0-9.]+)/"),
                     "current_status": "Discovered",
@@ -173,6 +175,7 @@ def discover_kvm(request: ConnectorRequest) -> EngineResult:
                     "disks": disks,
                 }
             )
+        commands.append(f"inspected {len(records)} VM(s): dominfo, dumpxml, domblklist, domifaddr")
         return EngineResult(True, f"Discovered KVM host {host_name} and {len(records)} VMs", records, commands, [host])
     finally:
         client.close()
@@ -436,3 +439,44 @@ def _section(text: str, start: str, end: str | None) -> str:
         return ""
     value = text.split(start, 1)[1]
     return value.split(end, 1)[0] if end and end in value else value
+
+
+def _populate_kvm_disk_sizes(client: paramiko.SSHClient, disks: list[dict], commands: list[str]) -> None:
+    for disk in disks:
+        source = disk.get("source")
+        if not source or source in {"-", "none"}:
+            continue
+        commands.append(f"detect virtual disk size for {source}")
+        virtual_size = 0
+        for command in (
+            f"qemu-img info --output json {source!r}",
+            f"sudo -n qemu-img info --output json {source!r}",
+        ):
+            code, out, _ = _ssh_exec(client, command, timeout=20)
+            if code != 0:
+                continue
+            try:
+                payload = json.loads(out)
+            except json.JSONDecodeError:
+                continue
+            virtual_size = int(payload.get("virtual-size") or 0)
+            if virtual_size > 0:
+                break
+        if not virtual_size:
+            for command in (
+                f"blockdev --getsize64 {source!r}",
+                f"sudo -n blockdev --getsize64 {source!r}",
+                f"stat -c %s {source!r}",
+                f"sudo -n stat -c %s {source!r}",
+            ):
+                code, out, _ = _ssh_exec(client, command, timeout=20)
+                if code != 0:
+                    continue
+                try:
+                    virtual_size = int(out.strip().splitlines()[-1])
+                except (IndexError, ValueError):
+                    continue
+                if virtual_size > 0:
+                    break
+        if virtual_size > 0:
+            disk["size_gb"] = max(1, math.ceil(virtual_size / 1024 / 1024 / 1024))

@@ -321,6 +321,18 @@ def test_discovery_inventory_and_migration_plan_execution(monkeypatch):
             "app.main.create_spark_job",
             lambda payload: {"id": 42, "plan_id": payload["plan_id"], "status": "Queued", "adapter": "test"},
         )
+        with pytest.raises(HTTPException) as launch_error:
+            launch_migration_plan(
+                plan.id,
+                schemas.MigrationLaunch(confirmation=plan.name),
+                db,
+                models.LocalUser(username="admin", password_hash="unused", role="admin", is_active="true"),
+            )
+        assert launch_error.value.status_code == 409
+        assert "Preflight" in launch_error.value.detail
+
+        plan.status = "Preflight ready"
+        db.commit()
         launched = launch_migration_plan(
             plan.id,
             schemas.MigrationLaunch(confirmation=plan.name),
@@ -1042,6 +1054,8 @@ def test_wave_update_delete_and_execute(monkeypatch):
             "app.main.create_spark_job",
             lambda payload: {"id": next(job_ids), "plan_id": payload["plan_id"], "status": "Queued", "adapter": "test"},
         )
+        plan2.status = "Preflight ready"
+        db.commit()
         admin = models.LocalUser(username="admin", password_hash="unused", role="admin", is_active="true")
         execution = execute_wave(wave.id, schemas.WaveExecution(confirmation="Wave B"), db, admin)
         assert execution["wave"].status == "Queued"

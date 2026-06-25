@@ -65,6 +65,7 @@ const fallbackConnectorPlatforms = {
   ],
 };
 const statuses = ['Discovered', 'Assessed', 'Ready for migration', 'Replication prepared', 'Migration in progress', 'Cutover scheduled', 'Cutover completed', 'Validation completed', 'Failed', 'Rolled back', 'Blocked'];
+const connectorEnvironments = ['Production', 'UAT', 'Lab/Testing'];
 
 const blankConnector = {
   name: '',
@@ -89,7 +90,7 @@ const blankConnector = {
     client_id: '',
     client_secret: '',
   },
-  environment: 'Lab',
+  environment: 'Lab/Testing',
   status: 'Not validated',
   notes: '',
 };
@@ -456,8 +457,10 @@ function App() {
       await api('/connectors', { method: 'POST', body: JSON.stringify(payload) });
       setConnectorForm(blankConnector);
       await load();
+      return true;
     } catch (err) {
       setError(err.message);
+      return false;
     }
   };
 
@@ -524,8 +527,10 @@ function App() {
       await api('/users', { method: 'POST', body: JSON.stringify(payload) });
       setUserForm(blankUser);
       await load();
+      return true;
     } catch (err) {
       setError(err.message);
+      return false;
     }
   };
 
@@ -637,6 +642,10 @@ function App() {
   };
 
   const launchMigrationPlan = async (plan) => {
+    if (plan.status !== 'Preflight ready') {
+      setError(`Run and pass Preflight before launching migration plan "${plan.name}".`);
+      return;
+    }
     const confirmation = window.prompt(`Live migration can create, copy, stop, or move infrastructure resources.\n\nType the exact plan name to launch:\n${plan.name}`);
     if (confirmation === null) return;
     setError('');
@@ -1062,13 +1071,14 @@ function MigrationPlanModal({ mode = 'create', title, submitLabel, selectedVmIds
 function MigrationPlans({ plans, vms, connectors, preflight, launch, resume, forceStop, remove, executeTask, editPlan, executingPlanId, launchingPlanId, continuingPlanId, forceStoppingPlanId, selectedPlan, setSelectedPlanId, taskPlan, closeTask, taskExecution, user }) {
   const planVms = selectedPlan ? vms.filter((vm) => parseJsonArray(selectedPlan.vm_ids_json).includes(vm.id)) : [];
   const results = parseJsonArray(selectedPlan?.results_json);
-  return <section className="stack"><div className="about plan-about"><h2>Executable migration plans</h2><p>Preflight checks readiness without changing infrastructure. Admin-only Launch queues live execution through the Spark Engine worker pool when the source-target adapter and required options are available.</p></div><div className="table-wrap"><table><thead><tr><th>Plan</th><th>Migration</th><th>VMs</th><th>Status</th><th>Executed</th><th>Actions</th></tr></thead><tbody>{plans.map((plan) => {
+  return <section className="stack"><div className="about plan-about"><h2>Executable migration plans</h2><p>Preflight checks readiness without changing infrastructure. Launch is enabled only after Preflight succeeds and the plan status is Preflight ready.</p></div><div className="table-wrap"><table><thead><tr><th>Plan</th><th>Migration</th><th>VMs</th><th>Status</th><th>Executed</th><th>Actions</th></tr></thead><tbody>{plans.map((plan) => {
     const source = connectors.find((row) => row.id === plan.source_connector_id);
     const target = connectors.find((row) => row.id === plan.target_connector_id);
     const vmCount = parseJsonArray(plan.vm_ids_json).length;
     const active = ['Queued', 'Running'].includes(plan.status);
+    const preflightReady = plan.status === 'Preflight ready';
     const canResume = planCanContinue(plan, user);
-    return <tr key={plan.id}><td><strong>{plan.name}</strong></td><td>{source?.name || plan.source_connector_id} → {target?.name || plan.target_connector_id}</td><td>{vmCount}</td><td><Badge value={plan.status} /></td><td>{formatDateTime(plan.executed_at)}</td><td><div className="button-row compact"><button className="mini" onClick={() => setSelectedPlanId(plan.id)}><FileText size={14} /> Details</button><button className="mini" onClick={() => executeTask(plan)}><Gauge size={14} /> Task</button><button className="mini" disabled={active} onClick={() => editPlan(plan)}><Edit3 size={14} /> Edit</button><button className="mini" disabled={active || executingPlanId === plan.id} onClick={() => preflight(plan)}><CheckCircle2 size={14} /> {executingPlanId === plan.id ? 'Checking...' : 'Preflight'}</button>{user?.role === 'admin' && <button className="mini" disabled={active || launchingPlanId === plan.id} onClick={() => launch(plan)}><Play size={14} /> {launchingPlanId === plan.id ? 'Queueing...' : 'Launch'}</button>}{user?.role === 'admin' && canResume && plan.status === 'Failed' && <button className="mini" disabled={active || continuingPlanId === plan.id} onClick={() => resume(plan)}><Play size={14} /> {continuingPlanId === plan.id ? 'Continuing...' : 'Continue'}</button>}<button className="mini danger-button" disabled={active} onClick={() => remove(plan)}><Trash2 size={14} /> Delete</button></div></td></tr>;
+    return <tr key={plan.id}><td><strong>{plan.name}</strong></td><td>{source?.name || plan.source_connector_id} → {target?.name || plan.target_connector_id}</td><td>{vmCount}</td><td><Badge value={plan.status} /></td><td>{formatDateTime(plan.executed_at)}</td><td><div className="button-row compact"><button className="mini" onClick={() => setSelectedPlanId(plan.id)}><FileText size={14} /> Details</button><button className="mini" onClick={() => executeTask(plan)}><Gauge size={14} /> Task</button><button className="mini" disabled={active} onClick={() => editPlan(plan)}><Edit3 size={14} /> Edit</button><button className="mini" disabled={active || executingPlanId === plan.id} onClick={() => preflight(plan)}><CheckCircle2 size={14} /> {executingPlanId === plan.id ? 'Checking...' : 'Preflight'}</button>{user?.role === 'admin' && <button className="mini" disabled={active || launchingPlanId === plan.id || !preflightReady} title={preflightReady ? 'Launch migration plan' : 'Run and pass Preflight before launching this plan'} onClick={() => launch(plan)}><Play size={14} /> {launchingPlanId === plan.id ? 'Queueing...' : 'Launch'}</button>}{user?.role === 'admin' && canResume && plan.status === 'Failed' && <button className="mini" disabled={active || continuingPlanId === plan.id} onClick={() => resume(plan)}><Play size={14} /> {continuingPlanId === plan.id ? 'Continuing...' : 'Continue'}</button>}<button className="mini danger-button" disabled={active} onClick={() => remove(plan)}><Trash2 size={14} /> Delete</button></div>{!preflightReady && !active && <small className="action-hint">Preflight required before launch.</small>}</td></tr>;
   })}</tbody></table></div>{selectedPlan && <Modal title={selectedPlan.name} onClose={() => setSelectedPlanId(null)} wide><div className="plan-detail"><dl className="host-facts"><div><dt>Status</dt><dd>{selectedPlan.status}</dd></div><div><dt>Migration type</dt><dd>{selectedPlan.migration_type}</dd></div><div><dt>VMs</dt><dd>{planVms.length}</dd></div><div><dt>Keep source VM</dt><dd>{selectedPlan.keep_source_vm !== false ? 'Yes' : 'No'}</dd></div><div><dt>Spark job</dt><dd>{selectedPlan.spark_job_id || '-'}</dd></div><div><dt>Executed</dt><dd>{formatDateTime(selectedPlan.executed_at)}</dd></div></dl><div className="table-wrap"><table><thead><tr><th>VM</th><th>Source</th><th>OS</th><th>Status</th><th>Execution result</th></tr></thead><tbody>{planVms.map((vm) => {
     const result = results.find((row) => row.vm_id === vm.id);
     return <tr key={vm.id}><td>{vm.vm_name}</td><td>{vm.source_platform}</td><td>{vm.os_type || 'Unknown'}</td><td><Badge value={planDetailStatus(result, selectedPlan.status, vm.current_status)} /></td><td>{preflightDetail(result)}</td></tr>;
@@ -1082,7 +1092,7 @@ function ConnectorWorkspace({ category, setCategory, catalog, connectors, ...pro
       const engine = (catalog.engines || []).find((item) => item.category === key);
       const count = connectors.filter((connector) => connector.connector_category === key).length;
       return <button className="connector-engine-card" key={key} onClick={() => { const platform = categories[key][0]; setCategory(key); props.setForm({ ...blankConnector, connector_category: key, connector_type: platform.type, port: platform.default_port ?? '' }); }}><span className="connector-engine-icon"><Icon size={28} /></span><span><strong>{title}</strong><small>{description}</small><small>{count} configured connector{count === 1 ? '' : 's'} · Engine: {engine?.status || 'unknown'}</small></span></button>;
-    })}</div><div className="about"><h2>Available connectors</h2><p>Select Host Connectors or Cloud Connectors to list existing connectors, create a new connector, validate credentials, and discover workloads.</p></div></section>;
+    })}</div><div className="stack"><div className="about"><h2>Available connectors</h2><p>Select Host Connectors or Cloud Connectors to create a connector. Configured connectors and their current state are listed below.</p></div><div className="table-wrap"><table><thead><tr><th>Name</th><th>Category</th><th>Platform</th><th>Endpoint</th><th>Environment</th><th>Status</th></tr></thead><tbody>{connectors.length ? connectors.map((connector) => <tr key={connector.id}><td><strong>{connector.name}</strong></td><td>{connector.connector_category}</td><td>{connector.connector_type}</td><td>{connector.endpoint || '-'}</td><td>{connector.environment || '-'}</td><td><Badge value={connector.status} /></td></tr>) : <tr><td colSpan="6">No connectors have been configured.</td></tr>}</tbody></table></div></div></section>;
   }
   const platforms = categories[category] || [];
   return <section className="stack"><div className="connector-section-header"><button className="secondary" onClick={() => { setCategory(''); props.cancelEdit(); }}>All connector engines</button><div><h2>{category === 'host' ? 'Host Connectors' : 'Cloud Connectors'}</h2><p>{platforms.map((platform) => platform.type).join(' · ')}</p></div></div><Connectors title={category === 'host' ? 'Host Connector' : 'Cloud Connector'} category={category} rows={connectors.filter((connector) => connector.connector_category === category)} platforms={platforms} {...props} /></section>;
@@ -1106,13 +1116,18 @@ function ConnectorFields({ form, setForm, category, platforms }) {
       port: selectedPlatform?.default_port ?? '',
     });
   };
-  return <><Select label="Platform" value={scopedForm.connector_type} options={types} onChange={onPlatformChange} /><div className="tip"><strong>{platform?.tool}</strong><br />Endpoint: {platform?.endpoint_hint}<br />Credential: {platform?.credential_hint}</div><Input label="Connector name" value={scopedForm.name} onChange={(v) => update({ name: v })} required /><Input label={category === 'cloud' ? 'Region / Project / Subscription' : 'Host IP / Hostname'} value={scopedForm.endpoint} onChange={(v) => update({ endpoint: v })} />{category === 'host' && scopedForm.connector_type === 'VMware ESXi / vCenter' && <div className="execution-options"><Input label="Target vDC Name" value={scopedForm.target_vdc_name || ''} onChange={(v) => update({ target_vdc_name: v })} /><Input label="Target Cluster Name or Host Name" value={scopedForm.target_compute_name || ''} onChange={(v) => update({ target_compute_name: v })} /><Input label="Target Datastore" value={scopedForm.target_datastore || ''} onChange={(v) => update({ target_datastore: v })} /><Input label="Target Network" value={scopedForm.target_network || ''} onChange={(v) => update({ target_network: v })} /></div>}{category === 'host' && scopedForm.connector_type === 'KVM' && <div className="execution-options"><Input label="Target Storage Pool" value={scopedForm.target_storage_pool || ''} onChange={(v) => update({ target_storage_pool: v })} /><Input label="Target Network / Bridge" value={scopedForm.target_network || ''} onChange={(v) => update({ target_network: v })} /></div>}{renderConnectorCredentialFields(scopedForm, update, updateCredential)}<Input label="Environment" value={scopedForm.environment || ''} onChange={(v) => update({ environment: v })} /><TextArea label="Notes" value={scopedForm.notes || ''} onChange={(v) => update({ notes: v })} /></>;
+  return <><Select label="Platform" value={scopedForm.connector_type} options={types} onChange={onPlatformChange} /><div className="tip"><strong>{platform?.tool}</strong><br />Endpoint: {platform?.endpoint_hint}<br />Credential: {platform?.credential_hint}</div><Input label="Connector name" value={scopedForm.name} onChange={(v) => update({ name: v })} required /><Input label={category === 'cloud' ? 'Region / Project / Subscription' : 'Host IP / Hostname'} value={scopedForm.endpoint} onChange={(v) => update({ endpoint: v })} />{category === 'host' && scopedForm.connector_type === 'VMware ESXi / vCenter' && <div className="execution-options"><Input label="Target vDC Name" value={scopedForm.target_vdc_name || ''} onChange={(v) => update({ target_vdc_name: v })} /><Input label="Target Cluster Name or Host Name" value={scopedForm.target_compute_name || ''} onChange={(v) => update({ target_compute_name: v })} /><Input label="Target Datastore" value={scopedForm.target_datastore || ''} onChange={(v) => update({ target_datastore: v })} /><Input label="Target Network" value={scopedForm.target_network || ''} onChange={(v) => update({ target_network: v })} /></div>}{category === 'host' && scopedForm.connector_type === 'KVM' && <div className="execution-options"><Input label="Target Storage Pool" value={scopedForm.target_storage_pool || ''} onChange={(v) => update({ target_storage_pool: v })} /><Input label="Target Network / Bridge" value={scopedForm.target_network || ''} onChange={(v) => update({ target_network: v })} /></div>}{renderConnectorCredentialFields(scopedForm, update, updateCredential)}<Select label="Environment" value={scopedForm.environment || 'Lab/Testing'} options={connectorEnvironments} onChange={(v) => update({ environment: v })} /><TextArea label="Notes" value={scopedForm.notes || ''} onChange={(v) => update({ notes: v })} /></>;
 }
 
 function Connectors({ title, category, rows, form, setForm, save, editForm, setEditForm, saveEdit, platforms, discover, validate, edit, remove, cancelEdit, editingConnectorId, discoveringConnectorId, result }) {
+  const [showCreate, setShowCreate] = useState(false);
   const isEditing = editingConnectorId && editForm.connector_category === category;
   const resultSuccess = ['Validated', 'Completed'].includes(result?.status);
-  return <section className="split"><FormPanel title={`Add ${title}`} onSubmit={save}><ConnectorFields form={form} setForm={setForm} category={category} platforms={platforms} /><div className="tip">New connectors are stored by DS Shift and executed by the dedicated {category === 'host' ? 'Host' : 'Cloud'} Connector service.</div><button className="primary"><Save size={16} /> Add connector</button></FormPanel><div className="stack">{result && result.connector?.connector_category === category && <div className={`result ${resultSuccess ? 'success' : result.status === 'Discovering' ? '' : 'danger'}`}><strong>{result.status}</strong><span>{result.message}</span>{Boolean(result.commands?.length) && <code>{result.commands.join(' | ')}</code>}</div>}<div className="table-wrap"><table><thead><tr><th>Name</th><th>Platform</th><th>Endpoint</th><th>Credentials</th><th>Status</th><th>Actions</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td>{row.name}</td><td>{row.connector_type}</td><td>{row.endpoint || '-'}</td><td>{connectorCredentialSummary(row)}</td><td><Badge value={row.status} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini" onClick={() => validate(row)}><CheckCircle2 size={14} /> Validate</button><button className="mini" disabled={discoveringConnectorId === row.id} onClick={() => discover(row)}><Search size={14} /> {discoveringConnectorId === row.id ? 'Discovering...' : 'Discover'}</button><button className="mini danger-button" onClick={() => remove(row)}><Trash2 size={14} /> Delete</button></div></td></tr>)}</tbody></table></div></div>{isEditing && <Modal title={`Edit ${title}`} onClose={cancelEdit}><FormPanel title="" onSubmit={saveEdit}><ConnectorFields form={editForm} setForm={setEditForm} category={category} platforms={platforms} /><div className="button-row"><button className="primary"><Save size={16} /> Save changes</button><button className="secondary" type="button" onClick={cancelEdit}><X size={16} /> Cancel</button></div></FormPanel></Modal>}</section>;
+  const submitCreate = async (event) => {
+    const saved = await save(event);
+    if (saved) setShowCreate(false);
+  };
+  return <section className="stack"><div className="inventory-actions"><div><strong>{rows.length} configured {title.toLowerCase()}{rows.length === 1 ? '' : 's'}</strong><span>Validate credentials, discover workloads, and manage connector state.</span></div><button className="primary" onClick={() => { setForm({ ...blankConnector, connector_category: category, connector_type: platforms[0]?.type || 'KVM', port: platforms[0]?.default_port ?? '' }); setShowCreate(true); }}><Plus size={16} /> Add a New Connector</button></div>{result && result.connector?.connector_category === category && <div className={`result ${resultSuccess ? 'success' : result.status === 'Discovering' ? '' : 'danger'}`}><strong>{result.status}</strong><span>{result.message}</span>{Boolean(result.commands?.length) && <code>{result.commands.join(' | ')}</code>}</div>}<div className="table-wrap"><table><thead><tr><th>Name</th><th>Platform</th><th>Endpoint</th><th>Environment</th><th>Credentials</th><th>Status</th><th>Actions</th></tr></thead><tbody>{rows.length ? rows.map((row) => <tr key={row.id}><td>{row.name}</td><td>{row.connector_type}</td><td>{row.endpoint || '-'}</td><td>{row.environment || '-'}</td><td>{connectorCredentialSummary(row)}</td><td><Badge value={row.status} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini" onClick={() => validate(row)}><CheckCircle2 size={14} /> Validate</button><button className="mini" disabled={discoveringConnectorId === row.id} onClick={() => discover(row)}><Search size={14} /> {discoveringConnectorId === row.id ? 'Discovering...' : 'Discover'}</button><button className="mini danger-button" onClick={() => remove(row)}><Trash2 size={14} /> Delete</button></div></td></tr>) : <tr><td colSpan="7">No {title.toLowerCase()}s have been configured.</td></tr>}</tbody></table></div>{showCreate && <Modal title={`Add a New ${title}`} onClose={() => setShowCreate(false)}><FormPanel title="" onSubmit={submitCreate}><ConnectorFields form={form} setForm={setForm} category={category} platforms={platforms} /><div className="tip">New connectors are stored by DS Shift and executed by the dedicated {category === 'host' ? 'Host' : 'Cloud'} Connector service.</div><div className="button-row"><button className="primary"><Save size={16} /> Add connector</button><button className="secondary" type="button" onClick={() => setShowCreate(false)}><X size={16} /> Cancel</button></div></FormPanel></Modal>}{isEditing && <Modal title={`Edit ${title}`} onClose={cancelEdit}><FormPanel title="" onSubmit={saveEdit}><ConnectorFields form={editForm} setForm={setEditForm} category={category} platforms={platforms} /><div className="button-row"><button className="primary"><Save size={16} /> Save changes</button><button className="secondary" type="button" onClick={cancelEdit}><X size={16} /> Cancel</button></div></FormPanel></Modal>}</section>;
 }
 
 function HostsView({ hosts, connectors }) {
@@ -1123,7 +1138,10 @@ function HostsView({ hosts, connectors }) {
   return <section><div className="table-wrap hosts-table"><table><thead><tr><th>Host</th><th>Platform</th><th>Connector</th><th>Endpoint</th><th>Capacity</th><th>VMs</th><th>Status</th><th>Last discovery</th><th></th></tr></thead><tbody>{hosts.map((host) => {
     const connector = connectors.find((row) => row.id === host.connector_id);
     return <tr className="clickable-row" key={host.id} onClick={() => setSelectedHost(host)}><td><strong>{host.host_name}</strong></td><td>{host.platform}</td><td>{connector?.name || `Connector ${host.connector_id}`}</td><td>{host.endpoint || '-'}</td><td>{host.cpu} CPU / {host.memory_gb} GB</td><td>{host.vm_count}</td><td><Badge value={host.status} /></td><td>{formatDateTime(host.last_discovered_at)}</td><td><button className="mini" onClick={(event) => { event.stopPropagation(); setSelectedHost(host); }}><HardDrive size={14} /> View VMs</button></td></tr>;
-  })}</tbody></table></div>{selectedHost && <Modal title={`${selectedHost.host_name} virtual machines`} onClose={() => setSelectedHost(null)} wide><div className="host-detail"><dl className="host-facts"><div><dt>Platform</dt><dd>{selectedHost.platform}</dd></div><div><dt>Connector</dt><dd>{selectedConnector?.name || `Connector ${selectedHost.connector_id}`}</dd></div><div><dt>Endpoint</dt><dd>{selectedHost.endpoint || '-'}</dd></div><div><dt>Capacity</dt><dd>{selectedHost.cpu} CPU / {selectedHost.memory_gb} GB</dd></div><div><dt>VMs</dt><dd>{selectedHost.vm_count}</dd></div><div><dt>Status</dt><dd>{selectedHost.status}</dd></div></dl><div className="table-wrap"><table><thead><tr><th>VM</th><th>OS</th><th>CPU</th><th>Memory</th><th>Disk</th><th>IP address</th><th>Power</th></tr></thead><tbody>{selectedVms.length ? selectedVms.map((vm, index) => <tr key={`${vm.vm_name}-${index}`}><td>{vm.vm_name}</td><td>{vm.os_type || 'Unknown'}</td><td>{vm.cpu || 0}</td><td>{vm.memory_gb || 0} GB</td><td>{vm.disk_gb || 0} GB</td><td>{vm.ip_address || '-'}</td><td><Badge value={vm.power_state || vm.current_status || 'Discovered'} /></td></tr>) : <tr><td colSpan="7">No VMs reported by this host.</td></tr>}</tbody></table></div></div></Modal>}</section>;
+  })}</tbody></table></div>{selectedHost && <Modal title={`${selectedHost.host_name} virtual machines`} onClose={() => setSelectedHost(null)} wide><div className="host-detail"><dl className="host-facts"><div><dt>Platform</dt><dd>{selectedHost.platform}</dd></div><div><dt>Connector</dt><dd>{selectedConnector?.name || `Connector ${selectedHost.connector_id}`}</dd></div><div><dt>Endpoint</dt><dd>{selectedHost.endpoint || '-'}</dd></div><div><dt>Capacity</dt><dd>{selectedHost.cpu} CPU / {selectedHost.memory_gb} GB</dd></div><div><dt>VMs</dt><dd>{selectedHost.vm_count}</dd></div><div><dt>Status</dt><dd>{selectedHost.status}</dd></div></dl><div className="table-wrap"><table><thead><tr><th>VM</th><th>OS</th><th>CPU</th><th>Memory</th><th>Disk</th><th>IP address</th><th>Power</th></tr></thead><tbody>{selectedVms.length ? selectedVms.map((vm, index) => {
+    const power = vm.power_state || vm.current_status || 'Discovered';
+    return <tr key={`${vm.vm_name}-${index}`}><td>{vm.vm_name}</td><td>{vm.os_type || 'Unknown'}</td><td>{vm.cpu || 0}</td><td>{vm.memory_gb || 0} GB</td><td>{vm.disk_gb || 0} GB</td><td>{vm.ip_address || '-'}</td><td><Badge value={power} tone={powerStateTone(power)} /></td></tr>;
+  }) : <tr><td colSpan="7">No VMs reported by this host.</td></tr>}</tbody></table></div></div></Modal>}</section>;
 }
 
 function Waves({ waves, plans, user, editingWaveId, executingWaveId, openCreate, editWave, deleteWave, executeWave }) {
@@ -1170,7 +1188,12 @@ function UserFields({ form, setForm, editingUserId, setError }) {
 }
 
 function UsersView({ currentUser, users, form, setForm, save, editForm, setEditForm, saveEdit, edit, remove, editingUserId, cancelEdit, setError }) {
-  return <section className="split"><FormPanel title="Create user" onSubmit={save}><UserFields form={form} setForm={setForm} setError={setError} /><button className="primary"><Save size={16} /> Create user</button></FormPanel><div className="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>{users.map((row) => <tr key={row.id}><td><div className="user-table-identity"><UserAvatar user={row} /><div><strong>{row.username}</strong>{row.id === currentUser?.id && <span>Current user</span>}</div></div></td><td><Badge value={row.role} /></td><td><Badge value={row.is_active ? 'Active' : 'Inactive'} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini danger-button" disabled={row.id === currentUser?.id} onClick={() => remove(row)}><Trash2 size={14} /> Delete</button></div></td></tr>)}</tbody></table></div>{editingUserId && <Modal title="Edit user" onClose={cancelEdit}><FormPanel title="" onSubmit={saveEdit}><UserFields form={editForm} setForm={setEditForm} editingUserId={editingUserId} setError={setError} /><div className="button-row"><button className="primary"><Save size={16} /> Save changes</button><button className="secondary" type="button" onClick={cancelEdit}><X size={16} /> Cancel</button></div></FormPanel></Modal>}</section>;
+  const [showCreate, setShowCreate] = useState(false);
+  const submitCreate = async (event) => {
+    const saved = await save(event);
+    if (saved) setShowCreate(false);
+  };
+  return <section className="stack"><div className="inventory-actions"><div><strong>{users.length} local user{users.length === 1 ? '' : 's'}</strong><span>Manage GUI accounts and access roles.</span></div><button className="primary" onClick={() => { setForm(blankUser); setShowCreate(true); }}><Plus size={16} /> Add a New User</button></div><div className="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>{users.map((row) => <tr key={row.id}><td><div className="user-table-identity"><UserAvatar user={row} /><div><strong>{row.username}</strong>{row.id === currentUser?.id && <span>Current user</span>}</div></div></td><td><Badge value={row.role} /></td><td><Badge value={row.is_active ? 'Active' : 'Inactive'} /></td><td><div className="button-row compact"><button className="mini" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button><button className="mini danger-button" disabled={row.id === currentUser?.id} onClick={() => remove(row)}><Trash2 size={14} /> Delete</button></div></td></tr>)}</tbody></table></div>{showCreate && <Modal title="Add a New User" onClose={() => setShowCreate(false)}><FormPanel title="" onSubmit={submitCreate}><UserFields form={form} setForm={setForm} setError={setError} /><div className="button-row"><button className="primary"><Save size={16} /> Create user</button><button className="secondary" type="button" onClick={() => setShowCreate(false)}><X size={16} /> Cancel</button></div></FormPanel></Modal>}{editingUserId && <Modal title="Edit user" onClose={cancelEdit}><FormPanel title="" onSubmit={saveEdit}><UserFields form={editForm} setForm={setEditForm} editingUserId={editingUserId} setError={setError} /><div className="button-row"><button className="primary"><Save size={16} /> Save changes</button><button className="secondary" type="button" onClick={cancelEdit}><X size={16} /> Cancel</button></div></FormPanel></Modal>}</section>;
 }
 
 function SettingsView({ settings, setSettings, save, serviceStatus, serviceStatusLoading, about }) {
@@ -1200,15 +1223,22 @@ function StatusBoard({ vms }) {
   return <div className="table-wrap"><table><thead><tr><th>VM</th><th>Source</th><th>Host</th><th>Criticality</th><th>Status</th></tr></thead><tbody>{vms.map((vm) => <tr key={vm.id}><td>{vm.vm_name}</td><td>{vm.source_platform}</td><td>{vm.host_name || '-'}</td><td>{vm.criticality}</td><td><Badge value={vm.current_status} /></td></tr>)}</tbody></table></div>;
 }
 
-function Badge({ value }) {
+function powerStateTone(value) {
   const normalized = (value || '').toLowerCase();
-  const kind = normalized.includes('failed') || normalized.includes('blocked') || normalized.includes('rolled') || normalized === 'inactive'
+  if (['poweredon', 'running'].includes(normalized)) return 'success';
+  if (normalized.includes('off') || normalized.includes('shut')) return 'neutral';
+  return undefined;
+}
+
+function Badge({ value, tone }) {
+  const normalized = (value || '').toLowerCase();
+  const kind = tone || (normalized.includes('failed') || normalized.includes('blocked') || normalized.includes('rolled') || normalized === 'inactive'
     ? 'danger'
     : normalized.includes('running') || normalized.includes('queued') || normalized.includes('starting') || normalized.includes('checking') || normalized.includes('executing')
       ? 'warning'
       : normalized.includes('completed') || normalized.includes('succeeded') || normalized.includes('validated') || normalized.includes('ready') || normalized === 'active'
         ? 'success'
-        : 'neutral';
+        : 'neutral');
   return <span className={`badge ${kind}`}>{value}</span>;
 }
 
@@ -1398,7 +1428,7 @@ function preflightDetail(result) {
 
 function renderConnectorCredentialFields(form, update, updateCredential) {
   if (form.connector_category === 'host') {
-    return <div className="credential-grid"><Input label="Username" value={form.username || ''} onChange={(v) => update({ username: v })} /><PasswordInput label="Password" value={form.password || ''} onChange={(v) => update({ password: v })} placeholder={form.has_stored_secret ? 'Leave blank to keep the stored password' : 'Optional for SSH key-based access'} />{form.has_stored_secret && <div className="tip credential-tip">A credential is already stored for this connector. Enter a new password only if you want to replace it.</div>}</div>;
+    return <div className="credential-stack"><Input label="Username" value={form.username || ''} onChange={(v) => update({ username: v })} /><PasswordInput label="Password" value={form.password || ''} onChange={(v) => update({ password: v })} placeholder={form.has_stored_secret ? 'Leave blank to keep the stored password' : 'Optional for SSH key-based access'} />{form.has_stored_secret && <div className="tip credential-tip">A credential is already stored for this connector. Enter a new password only if you want to replace it.</div>}</div>;
   }
   if (form.connector_type === 'Amazon Web Services') {
     return <div className="credential-grid"><Input label="Access key ID" value={form.credential_payload.access_key_id || ''} onChange={(v) => updateCredential('access_key_id', v)} /><PasswordInput label="Secret access key" value={form.credential_payload.secret_access_key || ''} onChange={(v) => updateCredential('secret_access_key', v)} placeholder={form.has_stored_secret ? 'Leave blank to keep the stored secret key' : ''} /><PasswordInput label="Session token" value={form.credential_payload.session_token || ''} onChange={(v) => updateCredential('session_token', v)} placeholder="Optional temporary session token" />{form.has_stored_secret && <div className="tip credential-tip">Stored cloud credentials stay in place until you replace them here.</div>}</div>;

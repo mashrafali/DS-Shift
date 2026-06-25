@@ -135,7 +135,6 @@ def discover_kvm(endpoint: str | None, username: str | None, credential_referenc
                 f"echo __ADDR__; virsh domifaddr {name!r} || true"
             )
             code, text, detail_err = _ssh_exec(client, command, timeout=30)
-            commands.append(command)
             if code != 0:
                 continue
             cpu = _match_int(text, r"CPU\(s\):\s+(\d+)") or 0
@@ -165,6 +164,7 @@ def discover_kvm(endpoint: str | None, username: str | None, credential_referenc
                     "raw_error": detail_err,
                 }
             )
+        commands.append(f"inspected {len(records)} VM(s): dominfo, dumpxml, domblklist, domiflist, domifaddr")
         return EngineResult(True, f"Discovered {len(records)} KVM VMs", records, commands, listed)
     finally:
         client.close()
@@ -371,18 +371,58 @@ def _populate_kvm_disk_sizes(client: paramiko.SSHClient, disks: list[dict], comm
         source = disk.get("source")
         if not source or source in {"-", "none"}:
             continue
-        command = f"qemu-img info --output json {source!r}"
-        commands.append(command)
-        code, out, _ = _ssh_exec(client, command, timeout=20)
-        if code != 0:
-            continue
-        try:
-            payload = json.loads(out)
-        except json.JSONDecodeError:
-            continue
-        virtual_size = int(payload.get("virtual-size") or 0)
+        commands.append(f"detect virtual disk size for {source}")
+        virtual_size = 0
+        for command in (
+            f"qemu-img info --output json {source!r}",
+            f"sudo -n qemu-img info --output json {source!r}",
+        ):
+            code, out, _ = _ssh_exec(client, command, timeout=20)
+            if code != 0:
+                continue
+            try:
+                payload = json.loads(out)
+            except json.JSONDecodeError:
+                continue
+            virtual_size = int(payload.get("virtual-size") or 0)
+            if virtual_size > 0:
+                break
+        if not virtual_size:
+            for command in (
+                f"blockdev --getsize64 {source!r}",
+                f"sudo -n blockdev --getsize64 {source!r}",
+                f"stat -c %s {source!r}",
+                f"sudo -n stat -c %s {source!r}",
+            ):
+                code, out, _ = _ssh_exec(client, command, timeout=20)
+                if code != 0:
+                    continue
+                try:
+                    virtual_size = int(out.strip().splitlines()[-1])
+                except (IndexError, ValueError):
+                    continue
+                if virtual_size > 0:
+                    break
         if virtual_size > 0:
             disk["size_gb"] = max(1, math.ceil(virtual_size / 1024 / 1024 / 1024))
+
+
+def summarize_discovery_commands(connector_type: str, commands: list[str]) -> list[str]:
+    if connector_type == "KVM":
+        detected = [command for command in commands if command.startswith("detect virtual disk size")]
+        summary = []
+        for command in commands:
+            if command in {"hostname", "virsh nodeinfo", "virsh list --all --name"} and command not in summary:
+                summary.append(command)
+        if not summary:
+            summary.append("virsh list --all --name")
+        inspected = next((command for command in commands if command.startswith("inspected ")), None)
+        if inspected:
+            summary.append(inspected)
+        if detected:
+            summary.append(f"detected virtual disk sizes for {len(detected)} disk(s)")
+        return summary
+    return commands
 
 
 def _parse_kvm_nics(text: str) -> list[dict]:

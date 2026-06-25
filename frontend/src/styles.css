@@ -312,10 +312,12 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   accent-color: #0b7f8d;
 }
 .credential-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.credential-stack { display: grid; gap: 12px; }
 .credential-tip { grid-column: 1 / -1; margin-top: -2px; }
 .secret-input { display: flex; align-items: center; gap: 8px; }
 .secret-input input { flex: 1; }
 .secret-toggle { min-width: 76px; min-height: 38px; padding: 0 12px; white-space: nowrap; }
+.action-hint { display: block; margin-top: 8px; color: #607386; font-weight: 700; }
 .task-summary {
   display: grid;
   gap: 10px;
