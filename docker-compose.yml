@@ -35,6 +35,8 @@ services:
       CLOUD_CONNECTOR_ENGINE_URL: http://cloud-connector:8102
       SPARK_ENGINE_URL: http://spark-engine:8200
       SERVICE_STATUS_MONITOR_URL: http://service-status-monitor:8090
+      MAX_ACTIVE_MIGRATIONS: ${MAX_ACTIVE_MIGRATIONS:-3}
+      MAX_ACTIVE_MIGRATIONS_PER_CONNECTOR: ${MAX_ACTIVE_MIGRATIONS_PER_CONNECTOR:-3}
     depends_on:
       database:
         condition: service_healthy

@@ -50,6 +50,8 @@ USER_ROLES = {"admin", "operator", "viewer"}
 PROFILE_PHOTO_PATTERN = re.compile(r"^data:image/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$")
 MAX_PROFILE_PHOTO_BYTES = 256 * 1024
 STAGING_ROOT = Path(os.getenv("DS_SHIFT_STAGING_ROOT", "/DS-Shift-Staging"))
+ACTIVE_EXECUTION_STATUSES = {"Queued", "Running"}
+TERMINAL_EXECUTION_STATUSES = {"Succeeded", "Failed", "Canceled"}
 
 app = FastAPI(title=settings.app_name, version=settings.app_version)
 app.add_middleware(
@@ -253,14 +255,10 @@ def raw_dashboard_summary(db: Session) -> schemas.DashboardSummary:
 def sync_spark_backed_plans(db: Session, plans: list[models.MigrationPlan]) -> None:
     changed = False
     for plan in plans:
-        if not plan.spark_job_id:
-            continue
-        try:
-            job = get_spark_job(plan.spark_job_id)
-        except Exception:
+        if not plan.spark_job_id and plan.status not in ACTIVE_EXECUTION_STATUSES:
             continue
         before = (plan.status, plan.results_json, plan.executed_at, plan.updated_at)
-        apply_spark_job(db, plan, job)
+        sync_plan_execution_state(db, plan)
         after = (plan.status, plan.results_json, plan.executed_at, plan.updated_at)
         if after != before:
             changed = True
@@ -684,16 +682,18 @@ def queue_live_migration_plan_with_options(
     *,
     extra_options: dict | None = None,
     require_preflight: bool = False,
+    preserve_success: bool = False,
 ) -> dict:
     source, target, vms = validate_live_migration_plan(plan, db, require_preflight=require_preflight)
-    request = migration_plan_execution_payload(plan, source, target, vms, admin.username, live=True, extra_options=extra_options)
     try:
-        job = create_spark_job(request)
+        plan.results_json = json.dumps(initial_child_job_entries(plan, vms, preserve_success=preserve_success))
+        plan.spark_job_id = None
+        plan.executed_at = datetime.utcnow()
+        job = schedule_plan_vm_jobs(db, plan, source, target, vms, admin.username, extra_options=extra_options)
     except ValueError as exc:
         raise HTTPException(409, f"Spark Engine rejected execution: {exc}") from exc
     except Exception as exc:
         raise HTTPException(503, f"Spark Engine unavailable: {exc}") from exc
-    plan.spark_job_id = job["id"]
     plan.status = job["status"]
     return job
 
@@ -955,7 +955,12 @@ def delete_user(user_id: int, db: Session = Depends(get_db), admin: models.Local
 
 @app.get("/api/dashboard", response_model=schemas.DashboardSummary)
 def dashboard(db: Session = Depends(get_db), _user: models.LocalUser = Depends(current_user)):
-    sync_spark_backed_plans(db, db.query(models.MigrationPlan).filter(models.MigrationPlan.spark_job_id.is_not(None)).all())
+    sync_spark_backed_plans(
+        db,
+        db.query(models.MigrationPlan)
+        .filter((models.MigrationPlan.spark_job_id.is_not(None)) | (models.MigrationPlan.status.in_(list(ACTIVE_EXECUTION_STATUSES))))
+        .all(),
+    )
     return raw_dashboard_summary(db)
 
 
@@ -1736,6 +1741,295 @@ def migration_plan_execution_payload(
     }
 
 
+def is_child_job_entry(row: dict) -> bool:
+    return isinstance(row, dict) and row.get("kind") == "vm_job"
+
+
+def child_job_entries(plan: models.MigrationPlan) -> list[dict]:
+    return [row for row in parsed_json_array(plan.results_json) if is_child_job_entry(row)]
+
+
+def plan_uses_child_jobs(plan: models.MigrationPlan) -> bool:
+    return any(is_child_job_entry(row) for row in parsed_json_array(plan.results_json))
+
+
+def active_child_entries(db: Session) -> list[tuple[models.MigrationPlan, dict]]:
+    entries: list[tuple[models.MigrationPlan, dict]] = []
+    for plan in db.query(models.MigrationPlan).filter(models.MigrationPlan.status.in_(list(ACTIVE_EXECUTION_STATUSES))).all():
+        for entry in child_job_entries(plan):
+            if entry.get("status") in ACTIVE_EXECUTION_STATUSES:
+                entries.append((plan, entry))
+        if plan.spark_job_id and not plan_uses_child_jobs(plan):
+            entries.append((plan, {"spark_job_id": plan.spark_job_id, "status": plan.status}))
+    return entries
+
+
+def scheduler_counts(db: Session) -> tuple[int, Counter[int]]:
+    active_entries = active_child_entries(db)
+    connector_counts: Counter[int] = Counter()
+    for plan, _entry in active_entries:
+        connector_counts[plan.source_connector_id] += 1
+        connector_counts[plan.target_connector_id] += 1
+    return len(active_entries), connector_counts
+
+
+def single_vm_execution_payload(
+    plan: models.MigrationPlan,
+    source: models.ConnectorProfile,
+    target: models.ConnectorProfile,
+    vm: models.VmInventory,
+    requested_by: str,
+    *,
+    extra_options: dict | None = None,
+) -> dict:
+    return migration_plan_execution_payload(
+        plan,
+        source,
+        target,
+        [vm],
+        requested_by,
+        live=True,
+        extra_options=extra_options,
+    )
+
+
+def initial_child_job_entries(
+    plan: models.MigrationPlan,
+    vms: list[models.VmInventory],
+    *,
+    preserve_success: bool = False,
+) -> list[dict]:
+    previous_by_vm = {
+        row.get("vm_id"): row
+        for row in parsed_json_array(plan.results_json)
+        if isinstance(row, dict) and row.get("vm_id")
+    }
+    entries = []
+    now = datetime.utcnow().isoformat()
+    for vm in vms:
+        previous = previous_by_vm.get(vm.id, {})
+        if preserve_success and previous.get("ok") is True:
+            entries.append(
+                {
+                    "kind": "vm_job",
+                    "vm_id": vm.id,
+                    "vm_name": vm.vm_name,
+                    "status": "Succeeded",
+                    "ok": True,
+                    "message": previous.get("message") or "Completed in previous attempt",
+                    "progress": 100,
+                    "target_name": previous.get("target_name"),
+                    "completed_at": previous.get("completed_at") or now,
+                    "result": previous.get("result") or previous,
+                }
+            )
+            continue
+        entries.append(
+            {
+                "kind": "vm_job",
+                "vm_id": vm.id,
+                "vm_name": vm.vm_name,
+                "status": "Pending",
+                "ok": None,
+                "message": "Waiting for migration scheduler capacity",
+                "progress": 0,
+                "spark_job_id": None,
+                "created_at": now,
+            }
+        )
+    return entries
+
+
+def aggregate_child_job(plan: models.MigrationPlan, entries: list[dict] | None = None) -> dict:
+    entries = entries if entries is not None else child_job_entries(plan)
+    total = len(entries)
+    active = [row for row in entries if row.get("status") in ACTIVE_EXECUTION_STATUSES]
+    pending = [row for row in entries if row.get("status") == "Pending"]
+    succeeded = [row for row in entries if row.get("status") == "Succeeded" or row.get("ok") is True]
+    failed = [row for row in entries if row.get("status") == "Failed" or row.get("ok") is False]
+    canceled = [row for row in entries if row.get("status") == "Canceled"]
+    if active or pending:
+        status = "Running" if any(row.get("status") == "Running" for row in active) else "Queued"
+    elif total and len(succeeded) == total:
+        status = "Succeeded"
+    elif canceled and not failed:
+        status = "Canceled"
+    elif failed or canceled:
+        status = "Failed"
+    else:
+        status = plan.status
+    progress = int(sum(int(row.get("progress") or (100 if row.get("ok") is True else 0)) for row in entries) / total) if total else 0
+    message = (
+        f"{len(succeeded)}/{total} VM migration(s) completed"
+        if status == "Succeeded"
+        else f"{len(active)} active, {len(pending)} waiting, {len(succeeded)} completed, {len(failed)} failed"
+    )
+    return {
+        "id": plan.spark_job_id,
+        "status": status,
+        "adapter": None,
+        "message": message,
+        "tasks": [
+            {
+                "kind": "task",
+                "key": f"vm-{row.get('vm_id')}",
+                "title": row.get("vm_name") or f"VM {row.get('vm_id')}",
+                "status": row.get("status") or "Pending",
+                "progress": int(row.get("progress") or 0),
+                "message": row.get("message") or "-",
+                "started_at": row.get("started_at") or row.get("created_at"),
+                "completed_at": row.get("completed_at"),
+            }
+            for row in entries
+        ],
+        "vm_results": [
+            {
+                "vm_id": row.get("vm_id"),
+                "vm_name": row.get("vm_name"),
+                "ok": row.get("ok"),
+                "message": row.get("message"),
+                "spark_job_id": row.get("spark_job_id"),
+                "status": row.get("status"),
+                "target_name": row.get("target_name"),
+                "can_resume": row.get("can_resume"),
+            }
+            for row in entries
+            if row.get("status") in TERMINAL_EXECUTION_STATUSES or row.get("ok") is not None
+        ],
+        "progress_percent": min(100, max(0, progress)),
+        "children": entries,
+    }
+
+
+def schedule_plan_vm_jobs(
+    db: Session,
+    plan: models.MigrationPlan,
+    source: models.ConnectorProfile,
+    target: models.ConnectorProfile,
+    vms: list[models.VmInventory],
+    requested_by: str,
+    *,
+    extra_options: dict | None = None,
+) -> dict:
+    entries = child_job_entries(plan)
+    if not entries:
+        entries = initial_child_job_entries(plan, vms)
+    vm_by_id = {vm.id: vm for vm in vms}
+    total_active, connector_counts = scheduler_counts(db)
+    global_limit = max(1, settings.max_active_migrations)
+    connector_limit = max(1, settings.max_active_migrations_per_connector)
+    now = datetime.utcnow().isoformat()
+    for entry in entries:
+        if entry.get("status") != "Pending":
+            continue
+        if total_active >= global_limit:
+            entry["message"] = f"Waiting for global migration capacity ({global_limit})"
+            continue
+        if connector_counts[source.id] >= connector_limit or connector_counts[target.id] >= connector_limit:
+            entry["message"] = f"Waiting for connector throttle capacity ({connector_limit})"
+            continue
+        vm = vm_by_id.get(entry.get("vm_id"))
+        if not vm:
+            entry.update({"status": "Failed", "ok": False, "message": "VM no longer exists in inventory", "progress": 0, "completed_at": now})
+            continue
+        request = single_vm_execution_payload(plan, source, target, vm, requested_by, extra_options=extra_options)
+        job = create_spark_job(request)
+        entry.update(
+            {
+                "spark_job_id": job["id"],
+                "status": job.get("status") or "Queued",
+                "ok": None,
+                "message": job.get("message") or "Queued for Spark Engine execution",
+                "adapter": job.get("adapter"),
+                "progress": 0,
+                "started_at": now,
+            }
+        )
+        if not plan.spark_job_id:
+            plan.spark_job_id = job["id"]
+        vm.current_status = "Migration in progress"
+        db.add(models.VmStatusHistory(vm_id=vm.id, status=vm.current_status, note=f"Migration plan {plan.name} queued Spark job {job['id']}"))
+        total_active += 1
+        connector_counts[source.id] += 1
+        connector_counts[target.id] += 1
+    plan.results_json = json.dumps(entries)
+    aggregate = aggregate_child_job(plan, entries)
+    plan.status = aggregate["status"]
+    plan.executed_at = plan.executed_at or datetime.utcnow()
+    return aggregate
+
+
+def update_child_from_spark_job(db: Session, plan: models.MigrationPlan, entry: dict, job: dict, vm_by_id: dict[int, models.VmInventory]) -> None:
+    entry["status"] = job.get("status") or entry.get("status")
+    entry["message"] = job.get("message") or entry.get("message")
+    entry["progress"] = job.get("progress_percent", entry.get("progress", 0))
+    entry["tasks"] = job.get("tasks") or []
+    result_rows = [row for row in (job.get("result") or []) if isinstance(row, dict) and row.get("kind") != "task"]
+    if job.get("status") not in TERMINAL_EXECUTION_STATUSES:
+        return
+    entry["completed_at"] = job.get("completed_at") or datetime.utcnow().isoformat()
+    result = next((row for row in result_rows if row.get("vm_id") == entry.get("vm_id")), result_rows[0] if result_rows else {})
+    ok = bool(result.get("ok")) if result else job.get("status") == "Succeeded"
+    entry["ok"] = ok
+    entry["result"] = result
+    entry["target_name"] = result.get("target_name")
+    entry["can_resume"] = result.get("can_resume")
+    if result.get("message"):
+        entry["message"] = result["message"]
+    vm = vm_by_id.get(entry.get("vm_id"))
+    if not vm:
+        return
+    completed_at = datetime.utcnow()
+    vm.current_status = "Cutover completed" if ok else "Failed"
+    note = (
+        f"Migration completed at {completed_at.isoformat()}Z via Spark Engine job {job.get('id')}: {entry.get('message')}"
+        if ok
+        else f"Migration failed at {completed_at.isoformat()}Z via Spark Engine job {job.get('id')}: {entry.get('message')}"
+    )
+    db.add(models.VmStatusHistory(vm_id=vm.id, status=vm.current_status, note=note))
+    if ok:
+        append_migration_log(plan, vm, result, when=completed_at)
+
+
+def sync_plan_execution_state(db: Session, plan: models.MigrationPlan) -> dict:
+    if not plan_uses_child_jobs(plan):
+        if not plan.spark_job_id:
+            return {"id": None, "status": plan.status, "message": "No Spark execution"}
+        job = get_spark_job(plan.spark_job_id)
+        apply_spark_job(db, plan, job)
+        return job
+    source = db.get(models.ConnectorProfile, plan.source_connector_id)
+    target = db.get(models.ConnectorProfile, plan.target_connector_id)
+    vm_ids = [row.get("vm_id") for row in child_job_entries(plan) if row.get("vm_id")]
+    vms = db.query(models.VmInventory).filter(models.VmInventory.id.in_(vm_ids)).all() if vm_ids else []
+    vm_by_id = {vm.id: vm for vm in vms}
+    entries = child_job_entries(plan)
+    for entry in entries:
+        if entry.get("status") not in ACTIVE_EXECUTION_STATUSES or not entry.get("spark_job_id"):
+            continue
+        try:
+            job = get_spark_job(int(entry["spark_job_id"]))
+        except Exception:
+            continue
+        update_child_from_spark_job(db, plan, entry, job, vm_by_id)
+    plan.results_json = json.dumps(entries)
+    if source and target:
+        aggregate_before = aggregate_child_job(plan, entries)
+        if aggregate_before["status"] in ACTIVE_EXECUTION_STATUSES:
+            schedule_plan_vm_jobs(db, plan, source, target, vms, "scheduler")
+            entries = child_job_entries(plan)
+    aggregate = aggregate_child_job(plan, entries)
+    previous_status = plan.status
+    plan.status = aggregate["status"]
+    plan.spark_job_id = next((row.get("spark_job_id") for row in entries if row.get("status") in ACTIVE_EXECUTION_STATUSES and row.get("spark_job_id")), plan.spark_job_id)
+    plan.executed_at = plan.executed_at or datetime.utcnow()
+    if aggregate["status"] in TERMINAL_EXECUTION_STATUSES and previous_status != aggregate["status"]:
+        if aggregate["status"] == "Succeeded":
+            shutil.rmtree(plan_stage_directory(plan), ignore_errors=True)
+    plan.results_json = json.dumps(entries)
+    return aggregate
+
+
 def apply_spark_job(db: Session, plan: models.MigrationPlan, job: dict) -> None:
     spark_status = job.get("status")
     if spark_status in {"Queued", "Running"}:
@@ -1806,7 +2100,7 @@ def continue_migration_plan(
     resume = plan_resume_metadata(plan, vms)
     if not resume.get("allowed"):
         raise HTTPException(409, resume.get("reason") or "This migration plan cannot continue from staging")
-    job = queue_live_migration_plan_with_options(plan, db, admin, extra_options={"resume_from_stage": True})
+    job = queue_live_migration_plan_with_options(plan, db, admin, extra_options={"resume_from_stage": True}, preserve_success=True)
     db.commit()
     db.refresh(plan)
     return {"plan": schemas.MigrationPlan.model_validate(plan), "job": job, "resume": resume}
@@ -1824,18 +2118,36 @@ def force_stop_migration_plan(
         raise HTTPException(404, "Migration plan not found")
     if payload.confirmation != plan.name:
         raise HTTPException(400, "Type the exact migration plan name to force-stop execution")
-    if not plan.spark_job_id:
+    child_entries = child_job_entries(plan)
+    active_child_job_ids = [
+        int(entry["spark_job_id"])
+        for entry in child_entries
+        if entry.get("spark_job_id") and entry.get("status") in ACTIVE_EXECUTION_STATUSES
+    ]
+    if not plan.spark_job_id and not active_child_job_ids:
         raise HTTPException(404, "Migration plan has no Spark Engine execution")
+    canceled_jobs = []
     try:
-        job = cancel_spark_job(plan.spark_job_id)
+        if active_child_job_ids:
+            for job_id in active_child_job_ids:
+                canceled_jobs.append(cancel_spark_job(job_id))
+            now = datetime.utcnow().isoformat()
+            for entry in child_entries:
+                if entry.get("spark_job_id") in active_child_job_ids or entry.get("status") == "Pending":
+                    entry.update({"status": "Canceled", "ok": False, "message": "Execution was force-stopped by an operator", "progress": entry.get("progress", 0), "completed_at": now})
+            plan.results_json = json.dumps(child_entries)
+            plan.status = "Canceled"
+        else:
+            job = cancel_spark_job(plan.spark_job_id)
+            canceled_jobs.append(job)
+            apply_spark_job(db, plan, job)
     except ValueError as exc:
         raise HTTPException(409, f"Spark Engine rejected force-stop: {exc}") from exc
     except Exception as exc:
         raise HTTPException(503, f"Spark Engine unavailable: {exc}") from exc
-    apply_spark_job(db, plan, job)
     db.commit()
     db.refresh(plan)
-    return {"plan": schemas.MigrationPlan.model_validate(plan), "job": job, "stopped_by": admin.username}
+    return {"plan": schemas.MigrationPlan.model_validate(plan), "job": aggregate_child_job(plan) if child_entries else canceled_jobs[0], "stopped_by": admin.username}
 
 
 @app.get("/api/migration-plans/{plan_id}/execution")
@@ -1843,7 +2155,9 @@ def migration_plan_execution(plan_id: int, db: Session = Depends(get_db), _user:
     plan = db.get(models.MigrationPlan, plan_id)
     if not plan:
         raise HTTPException(404, "Migration plan not found")
-    if plan.spark_job_id:
+    if plan_uses_child_jobs(plan):
+        job = sync_plan_execution_state(db, plan)
+    elif plan.spark_job_id:
         try:
             job = get_spark_job(plan.spark_job_id)
         except Exception as exc:

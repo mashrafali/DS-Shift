@@ -360,7 +360,7 @@ function App() {
 
   useEffect(() => {
     if (!token) return undefined;
-    const activePlans = migrationPlans.filter((plan) => (plan.spark_job_id && ['Queued', 'Running'].includes(plan.status)) || plan.status === 'Preflight running');
+    const activePlans = migrationPlans.filter((plan) => ['Queued', 'Running'].includes(plan.status) || plan.status === 'Preflight running');
     if (!activePlans.length) return undefined;
     const timer = window.setInterval(async () => {
       try {

@@ -692,6 +692,76 @@ def test_continue_migration_plan_reuses_preserved_staging(monkeypatch, tmp_path)
         assert db.get(models.MigrationPlan, plan.id).spark_job_id == 77
 
 
+def test_bulk_plan_launch_schedules_per_vm_jobs_with_global_limit(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        source = models.ConnectorProfile(name="KVM Source", connector_category="host", connector_type="KVM")
+        target = models.ConnectorProfile(name="vCenter Target", connector_category="host", connector_type="VMware ESXi / vCenter")
+        db.add_all([source, target])
+        db.flush()
+        vms = [
+            models.VmInventory(vm_name=f"vm-0{index}", source_platform="KVM", target_platform="VMware ESXi / vCenter", cpu=2, memory_gb=4, disk_gb=20, connector_id=source.id)
+            for index in range(1, 5)
+        ]
+        db.add_all(vms)
+        db.flush()
+        plan = models.MigrationPlan(
+            name="Bulk Plan",
+            source_connector_id=source.id,
+            target_connector_id=target.id,
+            migration_type="KVM to VMware ESXi / vCenter",
+            vm_ids_json=json.dumps([vm.id for vm in vms]),
+            status="Preflight ready",
+        )
+        db.add(plan)
+        db.commit()
+        db.refresh(plan)
+        job_ids = iter([101, 102, 103, 104])
+
+        monkeypatch.setattr("app.main.settings.max_active_migrations", 3)
+        monkeypatch.setattr("app.main.settings.max_active_migrations_per_connector", 3)
+        monkeypatch.setattr(
+            "app.main.create_spark_job",
+            lambda payload: {"id": next(job_ids), "plan_id": payload["plan_id"], "status": "Queued", "adapter": "kvm-vcenter-ova"},
+        )
+
+        launched = launch_migration_plan(
+            plan.id,
+            schemas.MigrationLaunch(confirmation=plan.name),
+            db,
+            models.LocalUser(username="admin", password_hash="unused", role="admin", is_active="true"),
+        )
+
+        entries = json.loads(db.get(models.MigrationPlan, plan.id).results_json)
+        assert launched["job"]["status"] == "Queued"
+        assert [entry["status"] for entry in entries].count("Queued") == 3
+        assert [entry["status"] for entry in entries].count("Pending") == 1
+        assert [entry.get("spark_job_id") for entry in entries[:3]] == [101, 102, 103]
+
+        def fake_get_spark_job(job_id):
+            if job_id == 101:
+                return {
+                    "id": 101,
+                    "status": "Succeeded",
+                    "message": "Completed vm-01",
+                    "progress_percent": 100,
+                    "completed_at": "2026-06-25T12:00:00",
+                    "tasks": [],
+                    "result": [{"kind": "vm_result", "vm_id": vms[0].id, "vm_name": vms[0].vm_name, "ok": True, "message": "Provisioned"}],
+                }
+            return {"id": job_id, "status": "Running", "message": "Running", "progress_percent": 30, "tasks": [], "result": []}
+
+        monkeypatch.setattr("app.main.get_spark_job", fake_get_spark_job)
+        execution = migration_plan_execution(plan.id, db, None)
+        entries = json.loads(execution["plan"].results_json)
+
+        assert any(entry["vm_id"] == vms[0].id and entry["status"] == "Succeeded" for entry in entries)
+        assert [entry.get("spark_job_id") for entry in entries if entry["status"] in {"Queued", "Running"}] == [102, 103, 104]
+        assert db.get(models.VmInventory, vms[0].id).current_status == "Cutover completed"
+
+
 def test_apply_spark_job_logs_completed_migrations_and_cleans_plan_staging(monkeypatch, tmp_path):
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
