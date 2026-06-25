@@ -35,18 +35,13 @@ let displayTimezone = 'Asia/Riyadh';
 const timezoneOptions = [
   ['UTC', 'UTC'],
   ['Asia/Riyadh', 'Asia/Riyadh'],
-  ['Asia/Dubai', 'Asia/Dubai'],
-  ['Asia/Kolkata', 'Asia/Kolkata'],
-  ['Asia/Singapore', 'Asia/Singapore'],
-  ['Asia/Tokyo', 'Asia/Tokyo'],
-  ['Europe/London', 'Europe/London'],
-  ['Europe/Paris', 'Europe/Paris'],
-  ['America/New_York', 'America/New_York'],
-  ['America/Chicago', 'America/Chicago'],
-  ['America/Denver', 'America/Denver'],
-  ['America/Los_Angeles', 'America/Los_Angeles'],
-  ['Australia/Sydney', 'Australia/Sydney'],
+  ['Africa/Cairo', 'Africa/Cairo'],
+  ['Gulf Standard Time', 'Gulf Standard Time'],
 ];
+
+function browserTimezone(value) {
+  return value === 'Gulf Standard Time' ? 'Asia/Dubai' : value;
+}
 
 function loadStoredToken() {
   return localStorage.getItem(tokenKey) || '';
@@ -897,7 +892,7 @@ function App() {
     ...(user?.role === 'admin' ? [['users', Users, 'Users']] : []),
     ...(user?.role === 'admin' ? [['settings', Settings, 'Settings']] : []),
   ];
-  displayTimezone = settings.default_timezone || 'Asia/Riyadh';
+  displayTimezone = browserTimezone(settings.default_timezone || 'Asia/Riyadh');
 
   return (
     <div className="shell">
